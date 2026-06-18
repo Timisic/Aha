@@ -1,0 +1,26 @@
+{
+  "name": "pi-insight-package",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi /insight extension package for Insight-to-Judgment workflows.",
+  "keywords": [
+    "pi-package"
+  ],
+  "scripts": {
+    "build": "bun build extensions/insight.ts --target=node --outfile=/tmp/pi-insight-package-build.js",
+    "test": "INSIGHT_EXTENSION_PATH=$PWD/extensions/insight.ts node tests/test-insight-extension.mjs",
+    "test:ultraqa": "INSIGHT_EXTENSION_PATH=$PWD/extensions/insight.ts node tests/ultraqa-insight-extension.mjs",
+    "smoke:offline": "pi --verbose --offline --no-tools --no-extensions -e . --print \"\""
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}

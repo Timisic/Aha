@@ -1,0 +1,290 @@
+import { randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+
+export type MemoryQueryCommand =
+  | "qmd query"
+  | "qmd vsearch"
+  | "qmd search";
+export type MemoryCandidateSource =
+  | "qmd_query"
+  | "qmd_vsearch"
+  | "qmd_search"
+  | "obsidian_backlink";
+
+export interface QmdStructuredQuery {
+  intent: string;
+  lex: string[];
+  vec: string;
+  hyde: string;
+}
+
+export interface InsightSession {
+  id: string;
+  stage: Stage;
+  originCwd: string;
+  rawInsight: string;
+  context: string;
+  sourceNote?: {
+    path?: string;
+    content: string;
+  };
+  memoryQueries: Array<{
+    text: string;
+    kind: MemoryQueryKind;
+    command: MemoryQueryCommand;
+    qmd?: QmdStructuredQuery;
+  }>;
+  explicitMemoryCues: string[];
+  missingExplicitCues: string[];
+  memoryCandidates: Array<{
+    id: string;
+    title: string;
+    slug?: string;
+    relation: MemoryRelation;
+    reason: string;
+    whyReadFirst: string;
+    searchSignals?: {
+      queryText?: string;
+      rank?: number;
+      source?: MemoryCandidateSource;
+      sources?: MemoryCandidateSource[];
+      expansionFrom?: string;
+      expansionFroms?: string[];
+      expansionType?: "backlink";
+    };
+  }>;
+  usedMemoryIds: string[];
+  newInsights: Array<{
+    text: string;
+    openedDirection: boolean;
+    triggeredMemorySearch: boolean;
+  }>;
+  grillTurns: Array<{
+    question: string;
+    answer?: string;
+    resultingInsight?: string;
+    createdAt: string;
+  }>;
+  candidateJudgments: Array<{
+    text: string;
+    userStatus: "pending" | "accepted" | "rejected" | "revised";
+  }>;
+  summaryDraft?: string;
+  unresolvedQuestions: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ActiveSession {
+  sessionDir: string;
+  statePath: string;
+  grillContextPath: string;
+  grillBriefingPath: string;
+  session: InsightSession;
+}
+
+export interface InsightUpdateStateParams {
+  stage?: Stage;
+  note?: string;
+  usedMemoryIds?: string[];
+  newInsight?: {
+    text: string;
+    openedDirection?: boolean;
+    triggeredMemorySearch?: boolean;
+  };
+  grillTurn?: {
+    question: string;
+    answer?: string;
+    resultingInsight?: string;
+  };
+  candidateJudgment?: {
+    text: string;
+    userStatus?: "pending" | "accepted" | "rejected" | "revised";
+  };
+  summaryDraft?: string;
+}
+
+export interface InsightSearchMemoryParams {
+  queries: Array<{
+    text?: string;
+    kind: MemoryQueryInputKind;
+    command?: MemoryQueryCommand;
+    qmd?: QmdStructuredQuery;
+  }>;
+  limit?: number;
+}
+
+export interface MemorySearchCandidate {
+  id: string;
+  title: string;
+  slug?: string;
+  content?: string;
+  rank?: number;
+  queryText: string;
+  source?: MemoryCandidateSource;
+  sources?: MemoryCandidateSource[];
+  expansionFrom?: string;
+  expansionFroms?: string[];
+  expansionType?: "backlink";
+}
+
+export interface ObsidianBacklink {
+  title: string;
+  path?: string;
+  content?: string;
+  count?: number;
+  sourceCandidateId: string;
+  sourceTitle: string;
+}
+
+export interface CommandResult {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  killed: boolean;
+}
+
+export interface InsightAppendGrillContextParams {
+  heading?: string;
+  body: string;
+}
+
+export interface InsightSaveSummaryParams {
+  summaryDraft: string;
+  usedMemoryIds?: string[];
+  unresolvedQuestions?: string[];
+  markComplete?: boolean;
+}
+
+export interface SimpleComponent {
+  invalidate?(): void;
+  render(width: number): string[];
+}
+
+export interface InsightSessionBinding {
+  active?: boolean;
+  sessionId?: string;
+  sessionDir?: string;
+  statePath?: string;
+  updatedAt?: string;
+}
+
+export const ACTIVE_STATUS_KEY = "insight";
+export const SESSION_BINDING_CUSTOM_TYPE = "insight.active_session";
+export const SECTION_NAMES = [
+  "raw insight",
+  "insight",
+  "context",
+  "source note",
+  "connected history notes",
+  "原始洞察",
+  "洞察",
+  "启发",
+  "上下文",
+  "背景",
+  "原始笔记",
+  "obsidian 原始笔记",
+  "obsidian笔记",
+  "相关旧笔记",
+  "历史笔记",
+];
+export const GRILL_INSIGHT_PATH = join(
+  process.env.HOME ?? "",
+  ".agents",
+  "skills",
+  "grill-insight",
+  "SKILL.md",
+);
+export const QMD_TIMEOUT_MS = 90_000;
+export const OBSIDIAN_TIMEOUT_MS = 8_000;
+export const BACKLINK_SEED_LIMIT = 10;
+export const BACKLINKS_PER_SEED_LIMIT = 5;
+export const BACKLINK_CANDIDATE_LIMIT = 20;
+export const SESSION_ID_BYTES = 8;
+export const COMMAND_OUTPUT_MAX_BYTES = Number(process.env.INSIGHT_COMMAND_OUTPUT_MAX_BYTES) || 1_000_000;
+export const SOURCE_NOTE_MAX_BYTES = Number(process.env.INSIGHT_SOURCE_NOTE_MAX_BYTES) || 512_000;
+export const STAGES = new Set<Stage>(["memory", "memory_review", "review_grill", "summary", "complete"]);
+
+export function shouldExpandBacklinks(): boolean {
+  const value = process.env.INSIGHT_EXPAND_BACKLINKS?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+export function nowIso(): string {
+  return new Date().toISOString();
+}
+
+export function dateStamp(date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+export function slugify(input: string): string {
+  const ascii = input
+    .normalize("NFKD")
+    .replace(/[^\p{Letter}\p{Number}\s-]/gu, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 48);
+  return ascii || "insight";
+}
+
+export function safeRealpath(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+export function isPathInside(parent: string, child: string): boolean {
+  const parentPath = safeRealpath(parent) ?? resolve(parent);
+  const childPath = safeRealpath(child) ?? resolve(child);
+  const rel = relative(parentPath, childPath);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+export function configuredSourceRoots(cwd: string): string[] {
+  const configured = process.env.INSIGHT_SOURCE_ROOTS?.trim();
+  const roots = configured
+    ? configured.split(":").map((item) => item.trim()).filter(Boolean)
+    : [join(process.env.HOME ?? "", "Obsidian Notes"), cwd];
+  return roots.map((root) => resolve(root));
+}
+
+export function shortId(): string {
+  return randomBytes(SESSION_ID_BYTES).toString("hex");
+}
+
+export function normalizeInsightArgs(args: string): string {
+  const trimmed = args.trim();
+  if (trimmed === "/insight") return "";
+  if (trimmed.startsWith("/insight ")) {
+    return trimmed.slice("/insight".length).trim();
+  }
+  return trimmed;
+}
+
+export function normalizeMemoryQueryKind(kind: MemoryQueryInputKind): MemoryQueryKind {
+  if (kind === "open-ended" || kind === "constraint") return "contextual";
+  if (kind === "challenge" || kind === "support" || kind === "bounds") {
+    return "abstracted_judgment";
+  }
+  return kind;
+}
+
+export function textFromUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+export function compactLine(value: string, limit = 180): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, limit);
+}
