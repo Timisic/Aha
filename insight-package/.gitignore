@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+*.log
+.env
+.env.*
+.DS_Store
+
+# Pi runtime and personal state must stay outside this package repo.
+.pi/
+sessions/
+insights/
+auth.json
+settings.json
+keybindings.json
+models.json
+*.bak
+*.backup
