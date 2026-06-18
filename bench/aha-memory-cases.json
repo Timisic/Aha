@@ -1,0 +1,59 @@
+{
+  "description": "Aha Memory Candidate Recall Benchmark cases. Keep real /insight inputs here; generated QMD fixtures are derived from this file.",
+  "version": 1,
+  "collection": "obsidian",
+  "expected_in_top_k": 10,
+  "cases": [
+    {
+      "id": "aha-001",
+      "status": "active",
+      "type": "source-note anchored",
+      "description": "从高校/读博/AI时代成长限制的原始 insight 中召回旧判断、反馈机制和转向实习判断",
+      "source_note_path": "/Users/hong/Obsidian Notes/Categories/Evergreen/限制我的那些：高校、不自由.md",
+      "source_note_start_line": 9,
+      "source_note_end_line": 18,
+      "must_recall": [
+        "/Users/hong/Obsidian Notes/Categories/Evergreen/反馈是经验差距的显影装置.md",
+        "/Users/hong/Obsidian Notes/个人复盘/reviews/week/2026-W18 转向实习，新的机遇.md",
+        "/Users/hong/Obsidian Notes/个人复盘/未来与职业/2026-05-10 判断与社会化.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2026月复盘/4月/2026-04-30 叉院终是二次选拔了，但我别有一番滋味.md"
+      ],
+      "nice_to_have": [
+        "/Users/hong/Obsidian Notes/Clippings/对科研超过四小时的警惕.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2026月复盘/4月/2026-04-30 课题组的局限.md",
+        "/Users/hong/Obsidian Notes/Clippings/AI时代需要的是决策、眼界.md",
+        "/Users/hong/Obsidian Notes/Clippings/Karpathy访谈—Don't Outsource Understanding.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2026月复盘/5月/2026-05-02 表达不清本质是思考不清.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2026月复盘/6月/2026-06-01 说不清的成长.md"
+      ],
+      "annotation_note": "must_recall 覆盖：真实反馈密度作为能力生成机制，转向实习/业界作为 AI 前沿和正反馈闭环，读研/读博的社会化与真实环境问题，以及叉院/转博判断中关于课题、导师、AI 前沿和读博限制潜力的旧判断。"
+    },
+    {
+      "id": "aha-002",
+      "status": "active",
+      "type": "source-note anchored",
+      "description": "从 Off Campus 中关于亲密关系吸引力、信任、引导、尊重和过往关系模式的 insight 召回旧关系经验",
+      "source_note_path": "/Users/hong/Obsidian Notes/个人复盘/2026月复盘/6月/2026-06-04 Off Campus引发的 insight.md",
+      "source_note_start_line": 8,
+      "source_note_end_line": 20,
+      "insight_thought": "这个部分其实是想探讨一下我在亲密关系中欣赏的是哪一些点，喜欢的是哪些点，哪些点看起来像是非常加分的。我想去做到的，以及可能我之前做的不好的，有哪些地方，是可以从我之前人际关系亲密关系当中得到一些线索的。",
+      "must_recall": [
+        "/Users/hong/Obsidian Notes/个人复盘/2025月复盘/8月/2025-08-03 享受基于足够信任.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2025月复盘/1月/2025-01-13 高需求和矛盾.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2025月复盘/1月/2025-01-19 赌气及不平等关系的思考.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2025月复盘/2月/2025-02-24 来自感性的恐惧.md",
+        "/Users/hong/Obsidian Notes/心理小传/亲密关系/两段短暂亲密关系的相似之处.md",
+        "/Users/hong/Obsidian Notes/Categories/People/intimate/姚依林.md"
+      ],
+      "nice_to_have": [
+        "/Users/hong/Obsidian Notes/个人复盘/2025月复盘/3月/2025-03-01 Ghosting.md",
+        "/Users/hong/Obsidian Notes/Clippings/Off Campus Ghosting.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2025月复盘/1月/2025-01-15 从依赖到关系降级.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2025月复盘/1月/2025-01-17 揭开工具性的背后.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2025月复盘/1月/2025-01-30 Deepseek锐评situationship.md",
+        "/Users/hong/Obsidian Notes/个人复盘/2024月复盘/粉红色的12月/2024-12-23 粉红色泡泡.md"
+      ],
+      "annotation_note": "must_recall 覆盖：信任与享受、邀约/应答/高需求、赌气与不平等、感性恐惧与表达阻滞、跨关系模式总线索，以及姚依林这个具体关系对象。nice_to_have 覆盖 ghosting 与 situationship 相关补充材料。"
+    }
+  ]
+}
