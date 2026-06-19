@@ -1,0 +1,37 @@
+{
+  "description": "Aha Memory Candidate Recall Benchmark",
+  "version": 1,
+  "collection": "obsidian",
+  "expected_in_top_k": 10,
+  "nice_expected_in_top_k": 20,
+  "cases": [
+    {
+      "id": "aha-example-001",
+      "status": "draft",
+      "type": "source-note anchored",
+      "description": "Example path-based case. Copy this file to aha-memory-cases.json and replace all sample paths before running benchmarks.",
+      "source_note_path": "~/Obsidian Notes/path/to/source-note.md",
+      "source_note_start_line": 1,
+      "source_note_end_line": 20,
+      "insight_thought": "Optional fresh thought that you would type after the note.",
+      "must_recall": [
+        "~/Obsidian Notes/path/to/must-recall-note.md"
+      ],
+      "nice_to_have": [
+        "~/Obsidian Notes/path/to/nice-to-have-note.md"
+      ],
+      "annotation_note": "Explain why the must-recall note should appear."
+    },
+    {
+      "id": "aha-example-002",
+      "status": "draft",
+      "type": "semantic",
+      "description": "Example pasted-input case. Keep realistic private cases in aha-memory-cases.json only.",
+      "insight_input": "Paste a sanitized example insight here, or keep real personal text only in the ignored local cases file.",
+      "must_recall": [
+        "path/to/must-recall-note.md"
+      ],
+      "nice_to_have": []
+    }
+  ]
+}

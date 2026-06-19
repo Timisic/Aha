@@ -37,6 +37,7 @@ INSIGHT_EXTENSION_PATH=/path/to/Aha/insight-package/extensions/insight.ts \
 Run the QMD-only benchmark:
 
 ```bash
+cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json # first run only; then edit local private cases
 node scripts/bench/run-qmd-bench.mjs
 ```
 
