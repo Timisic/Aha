@@ -171,7 +171,13 @@ insights/
 
 ## 评测
 
-小评测集在 `bench/aha-memory-cases.json`。每条 case 保存真实会输入 `/insight` 的原始内容来源，以及人工标注的 `must_recall` / `nice_to_have` 笔记。
+小评测集使用本地私有文件 `bench/aha-memory-cases.json`。每条 case 保存真实会输入 `/insight` 的原始内容来源，以及人工标注的 `must_recall` / `nice_to_have` 笔记，因此这个文件默认被 Git ignore，不应提交。
+
+第一次使用时，从无隐私内容的模板复制一份：
+
+```bash
+cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json
+```
 
 核心指标：
 

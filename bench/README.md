@@ -4,7 +4,15 @@ This folder holds the small evaluation set for Aha / Pi `/insight` memory recall
 
 ## What To Maintain
 
-Edit `aha-memory-cases.json`. The fields you must fill for each real case are:
+Real benchmark cases live in the local-only `aha-memory-cases.json`. This file can contain private note text and Obsidian paths, so it is ignored by Git and should not be committed.
+
+Start by copying the sanitized template:
+
+```bash
+cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json
+```
+
+Then edit `aha-memory-cases.json`. The fields you must fill for each real case are:
 
 - `id`: a stable short id, such as `aha-001`.
 - `status`: set to `active` when the case is ready to score. `draft` cases are ignored.
