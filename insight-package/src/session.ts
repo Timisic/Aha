@@ -26,6 +26,7 @@ export function cleanSessionTitle(value: string): string {
 }
 
 export function sessionTitleFor(session: InsightSession): string {
+  if (session.displayTitle?.trim()) return cleanSessionTitle(session.displayTitle);
   if (session.sourceNote?.path) return cleanSessionTitle(session.sourceNote.path);
   return cleanSessionTitle(session.context || session.rawInsight);
 }
@@ -87,10 +88,14 @@ export function createInitialState(input: string, cwd: string): InsightSession {
     explicitMemoryCues: parsed.explicitMemoryCues,
     missingExplicitCues: [],
     explicitCueResults: [],
+    memorySearchOutcome: undefined,
     memoryCandidatePool: [],
     memoryCandidates: [],
+    reviewedMemoryEvidence: [],
     memoryReviews: [],
+    noRelevantMemory: undefined,
     usedMemoryIds: [],
+    appliedActionIds: [],
     newInsights: [],
     grillTurns: [],
     candidateJudgments: [],
@@ -133,12 +138,19 @@ export function migrateInsightSession(session: InsightSession): InsightSession {
     explicitMemoryCues: Array.isArray(session.explicitMemoryCues) ? session.explicitMemoryCues : [],
     missingExplicitCues: Array.isArray(session.missingExplicitCues) ? session.missingExplicitCues : [],
     explicitCueResults: Array.isArray(session.explicitCueResults) ? session.explicitCueResults : [],
+    memorySearchOutcome: session.memorySearchOutcome,
     memoryCandidatePool: Array.isArray(session.memoryCandidatePool)
       ? session.memoryCandidatePool
       : Array.isArray(session.memoryCandidates) ? session.memoryCandidates : [],
     memoryCandidates: Array.isArray(session.memoryCandidates) ? session.memoryCandidates : [],
+    candidateTable: session.candidateTable && Array.isArray(session.candidateTable.candidateIds)
+      ? session.candidateTable
+      : undefined,
+    reviewedMemoryEvidence: Array.isArray(session.reviewedMemoryEvidence) ? session.reviewedMemoryEvidence : [],
     memoryReviews: Array.isArray(session.memoryReviews) ? session.memoryReviews : [],
+    noRelevantMemory: session.noRelevantMemory,
     usedMemoryIds: Array.isArray(session.usedMemoryIds) ? session.usedMemoryIds : [],
+    appliedActionIds: Array.isArray(session.appliedActionIds) ? session.appliedActionIds : [],
     newInsights: Array.isArray(session.newInsights) ? session.newInsights : [],
     grillTurns: Array.isArray(session.grillTurns) ? session.grillTurns : [],
     candidateJudgments: Array.isArray(session.candidateJudgments) ? session.candidateJudgments : [],
@@ -151,13 +163,22 @@ export function readSessionState(path: string): InsightSession | undefined {
   return isInsightSession(session) ? migrateInsightSession(session) : undefined;
 }
 
-function writeJsonAtomic(path: string, value: unknown): void {
-  const tmpPath = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
-  writeFileSync(tmpPath, JSON.stringify(value, null, 2) + "\n", "utf-8");
+export function writeTextAtomic(path: string, body: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmpPath = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.${shortId()}.tmp`);
+  writeFileSync(tmpPath, body, "utf-8");
   renameSync(tmpPath, path);
 }
 
+export function writeJsonAtomic(path: string, value: unknown): void {
+  writeTextAtomic(path, JSON.stringify(value, null, 2) + "\n");
+}
+
 export function writeState(path: string, session: InsightSession): void {
+  const current = readSessionState(path);
+  if (current && current.id === session.id && current.updatedAt !== session.updatedAt) {
+    throw new Error(`Concurrent insight session write rejected for ${session.id}; reload the session before saving.`);
+  }
   session.updatedAt = nowIso();
   writeJsonAtomic(path, session);
 }
@@ -167,13 +188,14 @@ export function writeIndex(cwd: string, sessionDir: string, session: InsightSess
   mkdirSync(root, { recursive: true });
   const path = indexPath(cwd);
   const current =
-    readJsonFile<Array<{ id: string; dir: string; title: string; stage: Stage; updatedAt: string }>>(path) ?? [];
+    readJsonFile<Array<{ id: string; dir: string; title: string; stage: Stage; updatedAt: string; archivedAt?: string }>>(path) ?? [];
   const entry = {
     id: session.id,
     dir: sessionDir,
     title: sessionTitleFor(session),
     stage: session.stage,
     updatedAt: session.updatedAt,
+    archivedAt: session.archivedAt,
   };
   const next = [entry, ...current.filter((item) => item.id !== session.id && item.dir !== sessionDir)]
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -207,7 +229,7 @@ export function writeInitialGrillContext(path: string, session: InsightSession):
     "暂无。只有当某个判断明显更新、替代或细化旧理解时再记录。",
     "",
   ].join("\n");
-  writeFileSync(path, body, "utf-8");
+  writeTextAtomic(path, body);
 }
 
 export function localizedGrillHeading(heading: string | undefined): string {

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { COMMAND_OUTPUT_MAX_BYTES, OBSIDIAN_TIMEOUT_MS, SECTION_NAMES, SOURCE_NOTE_MAX_BYTES, configuredSourceRoots, isPathInside, textHash, type InsightSession } from "./domain.ts";
@@ -44,18 +44,19 @@ export function obsidianCommand(): string {
 }
 
 export function readObsidianSync(args: string[], cwd: string): string | undefined {
-  const result = spawnSync(obsidianCommand(), args, {
-    cwd,
-    encoding: "utf-8",
-    maxBuffer: COMMAND_OUTPUT_MAX_BYTES,
-    timeout: OBSIDIAN_TIMEOUT_MS,
-    windowsHide: true,
-  });
-  const output = result.stdout?.trim();
-  if (result.status !== 0 || result.error || !output || /^Error:\s+/i.test(output)) {
+  try {
+    const output = execFileSync(obsidianCommand(), args, {
+      cwd,
+      encoding: "utf-8",
+      maxBuffer: COMMAND_OUTPUT_MAX_BYTES,
+      timeout: OBSIDIAN_TIMEOUT_MS,
+      windowsHide: true,
+    })?.trim();
+    if (!output || /^Error:\s+/i.test(output)) return undefined;
+    return output;
+  } catch {
     return undefined;
   }
-  return output;
 }
 
 export function readSourceNoteFileFallback(path: string, cwd: string): string | undefined {

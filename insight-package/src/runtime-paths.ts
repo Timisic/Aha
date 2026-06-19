@@ -1,43 +1,40 @@
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { Type as TypeboxType } from "typebox";
 
-export function resolveTypeboxPath(): string {
-  const explicit = process.env.PI_TYPEBOX_PATH?.trim();
-  if (explicit) return explicit;
-  const npmPrefix = process.env.NPM_CONFIG_PREFIX?.trim() || join(process.env.HOME ?? "", ".npm-global");
-  return join(
-    npmPrefix,
-    "lib",
-    "node_modules",
-    "@earendil-works",
-    "pi-coding-agent",
-    "node_modules",
-    "typebox",
-    "build",
-    "index.mjs",
-  );
+async function importPackageOrPath<T>(packageName: string, explicitPath: string | undefined, exportName: string): Promise<T> {
+  try {
+    const module = await import(packageName) as Record<string, unknown>;
+    const value = module[exportName];
+    if (value) return value as T;
+  } catch (packageError) {
+    if (!explicitPath?.trim()) {
+      throw new Error(
+        `Unable to import ${packageName}. Run npm ci in insight-package, install the Pi package dependencies, or set the explicit path override. Cause: ${packageError instanceof Error ? packageError.message : String(packageError)}`,
+      );
+    }
+  }
+
+  const path = explicitPath?.trim();
+  if (!path) throw new Error(`No explicit path override provided for ${packageName}`);
+  const module = await import(pathToFileURL(path).href) as Record<string, unknown>;
+  const value = module[exportName];
+  if (!value) throw new Error(`Expected export ${exportName} from ${explicitPath}`);
+  return value as T;
 }
 
-export function resolvePiTuiPath(): string {
+export const Type = await importPackageOrPath<TypeboxType>("typebox", process.env.PI_TYPEBOX_PATH, "Type");
+
+const piTui = await import("@earendil-works/pi-tui").catch(async (error) => {
   const explicit = process.env.PI_TUI_PATH?.trim();
-  if (explicit) return explicit;
-  const npmPrefix = process.env.NPM_CONFIG_PREFIX?.trim() || join(process.env.HOME ?? "", ".npm-global");
-  return join(
-    npmPrefix,
-    "lib",
-    "node_modules",
-    "@earendil-works",
-    "pi-coding-agent",
-    "node_modules",
-    "@earendil-works",
-    "pi-tui",
-    "dist",
-    "index.js",
-  );
-}
+  if (!explicit) {
+    throw new Error(
+      `Unable to import @earendil-works/pi-tui. Run npm ci in insight-package, install the Pi package dependencies, or set PI_TUI_PATH. Cause: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return import(pathToFileURL(explicit).href);
+});
 
-export const { Type } = await import(pathToFileURL(resolveTypeboxPath()).href);
-export const { truncateToWidth, visibleWidth } = (await import(pathToFileURL(resolvePiTuiPath()).href)) as {
+export const { truncateToWidth, visibleWidth } = piTui as {
   truncateToWidth: (text: string, maxWidth: number, ellipsis?: string, pad?: boolean) => string;
   visibleWidth: (text: string) => number;
 };

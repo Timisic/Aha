@@ -50,6 +50,9 @@ writeFileSync(
     "  process.stdout.write('SUCCESS: memory candidates created');",
     "  process.stderr.write('hidden failure');",
     "  process.exit(1);",
+    "} else if (mode === 'empty') {",
+    "  process.stdout.write('[]');",
+    "  process.exit(0);",
     "} else {",
     "  process.stdout.write(JSON.stringify([",
     "    { slug: 'note/feedback-visible-gap', title: '反馈是经验差距的显影装置', chunk_text: '反馈让判断偏差和半成品边界暴露出来。', score: 0.8, source_id: 'obsidian' },",
@@ -93,7 +96,7 @@ writeFileSync(
 );
 chmodSync(fakeObsidian, 0o755);
 
-const extensionModule = await import(process.env.INSIGHT_EXTENSION_PATH ?? "/Users/hong/.pi/agent/extensions/insight.ts");
+const extensionModule = await import(process.env.INSIGHT_EXTENSION_PATH ?? new URL("../extensions/insight.ts", import.meta.url).href);
 const extension = extensionModule.default;
 
 function createHarness(cwd, qmdMode = "ok", initialSessionEntries = []) {
@@ -168,6 +171,17 @@ function createHarness(cwd, qmdMode = "ok", initialSessionEntries = []) {
     return current;
   }
 
+  function addUserTurn(content, id = `user-${sessionEntries.length + 1}`) {
+    sessionEntries.push({
+      type: "message",
+      id,
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: { role: "user", content },
+    });
+    return id;
+  }
+
   return {
     commands,
     tools,
@@ -178,6 +192,7 @@ function createHarness(cwd, qmdMode = "ok", initialSessionEntries = []) {
     ctx,
     emitContext,
     emitSessionStart,
+    addUserTurn,
   };
 }
 
@@ -338,6 +353,7 @@ try {
   assert.ok(resumeInjected[0].content.includes("Current stage: memory_review"));
   record("ADV-E2E-002B", "pass", "Pi resume restores active insight state from hidden session binding");
 
+  normal.addUserTurn("这条可以用，进入 grill。\n这条先不用。");
   await normal.tools.get("insight_update_state").execute(
     "enter-grill",
     {
@@ -346,14 +362,14 @@ try {
         candidateId: state.memoryCandidates[0].id,
         status: "accepted",
         rationale: "scripted user accepted this memory before grill",
-        userText: "这条可以用，进入 grill。",
+        userText: "这条可以用，进入 grill。\n这条先不用。",
       },
       memoryReviews: [
         {
           candidateId: state.memoryCandidates[1].id,
           status: "rejected",
           rationale: "scripted user rejected this distractor before grill",
-          userText: "这条先不用。",
+          userText: "这条可以用，进入 grill。\n这条先不用。",
         },
       ],
     },
@@ -379,6 +395,7 @@ try {
   assert.equal(compactGrillMessages[1].content, "进入 grill 后继续");
   record("ADV-E2E-002C", "pass", "entering grill writes briefing and compacts next model context");
 
+  normal.addUserTurn("我确认这个最终判断。");
   await normal.tools.get("insight_update_state").execute(
     "state-update",
     {
@@ -388,8 +405,9 @@ try {
       },
       candidateJudgment: {
         text: "反馈的价值在于让判断暴露给修正；边界是反馈密度不足时只会制造噪声。",
-        userStatus: "pending",
+        userStatus: "accepted",
         evidenceMemoryIds: [state.memoryCandidates[0].id],
+        userText: "我确认这个最终判断。",
       },
       newInsight: {
         text: "反馈不是评价，而是显影",
@@ -431,6 +449,7 @@ try {
     /insight_confirm_readiness/,
   );
 
+  normal.addUserTurn("可以总结了");
   await normal.tools.get("insight_confirm_readiness").execute(
     "readiness",
     { userText: "可以总结了" },

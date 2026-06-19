@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildVaultPathResolver, deterministicFallbackCanonicalId, resolveNoteIdentity } from "../src/path-resolver.js";
 
 function createHarness(cwd, initialSessionEntries = []) {
   const commands = new Map();
@@ -90,6 +91,17 @@ function createHarness(cwd, initialSessionEntries = []) {
     return result;
   }
 
+  function addUserTurn(content, id = `user-${sessionEntries.length + 1}`) {
+    sessionEntries.push({
+      type: "message",
+      id,
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: { role: "user", content },
+    });
+    return id;
+  }
+
   return {
     commands,
     tools,
@@ -101,6 +113,7 @@ function createHarness(cwd, initialSessionEntries = []) {
     emitContext,
     emitSessionStart,
     emitToolCall,
+    addUserTurn,
   };
 }
 
@@ -156,6 +169,10 @@ writeFileSync(
     "  ]));",
     "}",
     "if (process.env.QMD_ARGS_LOG) appendFileSync(process.env.QMD_ARGS_LOG, JSON.stringify({ args: process.argv.slice(2), query }) + '\\n');",
+    "if ((process.env.QMD_FAKE_MODE || '') === 'empty') {",
+    "  process.stdout.write('[]');",
+    "  process.exit(0);",
+    "}",
     "if ((process.env.QMD_FAKE_MODE || '') === 'large') {",
     "  process.stdout.write('x'.repeat(128 * 1024));",
     "  setInterval(() => {}, 1000);",
@@ -168,12 +185,34 @@ writeFileSync(
     "if ((process.env.QMD_FAKE_MODE || '') === 'explicit-pool') {",
     "  const rows = Array.from({ length: 12 }, (_, index) => ({",
     "    file: index === 11 ? 'personal-review/deep-explicit-cue.md' : `personal-review/filler-${index + 1}.md`,",
-    "    title: index === 11 ? '深层显式线索笔记' : `填充候选 ${index + 1}`,",
+    "    title: index === 11 ? '深层显式线索' : `填充候选 ${index + 1}`,",
     "    snippet: index === 11 ? '这条包含 深层显式线索 但会落在展示 topK 之后。' : '一般相关候选。',",
     "    score: 1 - index / 100,",
     "    query",
     "  }));",
     "  process.stdout.write(JSON.stringify(rows));",
+    "  process.exit(0);",
+    "}",
+    "if ((process.env.QMD_FAKE_MODE || '') === 'canonical-identity') {",
+    "  process.stdout.write(JSON.stringify([",
+    "    { file: 'memory/Canonical Note.md', title: 'Canonical Note', snippet: 'first form', score: 0.99, query },",
+    "    { file: 'qmd://obsidian/memory/Canonical Note.md', title: 'Canonical Note', snippet: 'qmd form', score: 0.98, query },",
+    "    { file: process.env.QMD_FAKE_ABSOLUTE_CANONICAL || 'memory/Canonical Note.md', title: 'Canonical Note', snippet: 'absolute form', score: 0.97, query },",
+    "    { file: 'team-a/Duplicate.md', title: 'Duplicate', snippet: 'duplicate A', score: 0.96, query },",
+    "    { file: 'team-b/Duplicate.md', title: 'Duplicate', snippet: 'duplicate B', score: 0.95, query }",
+    "  ]));",
+    "  process.exit(0);",
+    "}",
+    "if ((process.env.QMD_FAKE_MODE || '') === 'cue-substring') {",
+    "  process.stdout.write(JSON.stringify([",
+    "    { file: 'memory/reason-only.md', title: 'Reason Only', snippet: '这段 reason 提到了 片段线索 但标题和路径都没有。', score: 0.99, query }",
+    "  ]));",
+    "  process.exit(0);",
+    "}",
+    "if ((process.env.QMD_FAKE_MODE || '') === 'same-title-source') {",
+    "  process.stdout.write(JSON.stringify([",
+    "    { file: 'other/Same Title.md', title: process.env.QMD_FAKE_SOURCE_TITLE || 'Same Title', snippet: '同名但不是 source note 的旧笔记。', score: 0.99, query }",
+    "  ]));",
     "  process.exit(0);",
     "}",
     "if ((process.env.QMD_FAKE_MODE || '') === 'source-self-hit') {",
@@ -250,7 +289,7 @@ writeFileSync(
 );
 chmodSync(fakeObsidian, 0o755);
 
-const extensionModule = await import(process.env.INSIGHT_EXTENSION_PATH ?? "/Users/hong/.pi/agent/extensions/insight.ts");
+const extensionModule = await import(process.env.INSIGHT_EXTENSION_PATH ?? new URL("../extensions/insight.ts", import.meta.url).href);
 const extension = extensionModule.default;
 
 try {
@@ -258,12 +297,64 @@ try {
   const insight = harness.commands.get("insight");
   assert.ok(insight, "/insight command registered");
   assert.ok(harness.tools.get("insight_search_memory"), "search tool registered");
+
+  mkdirSync(join(cwd, "memory"), { recursive: true });
+  mkdirSync(join(cwd, "team-a"), { recursive: true });
+  mkdirSync(join(cwd, "team-b"), { recursive: true });
+  mkdirSync(join(cwd, "unicode"), { recursive: true });
+  mkdirSync(join(cwd, "other"), { recursive: true });
+  writeFileSync(join(cwd, "memory", "Canonical Note.md"), `---
+aliases:
+  - Unique Alias
+---
+# Canonical
+`, "utf-8");
+  writeFileSync(join(cwd, "memory", "Alias A.md"), `---
+aliases: [Shared Alias]
+---
+# Alias A
+`, "utf-8");
+  writeFileSync(join(cwd, "other", "Alias B.md"), `---
+aliases: [Shared Alias]
+---
+# Alias B
+`, "utf-8");
+  writeFileSync(join(cwd, "team-a", "Duplicate.md"), "# Duplicate A\n", "utf-8");
+  writeFileSync(join(cwd, "team-b", "Duplicate.md"), "# Duplicate B\n", "utf-8");
+  writeFileSync(join(cwd, "unicode", "判断边界.md"), "# 判断边界\n", "utf-8");
+  const resolver = buildVaultPathResolver(cwd);
+  const canonicalPath = "memory/Canonical Note.md";
+  for (const input of [
+    canonicalPath,
+    "memory/Canonical Note",
+    `qmd://obsidian/${canonicalPath}`,
+    join(cwd, canonicalPath),
+    "[[memory/Canonical Note#Heading|Alias]]",
+    "memory\\Canonical Note.md",
+  ]) {
+    const resolved = resolveNoteIdentity(input, resolver);
+    assert.equal(resolved.status, "resolved", `${input} resolves`);
+    assert.equal(resolved.canonicalId, "memory/canonical note.md");
+  }
+  assert.equal(resolveNoteIdentity("Unique Alias", resolver).status, "resolved");
+  assert.equal(resolveNoteIdentity("Shared Alias", resolver).status, "ambiguous");
+  assert.equal(resolveNoteIdentity("Duplicate", resolver).status, "ambiguous");
+  const unicodeResolved = resolveNoteIdentity("unicode/判断边界", resolver);
+  assert.equal(unicodeResolved.status, "resolved");
+  assert.equal(unicodeResolved.canonicalPath, "unicode/判断边界.md");
+  assert.equal(
+    deterministicFallbackCanonicalId({ title: "Remote Only", content: "same", queryText: "q" }),
+    deterministicFallbackCanonicalId({ title: "Remote Only", content: "same", queryText: "q" }),
+    "unresolved fallback identity is deterministic",
+  );
   assert.ok(harness.tools.get("insight_update_state"), "state tool registered");
   assert.ok(harness.tools.get("insight_confirm_readiness"), "readiness tool registered");
+  assert.ok(harness.tools.get("insight_confirm_no_relevant_memory"), "no-memory confirmation tool registered");
   assert.ok(harness.tools.get("insight_append_grill_context"), "grill context tool registered");
   assert.ok(harness.tools.get("insight_save_summary"), "summary tool registered");
   assert.equal(harness.tools.get("insight_update_state").executionMode, "sequential");
   assert.equal(harness.tools.get("insight_confirm_readiness").executionMode, "sequential");
+  assert.equal(harness.tools.get("insight_confirm_no_relevant_memory").executionMode, "sequential");
   assert.equal(harness.tools.get("insight_append_grill_context").executionMode, "sequential");
   assert.equal(harness.tools.get("insight_save_summary").executionMode, "sequential");
 
@@ -393,12 +484,29 @@ try {
   assert.ok(!searchResult.content[0].text.includes("| Title |"));
   assert.equal(searchResult.details.candidateCount, state.memoryCandidates.length);
   assert.equal(searchResult.details.memoryCandidates.length, state.memoryCandidates.length);
+  assert.equal(searchResult.details.retrieval.qmdConcurrency, 3, "search details expose bounded QMD concurrency");
+  assert.ok(searchResult.details.retrieval.deadlineMs > 0, "search details expose the end-to-end retrieval deadline");
+  assert.ok(
+    searchResult.details.retrieval.providerOutcomes.every((outcome) => ["ok", "empty", "timeout", "cancelled", "unavailable", "invalid_output", "failed", "partial"].includes(outcome.status)),
+    "QMD provider outcomes use explicit typed statuses",
+  );
+  assert.equal(searchResult.details.rerank.mode, "off", "none reranker env aliases to documented off mode");
+  assert.equal(searchResult.details.rerank.provider, "none", "off reranker does not require a Codex binary");
   assert.ok(state.memoryCandidatePool.length >= state.memoryCandidates.length, "full candidate pool is persisted separately from displayed top-K");
   assert.equal(searchResult.details.memoryCandidatePool.length, state.memoryCandidatePool.length);
   assert.ok(
     state.explicitCueResults.some((result) => result.cue === "反馈是经验差距的显影装置" && result.status !== "not_found"),
     "explicit cue results are recorded instead of relying only on missingExplicitCues",
   );
+  assert.ok(state.candidateTable?.version, "candidate table snapshot records a stable selector version");
+  await insight.handler(`candidate inspect 1 --table ${state.candidateTable.version}`, harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes(`Candidate 1 · table ${state.candidateTable.version}`));
+  assert.ok(harness.editorTexts.at(-1).includes(`ID: ${state.memoryCandidates[0].id}`));
+  assert.ok(harness.editorTexts.at(-1).includes("Review status: unreviewed"));
+  await insight.handler(`candidate path ${state.memoryCandidates[0].id} --table ${state.candidateTable.version}`, harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes(`ID: ${state.memoryCandidates[0].id}`));
+  await insight.handler(`candidate inspect 1 --table stale123`, harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes("Stale candidate selector"));
   const renderedSearchResult = harness.tools
     .get("insight_search_memory")
     .renderResult(searchResult, { expanded: false, isPartial: false }, {}, { args: {}, cwd });
@@ -644,8 +752,50 @@ try {
     connectivityEvents.some((event) => event.event === "state_saved" && event.data.candidateCount === 0),
     "no-candidate connectivity path records state save metadata",
   );
+  assert.equal(connectivityResult.details.memorySearchOutcome, "failed");
   delete process.env.QMD_FAKE_MODE;
   delete process.env.INSIGHT_TRAJECTORY;
+
+  process.env.QMD_FAKE_MODE = "empty";
+  const emptyHarness = createHarness(cwd);
+  await emptyHarness.commands.get("insight").handler(
+    "Insight: no memory path\n\nContext: legitimate new thought with no prior note",
+    emptyHarness.ctx,
+  );
+  const emptyIndex = JSON.parse(readFileSync(indexPath, "utf-8"));
+  const emptyStatePath = join(emptyIndex[0].dir, "state.json");
+  const emptySearchResult = await emptyHarness.tools.get("insight_search_memory").execute(
+    "empty-search",
+    { queries: [{ text: "no prior memory expected", kind: "raw" }], limit: 4 },
+    undefined,
+    undefined,
+    emptyHarness.ctx,
+  );
+  let emptyState = JSON.parse(readFileSync(emptyStatePath, "utf-8"));
+  assert.equal(emptyState.stage, "memory_review");
+  assert.equal(emptyState.memorySearchOutcome, "no_candidates");
+  assert.equal(emptySearchResult.details.memorySearchOutcome, "no_candidates");
+  assert.ok(emptySearchResult.content[0].text.includes("no relevant prior memory"));
+  emptyHarness.addUserTurn("没有相关旧笔记，继续 grill。");
+  await emptyHarness.tools.get("insight_confirm_no_relevant_memory").execute(
+    "empty-confirm-no-memory",
+    { userText: "没有相关旧笔记，继续 grill。" },
+    undefined,
+    undefined,
+    emptyHarness.ctx,
+  );
+  await emptyHarness.tools.get("insight_update_state").execute(
+    "empty-enter-grill",
+    { stage: "review_grill" },
+    undefined,
+    undefined,
+    emptyHarness.ctx,
+  );
+  emptyState = JSON.parse(readFileSync(emptyStatePath, "utf-8"));
+  assert.equal(emptyState.stage, "review_grill");
+  assert.ok(emptyState.noRelevantMemory.userTurnRef, "no-memory confirmation is bound to a real user turn");
+  assert.ok(readFileSync(join(emptyIndex[0].dir, "stage-briefing.md"), "utf-8").includes("没有相关旧笔记"));
+  delete process.env.QMD_FAKE_MODE;
 
   const secondSearchResult = await harness.tools.get("insight_search_memory").execute(
     "tool-1b",
@@ -699,15 +849,116 @@ try {
   assert.equal(explicitPoolState.memoryCandidates.length, 5);
   assert.equal(explicitPoolState.memoryCandidatePool.length, 12);
   assert.deepEqual(explicitPoolState.missingExplicitCues, []);
-  assert.deepEqual(explicitPoolState.explicitCueResults, [
-    {
-      cue: "深层显式线索",
-      status: "found_pool",
-      candidateId: "personal-review/deep-explicit-cue.md",
-      rank: 12,
-    },
-  ]);
+  assert.equal(explicitPoolState.explicitCueResults.length, 1);
+  assert.equal(explicitPoolState.explicitCueResults[0].cue, "深层显式线索");
+  assert.equal(explicitPoolState.explicitCueResults[0].status, "found_pool");
+  assert.ok(explicitPoolState.explicitCueResults[0].candidateId, "found_pool records the deterministic candidate id");
+  assert.equal(explicitPoolState.explicitCueResults[0].rank, 12);
   assert.equal(explicitPoolResult.details.explicitCueResults[0].status, "found_pool");
+  explicitPoolHarness.addUserTurn("深层显式线索这条接受。");
+  await explicitPoolHarness.tools.get("insight_update_state").execute(
+    "explicit-pool-review",
+    {
+      memoryReview: {
+        candidateId: "personal-review/deep-explicit-cue.md",
+        status: "accepted",
+        rationale: "accepted from durable candidate pool, not displayed top-K",
+        userText: "深层显式线索这条接受。",
+      },
+    },
+    undefined,
+    undefined,
+    explicitPoolHarness.ctx,
+  );
+  delete process.env.QMD_FAKE_MODE;
+  await explicitPoolHarness.tools.get("insight_search_memory").execute(
+    "explicit-pool-second-search",
+    { queries: [{ text: "unrelated rerank after review", kind: "raw" }], limit: 5 },
+    undefined,
+    undefined,
+    explicitPoolHarness.ctx,
+  );
+  explicitPoolHarness.addUserTurn("进入 grill。");
+  await explicitPoolHarness.tools.get("insight_update_state").execute(
+    "explicit-pool-enter-grill",
+    { stage: "review_grill" },
+    undefined,
+    undefined,
+    explicitPoolHarness.ctx,
+  );
+  const explicitPoolGrillBriefing = readFileSync(join(explicitPoolIndex[0].dir, "stage-briefing.md"), "utf-8");
+  const explicitPoolFinalState = JSON.parse(readFileSync(explicitPoolStatePath, "utf-8"));
+  assert.ok(
+    explicitPoolFinalState.reviewedMemoryEvidence.some((evidence) => evidence.candidateId === "personal-review/deep-explicit-cue.md"),
+    "durable reviewed evidence survives later searches",
+  );
+  assert.ok(
+    explicitPoolGrillBriefing.includes("深层显式线索"),
+    "stage briefing uses durable reviewed evidence even after it is absent from displayed top-K",
+  );
+
+  process.env.QMD_FAKE_MODE = "canonical-identity";
+  process.env.QMD_FAKE_ABSOLUTE_CANONICAL = join(cwd, "memory", "Canonical Note.md");
+  const canonicalHarness = createHarness(cwd);
+  await canonicalHarness.commands.get("insight").handler(
+    `Insight: canonical identity
+
+Context: same note can arrive as path, qmd uri, and absolute path`,
+    canonicalHarness.ctx,
+  );
+  const canonicalIndex = JSON.parse(readFileSync(indexPath, "utf-8"));
+  const canonicalStatePath = join(canonicalIndex[0].dir, "state.json");
+  await canonicalHarness.tools.get("insight_search_memory").execute(
+    "canonical-identity-search",
+    { queries: [{ text: "canonical identity", kind: "raw" }], limit: 10 },
+    undefined,
+    undefined,
+    canonicalHarness.ctx,
+  );
+  const canonicalState = JSON.parse(readFileSync(canonicalStatePath, "utf-8"));
+  assert.equal(
+    canonicalState.memoryCandidatePool.filter((candidate) => candidate.canonicalId === "memory/canonical note.md").length,
+    1,
+    "absolute, vault-relative, and qmd uri forms merge into one canonical candidate",
+  );
+  assert.ok(
+    canonicalState.memoryCandidatePool.some((candidate) => candidate.canonicalId === "team-a/duplicate.md"),
+    "duplicate basename A remains distinct",
+  );
+  assert.ok(
+    canonicalState.memoryCandidatePool.some((candidate) => candidate.canonicalId === "team-b/duplicate.md"),
+    "duplicate basename B remains distinct",
+  );
+  const canonicalNote = canonicalState.memoryCandidatePool.find((candidate) => candidate.canonicalId === "memory/canonical note.md");
+  assert.deepEqual(canonicalNote.searchSignals.sources, ["qmd_query"], "merged canonical candidate preserves source evidence");
+  delete process.env.QMD_FAKE_MODE;
+  delete process.env.QMD_FAKE_ABSOLUTE_CANONICAL;
+
+  process.env.QMD_FAKE_MODE = "cue-substring";
+  const cueSubstringHarness = createHarness(cwd);
+  await cueSubstringHarness.commands.get("insight").handler(
+    [
+      "Insight: cue substring should not count",
+      "",
+      "Context: reason-only cue must not satisfy explicit identity matching",
+      "",
+      "Connected History Notes:",
+      "- 片段线索",
+    ].join("\n"),
+    cueSubstringHarness.ctx,
+  );
+  const cueSubstringIndex = JSON.parse(readFileSync(indexPath, "utf-8"));
+  const cueSubstringStatePath = join(cueSubstringIndex[0].dir, "state.json");
+  await cueSubstringHarness.tools.get("insight_search_memory").execute(
+    "cue-substring-search",
+    { queries: [{ text: "片段线索", kind: "explicit_cue", command: "qmd search" }], limit: 4 },
+    undefined,
+    undefined,
+    cueSubstringHarness.ctx,
+  );
+  const cueSubstringState = JSON.parse(readFileSync(cueSubstringStatePath, "utf-8"));
+  assert.deepEqual(cueSubstringState.explicitCueResults, [{ cue: "片段线索", status: "not_found" }]);
+  assert.deepEqual(cueSubstringState.missingExplicitCues, ["片段线索"]);
   delete process.env.QMD_FAKE_MODE;
 
   process.env.QMD_FAKE_MODE = "large";
@@ -842,6 +1093,7 @@ try {
     /memoryReview/,
   );
 
+  harness.addUserTurn("这条很关键，可以进入 grill。");
   await harness.tools.get("insight_update_state").execute(
     "tool-enter-grill",
     {
@@ -866,6 +1118,7 @@ try {
   assert.ok(!stageBriefing.includes("multiple-choice"), "briefing does not hard-ban answer forms");
   assert.ok(stageBriefing.includes("Grill Evidence Notes"));
   assert.ok(stageBriefing.includes("反馈原文：把经验差距"), "briefing includes accepted note source content");
+  assert.ok(stageBriefing.includes("reference data only"), "briefing marks note text as inert reference data");
   assert.ok(!stageBriefing.includes("qmd trace noise"), "briefing excludes prior tool noise");
   const compactGrillMessages = await harness.emitContext([
     { role: "user", content: "旧 memory 表格消息", timestamp: Date.now() - 2 },
@@ -896,6 +1149,7 @@ try {
   assert.equal(afterNoOpState.updatedAt, beforeNoOpState.updatedAt, "same-stage-only update does not rewrite state");
   assert.equal(harness.sessionEntries.length, beforeNoOpEntryCount, "same-stage-only update does not persist binding");
 
+  harness.addUserTurn("这个最终判断我确认。");
   await harness.tools.get("insight_update_state").execute(
     "tool-2",
     {
@@ -907,9 +1161,9 @@ try {
       },
       candidateJudgment: {
         text: "高质量反馈的核心是让判断可被现实修正。",
-        userStatus: "pending",
+        userStatus: "accepted",
         evidenceMemoryIds: [state.memoryCandidates[0].id],
-        userTurnRef: "user-turn-judgment-1",
+        userText: "这个最终判断我确认。",
       },
     },
     undefined,
@@ -926,7 +1180,9 @@ try {
   assert.ok(readFileSync(grillPath, "utf-8").includes("## 已稳定术语"));
   state = JSON.parse(readFileSync(statePath, "utf-8"));
   assert.equal(state.candidateJudgments[0].evidenceMemoryIds[0], state.memoryCandidates[0].id);
-  assert.equal(state.candidateJudgments[0].userTurnRef, "user-turn-judgment-1");
+  assert.ok(state.candidateJudgments[0].userTurnRef);
+  assert.ok(state.candidateJudgments[0].userTextHash);
+  assert.ok(state.candidateJudgments[0].confirmedAt);
   assert.ok(state.candidateJudgments[0].id);
 
   await assert.rejects(
@@ -944,6 +1200,7 @@ try {
     /insight_confirm_readiness/,
   );
 
+  harness.addUserTurn("可以总结了");
   await harness.tools.get("insight_confirm_readiness").execute(
     "tool-confirm-readiness",
     { userText: "可以总结了" },
@@ -982,6 +1239,23 @@ try {
   await insight.handler("list", harness.ctx);
   assert.ok(harness.editorTexts.at(-1).includes("| Session | Stage | Updated | Title |"));
 
+  await insight.handler(`summary inspect ${state.id} --content`, harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes("session-local only"));
+  assert.ok(harness.editorTexts.at(-1).includes("summary-draft.md"));
+
+  await insight.handler(`rename ${state.id} "Feedback density renamed"`, harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes("Feedback density renamed"));
+  await insight.handler(`archive ${state.id}`, harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes("Archived:"));
+  await insight.handler("list", harness.ctx);
+  assert.ok(!harness.editorTexts.at(-1).includes("Feedback density renamed"), "archived sessions are hidden from default list");
+  await insight.handler("list --archived", harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes("Feedback density renamed"), "archived filter shows archived session");
+  await insight.handler(`unarchive ${state.id}`, harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes("Archived: no"));
+  await insight.handler(`inspect ${state.id}`, harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes("Summary draft for session"));
+
   const sentBeforeResume = harness.sentMessages.length;
   await insight.handler(`resume ${state.id}`, harness.ctx);
   assert.equal(harness.sentMessages.length, sentBeforeResume, "resume does not send a new visible follow-up message");
@@ -1002,6 +1276,9 @@ try {
   const nextIndex = JSON.parse(readFileSync(indexPath, "utf-8"));
   assert.equal(nextIndex.length, beforeSecondSessionCount + 1, "new insight session is indexed");
   assert.notEqual(nextIndex[0].dir, nextIndex[1].dir, "session directories are isolated");
+
+  await insight.handler(`resume ${nextIndex[0].dir.split("/").pop().slice(0, 10)}`, harness.ctx);
+  assert.ok(harness.editorTexts.at(-1).includes("Multiple insight sessions match"), "ambiguous resume shows choices instead of selecting first substring match");
 
   const otherHarness = createHarness(otherCwd);
   await otherHarness.commands.get("insight").handler("list", otherHarness.ctx);
@@ -1024,6 +1301,10 @@ try {
   );
   await otherHarness.commands.get("insight").handler("current", otherHarness.ctx);
   assert.equal(otherHarness.editorTexts.at(-1), "No active insight session.");
+
+  const deleteHarness = createHarness(cwd);
+  await deleteHarness.commands.get("insight").handler(`delete ${state.id}`, deleteHarness.ctx);
+  assert.ok(deleteHarness.notifications.some((item) => item.message?.includes("Delete requires exact confirmation")));
 
   const fullCommandHarness = createHarness(cwd);
   await fullCommandHarness.commands.get("insight").handler("/insight", fullCommandHarness.ctx);
@@ -1085,6 +1366,7 @@ try {
     pathHarness.ctx,
   );
   const pathStateAfterSearch = JSON.parse(readFileSync(join(pathIndex[0].dir, "state.json"), "utf-8"));
+  pathHarness.addUserTurn("这条 memory 可以进入 grill。");
   await pathHarness.tools.get("insight_update_state").execute(
     "path-enter-grill",
     {
@@ -1106,6 +1388,7 @@ try {
   assert.ok(pathGrillMessages[0].content.includes("# 见面经过"));
   assert.ok(pathGrillMessages[0].content.includes("## 心动与退潮"));
 
+  pathHarness.addUserTurn("可以总结这条 source note 了");
   await pathHarness.tools.get("insight_confirm_readiness").execute(
     "path-readiness",
     { userText: "可以总结这条 source note 了" },
@@ -1179,8 +1462,12 @@ try {
   );
   const selfHitState = JSON.parse(readFileSync(selfHitStatePath, "utf-8"));
   assert.ok(
-    !selfHitState.memoryCandidates.some((candidate) => candidate.slug === sourceNotePath || candidate.title === "和 Linya 碰面的三天"),
-    "source-note self-hit is filtered before displayed candidates",
+    !selfHitState.memoryCandidates.some((candidate) =>
+      candidate.slug === sourceNotePath ||
+      candidate.canonicalId === "和 linya 碰面的三天.md" ||
+      candidate.canonicalPath === "和 Linya 碰面的三天.md"
+    ),
+    "source-note self-hit is filtered by canonical identity before displayed candidates",
   );
   assert.ok(
     selfHitState.memoryCandidates.some((candidate) => candidate.title === "真正应该 review 的旧笔记"),
@@ -1188,6 +1475,39 @@ try {
   );
   delete process.env.QMD_FAKE_MODE;
   delete process.env.QMD_FAKE_SOURCE_PATH;
+  delete process.env.QMD_FAKE_SOURCE_TITLE;
+
+  const sameTitleSourcePath = join(cwd, "Same Title.md");
+  writeFileSync(sameTitleSourcePath, "# Same Title\n\nsource note body", "utf-8");
+  writeFileSync(join(cwd, "other", "Same Title.md"), "# Same Title\n\ndifferent note body", "utf-8");
+  process.env.QMD_FAKE_MODE = "same-title-source";
+  process.env.QMD_FAKE_SOURCE_TITLE = "Same Title";
+  const sameTitleHarness = createHarness(cwd);
+  await sameTitleHarness.commands.get("insight").handler(
+    [
+      "Insight:",
+      sameTitleSourcePath,
+      "里面包含了我的 insight",
+      "",
+      "Context: same title should not be identity",
+    ].join("\n"),
+    sameTitleHarness.ctx,
+  );
+  const sameTitleIndex = JSON.parse(readFileSync(indexPath, "utf-8"));
+  const sameTitleStatePath = join(sameTitleIndex[0].dir, "state.json");
+  await sameTitleHarness.tools.get("insight_search_memory").execute(
+    "same-title-source-search",
+    { queries: [{ text: "same title", kind: "raw" }], limit: 4 },
+    undefined,
+    undefined,
+    sameTitleHarness.ctx,
+  );
+  const sameTitleState = JSON.parse(readFileSync(sameTitleStatePath, "utf-8"));
+  assert.ok(
+    sameTitleState.memoryCandidates.some((candidate) => candidate.canonicalId === "other/same title.md"),
+    "same-title different note is not filtered as source-note self-hit",
+  );
+  delete process.env.QMD_FAKE_MODE;
   delete process.env.QMD_FAKE_SOURCE_TITLE;
 
   const fallbackSourcePath = join(cwd, "fallback source.md");
@@ -1269,6 +1589,7 @@ try {
     wikiHarness.ctx,
   );
   const wikiStateAfterSearch = JSON.parse(readFileSync(join(wikiIndex[0].dir, "state.json"), "utf-8"));
+  wikiHarness.addUserTurn("这条 memory 可以进入 grill。");
   await wikiHarness.tools.get("insight_update_state").execute(
     "wiki-enter-grill",
     {
