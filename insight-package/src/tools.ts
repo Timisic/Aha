@@ -1,13 +1,13 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Type } from "typebox";
-import { type InsightAppendGrillContextParams, type InsightSaveSummaryParams, type InsightSearchMemoryParams, type InsightUpdateStateParams, nowIso } from "./domain.ts";
+import { type InsightAppendGrillContextParams, type InsightConfirmReadinessParams, type InsightSaveSummaryParams, type InsightSearchMemoryParams, type InsightUpdateStateParams, nowIso, textHash } from "./domain.ts";
 import { memorySearchResultComponent } from "./memory.ts";
 import { runInsightMemoryRetrieval } from "./memory-retrieval.ts";
-import { missingSourceNoteSummaryHeadings, refreshSourceNoteFromObsidian } from "./source-note.ts";
+import { missingSourceNoteSummaryHeadings, refreshSourceNoteFromObsidian, sourceNoteSummaryWarnings } from "./source-note.ts";
 import { appendMarkdownSection, localizedGrillHeading, summaryDraftPathFor } from "./session.ts";
 import { buildReviewGrillPrompt, writeGrillBriefing } from "./prompts.ts";
 import { persistActiveSessionBinding, prepareAgentPrompt, saveActiveState, type InsightRuntime } from "./runtime.ts";
-import { evaluateInsightUpdatePolicy, shouldCreateReviewGrillBriefing } from "./stage-policy.ts";
+import { assertCanConfirmReadiness, assertCanSaveSummary, evaluateInsightUpdatePolicy, shouldCreateReviewGrillBriefing } from "./stage-policy.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { recordTrajectoryToolFinished, recordTrajectoryToolStarted } from "./trajectory.ts";
 
@@ -46,6 +46,50 @@ async function withToolTrajectory<T>(
   }
 }
 
+function assertKnownMemoryCandidate(active: NonNullable<InsightRuntime["activeSession"]>, candidateId: string): void {
+  if (!active.session.memoryCandidates.some((candidate) => candidate.id === candidateId)) {
+    throw new Error(`Unknown memory candidate id: ${candidateId}`);
+  }
+}
+
+function recordMemoryReviews(
+  active: NonNullable<InsightRuntime["activeSession"]>,
+  reviews: NonNullable<InsightUpdateStateParams["memoryReviews"]>,
+): void {
+  for (const review of reviews) {
+    assertKnownMemoryCandidate(active, review.candidateId);
+    const userText = review.userText ?? review.rationale ?? `${review.candidateId}:${review.status}`;
+    active.session.memoryReviews = [
+      ...active.session.memoryReviews.filter((item) => item.candidateId !== review.candidateId),
+      {
+        candidateId: review.candidateId,
+        status: review.status,
+        rationale: review.rationale,
+        reviewedAt: nowIso(),
+        userTurnRef: review.userTurnRef,
+        userTextHash: textHash(userText),
+      },
+    ];
+  }
+}
+
+function assertReviewedMemoryUse(
+  active: NonNullable<InsightRuntime["activeSession"]>,
+  usedMemoryIds: string[],
+): void {
+  const accepted = new Set(
+    active.session.memoryReviews
+      .filter((review) => review.status === "accepted")
+      .map((review) => review.candidateId),
+  );
+  for (const candidateId of usedMemoryIds) {
+    assertKnownMemoryCandidate(active, candidateId);
+    if (!accepted.has(candidateId)) {
+      throw new Error(`Cannot use memory ${candidateId}; it has not been accepted by user review.`);
+    }
+  }
+}
+
 export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, Type: Type): void {
   pi.registerTool({
     name: "insight_search_memory",
@@ -53,7 +97,7 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
     description:
       "Run serialized QMD searches for the active /insight session, merge candidates, and update state.json.",
     executionMode: "sequential",
-    renderResult(result) {
+    renderResult(result: { details?: unknown }) {
       return memorySearchResultComponent(result);
     },
     parameters: Type.Object({
@@ -93,9 +137,9 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
     async execute(
       toolCallId: string,
       params: InsightSearchMemoryParams,
-      signal,
-      _onUpdate,
-      ctx,
+      signal: AbortSignal | undefined,
+      _onUpdate: unknown,
+      ctx: ExtensionCommandContext,
     ) {
       return withToolTrajectory(runtime, "insight_search_memory", toolCallId, params, () =>
         runInsightMemoryRetrieval(pi, runtime, params, signal, ctx),
@@ -108,6 +152,7 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
     label: "Insight State",
     description:
       "Update the active Insight-to-Judgment session state JSON. Use only for the current /insight workflow.",
+    executionMode: "sequential",
     parameters: Type.Object({
       stage: Type.Optional(
         Type.Union([
@@ -145,11 +190,42 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
               Type.Literal("revised"),
             ]),
           ),
+          evidenceMemoryIds: Type.Optional(Type.Array(Type.String())),
+          userTurnRef: Type.Optional(Type.String()),
+          replacesId: Type.Optional(Type.String()),
         }),
+      ),
+      memoryReview: Type.Optional(
+        Type.Object({
+          candidateId: Type.String(),
+          status: Type.Union([
+            Type.Literal("accepted"),
+            Type.Literal("rejected"),
+            Type.Literal("uncertain"),
+          ]),
+          rationale: Type.Optional(Type.String()),
+          userText: Type.Optional(Type.String()),
+          userTurnRef: Type.Optional(Type.String()),
+        }),
+      ),
+      memoryReviews: Type.Optional(
+        Type.Array(
+          Type.Object({
+            candidateId: Type.String(),
+            status: Type.Union([
+              Type.Literal("accepted"),
+              Type.Literal("rejected"),
+              Type.Literal("uncertain"),
+            ]),
+            rationale: Type.Optional(Type.String()),
+            userText: Type.Optional(Type.String()),
+            userTurnRef: Type.Optional(Type.String()),
+          }),
+        ),
       ),
       summaryDraft: Type.Optional(Type.String()),
     }),
-    async execute(toolCallId: string, params: InsightUpdateStateParams, _signal, _onUpdate, ctx) {
+    async execute(toolCallId: string, params: InsightUpdateStateParams, _signal: unknown, _onUpdate: unknown, ctx: ExtensionCommandContext) {
       return withToolTrajectory(runtime, "insight_update_state", toolCallId, params, () => {
       if (!runtime.activeSession) {
         return {
@@ -159,7 +235,7 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
       }
 
       const previousStage = runtime.activeSession.session.stage;
-      const policy = evaluateInsightUpdatePolicy(params, previousStage);
+      const policy = evaluateInsightUpdatePolicy(params, runtime.activeSession);
 
       if (policy.stageOnlyNoOp) {
         return {
@@ -184,7 +260,15 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
       if (params.note) {
         runtime.activeSession.session.unresolvedQuestions.push(params.note);
       }
+      const memoryReviews = [
+        ...(params.memoryReview ? [params.memoryReview] : []),
+        ...(params.memoryReviews ?? []),
+      ];
+      if (memoryReviews.length > 0) {
+        recordMemoryReviews(runtime.activeSession, memoryReviews);
+      }
       if (params.usedMemoryIds) {
+        assertReviewedMemoryUse(runtime.activeSession, params.usedMemoryIds);
         runtime.activeSession.session.usedMemoryIds = Array.from(
           new Set([...runtime.activeSession.session.usedMemoryIds, ...params.usedMemoryIds]),
         );
@@ -205,11 +289,20 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
         });
       }
       if (params.candidateJudgment) {
+        if (params.candidateJudgment.evidenceMemoryIds) {
+          assertReviewedMemoryUse(runtime.activeSession, params.candidateJudgment.evidenceMemoryIds);
+        }
         runtime.activeSession.session.candidateJudgments = [
           ...runtime.activeSession.session.candidateJudgments,
           {
+            id: `judgment-${nowIso()}`,
             text: params.candidateJudgment.text,
+            status: params.candidateJudgment.userStatus ?? "pending",
             userStatus: params.candidateJudgment.userStatus ?? "pending",
+            evidenceMemoryIds: params.candidateJudgment.evidenceMemoryIds ?? [],
+            proposedAt: nowIso(),
+            userTurnRef: params.candidateJudgment.userTurnRef,
+            replacesId: params.candidateJudgment.replacesId,
           },
         ].slice(-3);
       }
@@ -252,10 +345,58 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
   });
 
   pi.registerTool({
+    name: "insight_confirm_readiness",
+    label: "Insight Summary Readiness",
+    description:
+      "Record explicit user readiness to move from review_grill into summary. This is the only tool that opens the summary stage.",
+    executionMode: "sequential",
+    parameters: Type.Object({
+      userText: Type.String(),
+      userTurnRef: Type.Optional(Type.String()),
+    }),
+    async execute(toolCallId: string, params: InsightConfirmReadinessParams, _signal: unknown, _onUpdate: unknown, ctx: ExtensionCommandContext) {
+      return withToolTrajectory(runtime, "insight_confirm_readiness", toolCallId, params, () => {
+      if (!runtime.activeSession) {
+        return {
+          content: [{ type: "text", text: "No active /insight session." }],
+          details: { ok: false },
+        };
+      }
+
+      assertCanConfirmReadiness(runtime.activeSession);
+      runtime.activeSession.session.summaryReadiness = {
+        confirmedAt: nowIso(),
+        userText: params.userText,
+        userTurnRef: params.userTurnRef,
+        userTextHash: textHash(params.userText),
+      };
+      runtime.activeSession.session.stage = "summary";
+      saveActiveState(ctx, runtime.activeSession);
+      persistActiveSessionBinding(pi, runtime.activeSession);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Confirmed summary readiness.\nStage: ${runtime.activeSession.session.stage}`,
+          },
+        ],
+        details: {
+          ok: true,
+          statePath: runtime.activeSession.statePath,
+          stage: runtime.activeSession.session.stage,
+        },
+      };
+      });
+    },
+  });
+
+  pi.registerTool({
     name: "insight_append_grill_context",
     label: "Insight Grill Context",
     description:
       "Append stable language, questions, or small decisions to the active insight grill-context.md process document. Write mainly in Chinese and follow the Language / Decision Records style; do not use it as an English transcript.",
+    executionMode: "sequential",
     parameters: Type.Object({
       heading: Type.Optional(Type.String()),
       body: Type.String(),
@@ -291,13 +432,15 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
     name: "insight_save_summary",
     label: "Insight Summary",
     description: "Save the active insight summary draft under the session directory and optionally mark the session complete.",
+    executionMode: "sequential",
     parameters: Type.Object({
       summaryDraft: Type.String(),
       usedMemoryIds: Type.Optional(Type.Array(Type.String())),
       unresolvedQuestions: Type.Optional(Type.Array(Type.String())),
+      preserveSourceStructure: Type.Optional(Type.Boolean()),
       markComplete: Type.Optional(Type.Boolean()),
     }),
-    async execute(toolCallId: string, params: InsightSaveSummaryParams, _signal, _onUpdate, ctx) {
+    async execute(toolCallId: string, params: InsightSaveSummaryParams, _signal: unknown, _onUpdate: unknown, ctx: ExtensionCommandContext) {
       return withToolTrajectory(runtime, "insight_save_summary", toolCallId, params, () => {
       if (!runtime.activeSession) {
         return {
@@ -306,15 +449,18 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
         };
       }
 
+      assertCanSaveSummary(runtime.activeSession);
       refreshSourceNoteFromObsidian(runtime.activeSession.session, ctx.cwd);
       const missingHeadings = missingSourceNoteSummaryHeadings(params.summaryDraft, runtime.activeSession.session);
-      if (missingHeadings.length > 0) {
+      if (params.preserveSourceStructure === true && missingHeadings.length > 0) {
         throw new Error(
           `Summary draft must preserve original Obsidian heading structure. Missing headings: ${missingHeadings.join(", ")}`,
         );
       }
+      const warnings = sourceNoteSummaryWarnings(params.summaryDraft, runtime.activeSession.session);
       runtime.activeSession.session.summaryDraft = params.summaryDraft;
       if (params.usedMemoryIds) {
+        assertReviewedMemoryUse(runtime.activeSession, params.usedMemoryIds);
         runtime.activeSession.session.usedMemoryIds = Array.from(
           new Set([...runtime.activeSession.session.usedMemoryIds, ...params.usedMemoryIds]),
         );
@@ -324,7 +470,7 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
           new Set([...runtime.activeSession.session.unresolvedQuestions, ...params.unresolvedQuestions]),
         );
       }
-      runtime.activeSession.session.stage = params.markComplete === false ? "summary" : "complete";
+      runtime.activeSession.session.stage = params.markComplete === true ? "complete" : "summary";
 
       const summaryPath = summaryDraftPathFor(runtime.activeSession.sessionDir);
       writeFileSync(summaryPath, params.summaryDraft.trim() + "\n", "utf-8");
@@ -335,7 +481,11 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
         content: [
           {
             type: "text",
-            text: `Saved summary draft: ${summaryPath}\nStage: ${runtime.activeSession.session.stage}`,
+            text: [
+              `Saved summary draft: ${summaryPath}`,
+              `Stage: ${runtime.activeSession.session.stage}`,
+              warnings.length > 0 ? `Warnings:\n${warnings.map((warning) => `- ${warning}`).join("\n")}` : "",
+            ].filter(Boolean).join("\n"),
           },
         ],
         details: {
@@ -343,6 +493,7 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
           summaryPath,
           statePath: runtime.activeSession.statePath,
           stage: runtime.activeSession.session.stage,
+          warnings,
         },
       };
       });

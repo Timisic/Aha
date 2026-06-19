@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "./runtime-paths.ts";
-import { BACKLINK_CANDIDATE_LIMIT, BACKLINK_SEED_LIMIT, BACKLINKS_PER_SEED_LIMIT, COMMAND_OUTPUT_MAX_BYTES, GRILL_INSIGHT_PATH, OBSIDIAN_TIMEOUT_MS, QMD_TIMEOUT_MS, type ActiveSession, type CommandResult, type InsightSession, type MemoryCandidateSource, type MemoryQueryCommand, type MemoryQueryInputKind, type MemoryQueryKind, type MemoryRelation, type MemorySearchCandidate, type ObsidianBacklink, type QmdStructuredQuery, type SimpleComponent, compactLine, shortId, slugify } from "./domain.ts";
+import { BACKLINK_CANDIDATE_LIMIT, BACKLINK_SEED_LIMIT, BACKLINKS_PER_SEED_LIMIT, COMMAND_OUTPUT_MAX_BYTES, GRILL_INSIGHT_PATH, OBSIDIAN_TIMEOUT_MS, QMD_TIMEOUT_MS, type ActiveSession, type CommandResult, type InsightSession, type MemoryCandidate, type MemoryCandidateSource, type MemoryQueryCommand, type MemoryQueryInputKind, type MemoryQueryKind, type MemoryRelation, type MemorySearchCandidate, type ObsidianBacklink, type QmdStructuredQuery, type SimpleComponent, compactLine, configuredSourceRoots, shortId, slugify } from "./domain.ts";
+import { buildVaultPathResolver, resolveVaultPath, stripPathDecorations } from "./path-resolver.js";
 import { obsidianCommand } from "./source-note.ts";
 import { summaryDraftPathFor } from "./session.ts";
 
@@ -421,30 +422,90 @@ export async function readObsidianNote(
   return output;
 }
 
+function uniqueArgSets(argSets: string[][]): string[][] {
+  const seen = new Set<string>();
+  const unique: string[][] = [];
+  for (const args of argSets) {
+    const key = args.join("\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(args);
+  }
+  return unique;
+}
+
+type BacklinkResolutionWarning = {
+  seedId: string;
+  seedTitle: string;
+  value: string;
+  matches: string[];
+};
+
+function obsidianBacklinkArgSets(seed: MemoryCandidate, cwd: string): {
+  argSets: string[][];
+  warnings: BacklinkResolutionWarning[];
+} {
+  const values = [seed.slug, seed.id, seed.title]
+    .map((value) => stripPathDecorations(value))
+    .filter(Boolean);
+  const argSets: string[][] = [];
+  const warnings: BacklinkResolutionWarning[] = [];
+  const resolvers = configuredSourceRoots(cwd).map((root) => buildVaultPathResolver(root));
+
+  for (const value of values) {
+    const pathCandidates = new Set<string>([value.replace(/^\/+/, "")]);
+    for (const resolver of resolvers) {
+      const resolved = resolveVaultPath(value, resolver);
+      if (resolved.status === "resolved" && resolved.path) pathCandidates.add(resolved.path);
+      if (resolved.status === "ambiguous") {
+        warnings.push({
+          seedId: seed.id,
+          seedTitle: seed.title,
+          value,
+          matches: resolved.matches,
+        });
+      }
+    }
+
+    for (const candidatePath of pathCandidates) {
+      if (candidatePath.includes("/") || candidatePath.endsWith(".md")) {
+        argSets.push(["backlinks", `path=${candidatePath}`, "format=json"]);
+        if (!candidatePath.endsWith(".md")) {
+          argSets.push(["backlinks", `path=${candidatePath}.md`, "format=json"]);
+        }
+      }
+      const base = basename(candidatePath, ".md");
+      if (base) argSets.push(["backlinks", `file=${base}`, "format=json"]);
+    }
+  }
+
+  argSets.push(["backlinks", `file=${seed.title}`, "format=json"]);
+  return {
+    argSets: uniqueArgSets(argSets),
+    warnings,
+  };
+}
+
 export async function expandBacklinkCandidates(
   seeds: InsightSession["memoryCandidates"],
   session: InsightSession,
   ctx: ExtensionCommandContext,
   signal?: AbortSignal,
-): Promise<InsightSession["memoryCandidates"]> {
+): Promise<{
+  candidates: InsightSession["memoryCandidates"];
+  resolutionWarnings: BacklinkResolutionWarning[];
+}> {
   const command = obsidianCommand();
   const backlinkCandidates: InsightSession["memoryCandidates"] = [];
+  const resolutionWarnings: BacklinkResolutionWarning[] = [];
   const seen = new Set<string>();
 
   for (const seed of seeds.slice(0, BACKLINK_SEED_LIMIT)) {
-    const target = seed.slug || seed.title;
-    if (!target) continue;
-    const backlinkArgSets =
-      seed.slug?.includes("/") || seed.slug?.endsWith(".md")
-        ? [
-            ["backlinks", `path=${seed.slug}`, "format=json"],
-            ...(seed.slug.endsWith(".md") ? [] : [["backlinks", `path=${seed.slug}.md`, "format=json"]]),
-            ["backlinks", `file=${seed.title}`, "format=json"],
-          ]
-        : [["backlinks", `file=${target}`, "format=json"]];
+    const backlinkResolution = obsidianBacklinkArgSets(seed, ctx.cwd);
+    resolutionWarnings.push(...backlinkResolution.warnings);
 
     let backlinks: ObsidianBacklink[] = [];
-    for (const args of backlinkArgSets) {
+    for (const args of backlinkResolution.argSets) {
       const result = await runCommand(command, args, ctx, signal);
       if (result.killed || result.code !== 0 || !result.stdout.trim()) continue;
       backlinks = parseBacklinksOutput(result.stdout, { id: seed.id, title: seed.title });
@@ -477,11 +538,19 @@ export async function expandBacklinkCandidates(
         session,
       );
       backlinkCandidates.push(candidate);
-      if (backlinkCandidates.length >= BACKLINK_CANDIDATE_LIMIT) return backlinkCandidates;
+      if (backlinkCandidates.length >= BACKLINK_CANDIDATE_LIMIT) {
+        return {
+          candidates: backlinkCandidates,
+          resolutionWarnings,
+        };
+      }
     }
   }
 
-  return backlinkCandidates;
+  return {
+    candidates: backlinkCandidates,
+    resolutionWarnings,
+  };
 }
 
 export function parseMemorySearchCandidates(
@@ -566,6 +635,8 @@ export function toMemoryCandidate(candidate: MemorySearchCandidate, session: Ins
     searchSignals: {
       queryText: candidate.queryText,
       rank: candidate.rank,
+      queryKind: candidate.queryKind,
+      queryKinds: candidate.queryKinds ?? (candidate.queryKind ? [candidate.queryKind] : undefined),
       source: candidate.source,
       sources: candidate.sources ?? (candidate.source ? [candidate.source] : undefined),
       expansionFrom: candidate.expansionFrom,
@@ -603,12 +674,15 @@ export function mergeCandidateEvidence(
     if (!existing) {
       const sources = candidate.searchSignals?.sources ??
         (candidate.searchSignals?.source ? [candidate.searchSignals.source] : undefined);
+      const queryKinds = candidate.searchSignals?.queryKinds ??
+        (candidate.searchSignals?.queryKind ? [candidate.searchSignals.queryKind] : undefined);
       const expansionFroms = candidate.searchSignals?.expansionFroms ??
         (candidate.searchSignals?.expansionFrom ? [candidate.searchSignals.expansionFrom] : undefined);
       const next = {
         ...candidate,
         searchSignals: {
           ...candidate.searchSignals,
+          queryKinds,
           sources,
           expansionFroms,
         },
@@ -625,6 +699,10 @@ export function mergeCandidateEvidence(
       sources: Array.from(new Set([
         ...(existingSignals.sources ?? (existingSignals.source ? [existingSignals.source] : [])),
         ...(incomingSignals.sources ?? (incomingSignals.source ? [incomingSignals.source] : [])),
+      ])),
+      queryKinds: Array.from(new Set([
+        ...(existingSignals.queryKinds ?? (existingSignals.queryKind ? [existingSignals.queryKind] : [])),
+        ...(incomingSignals.queryKinds ?? (incomingSignals.queryKind ? [incomingSignals.queryKind] : [])),
       ])),
       expansionFroms: Array.from(new Set([
         ...(existingSignals.expansionFroms ?? (existingSignals.expansionFrom ? [existingSignals.expansionFrom] : [])),

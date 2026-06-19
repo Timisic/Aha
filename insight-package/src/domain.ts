@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
@@ -11,6 +11,18 @@ export type MemoryCandidateSource =
   | "qmd_vsearch"
   | "qmd_search"
   | "obsidian_backlink";
+export type Stage = "memory" | "memory_review" | "review_grill" | "summary" | "complete";
+export type MemoryQueryKind = "raw" | "abstracted_judgment" | "contextual" | "explicit_cue";
+export type MemoryQueryInputKind =
+  | MemoryQueryKind
+  | "open-ended"
+  | "constraint"
+  | "challenge"
+  | "support"
+  | "bounds";
+export type MemoryRelation = "supports" | "challenges" | "bounds" | "resembles";
+export type MemoryReviewStatus = "accepted" | "rejected" | "uncertain";
+export type ExplicitCueStatus = "found_top_k" | "found_pool" | "not_found" | "ambiguous";
 
 export interface QmdStructuredQuery {
   intent: string;
@@ -20,6 +32,7 @@ export interface QmdStructuredQuery {
 }
 
 export interface InsightSession {
+  schemaVersion: number;
   id: string;
   stage: Stage;
   originCwd: string;
@@ -28,6 +41,8 @@ export interface InsightSession {
   sourceNote?: {
     path?: string;
     content: string;
+    contentHash?: string;
+    headingsSnapshot?: string[];
   };
   memoryQueries: Array<{
     text: string;
@@ -37,22 +52,22 @@ export interface InsightSession {
   }>;
   explicitMemoryCues: string[];
   missingExplicitCues: string[];
-  memoryCandidates: Array<{
-    id: string;
-    title: string;
-    slug?: string;
-    relation: MemoryRelation;
-    reason: string;
-    whyReadFirst: string;
-    searchSignals?: {
-      queryText?: string;
-      rank?: number;
-      source?: MemoryCandidateSource;
-      sources?: MemoryCandidateSource[];
-      expansionFrom?: string;
-      expansionFroms?: string[];
-      expansionType?: "backlink";
-    };
+  explicitCueResults: Array<{
+    cue: string;
+    status: ExplicitCueStatus;
+    candidateId?: string;
+    rank?: number;
+    matchedCandidateIds?: string[];
+  }>;
+  memoryCandidatePool: MemoryCandidate[];
+  memoryCandidates: MemoryCandidate[];
+  memoryReviews: Array<{
+    candidateId: string;
+    status: MemoryReviewStatus;
+    rationale?: string;
+    reviewedAt: string;
+    userTurnRef?: string;
+    userTextHash?: string;
   }>;
   usedMemoryIds: string[];
   newInsights: Array<{
@@ -67,13 +82,45 @@ export interface InsightSession {
     createdAt: string;
   }>;
   candidateJudgments: Array<{
+    id?: string;
     text: string;
-    userStatus: "pending" | "accepted" | "rejected" | "revised";
+    status?: "pending" | "accepted" | "rejected" | "revised";
+    userStatus?: "pending" | "accepted" | "rejected" | "revised";
+    evidenceMemoryIds?: string[];
+    proposedAt?: string;
+    userTurnRef?: string;
+    replacesId?: string;
   }>;
+  summaryReadiness?: {
+    confirmedAt: string;
+    userText: string;
+    userTurnRef?: string;
+    userTextHash: string;
+  };
   summaryDraft?: string;
   unresolvedQuestions: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface MemoryCandidate {
+    id: string;
+    title: string;
+    slug?: string;
+    relation: MemoryRelation;
+    reason: string;
+    whyReadFirst: string;
+    searchSignals?: {
+      queryText?: string;
+      rank?: number;
+      queryKind?: MemoryQueryKind;
+      queryKinds?: MemoryQueryKind[];
+      source?: MemoryCandidateSource;
+      sources?: MemoryCandidateSource[];
+      expansionFrom?: string;
+      expansionFroms?: string[];
+      expansionType?: "backlink";
+    };
 }
 
 export interface ActiveSession {
@@ -101,8 +148,30 @@ export interface InsightUpdateStateParams {
   candidateJudgment?: {
     text: string;
     userStatus?: "pending" | "accepted" | "rejected" | "revised";
+    evidenceMemoryIds?: string[];
+    userTurnRef?: string;
+    replacesId?: string;
   };
+  memoryReview?: {
+    candidateId: string;
+    status: MemoryReviewStatus;
+    rationale?: string;
+    userText?: string;
+    userTurnRef?: string;
+  };
+  memoryReviews?: Array<{
+    candidateId: string;
+    status: MemoryReviewStatus;
+    rationale?: string;
+    userText?: string;
+    userTurnRef?: string;
+  }>;
   summaryDraft?: string;
+}
+
+export interface InsightConfirmReadinessParams {
+  userText: string;
+  userTurnRef?: string;
 }
 
 export interface InsightSearchMemoryParams {
@@ -124,6 +193,8 @@ export interface MemorySearchCandidate {
   queryText: string;
   source?: MemoryCandidateSource;
   sources?: MemoryCandidateSource[];
+  queryKind?: MemoryQueryKind;
+  queryKinds?: MemoryQueryKind[];
   expansionFrom?: string;
   expansionFroms?: string[];
   expansionType?: "backlink";
@@ -154,6 +225,7 @@ export interface InsightSaveSummaryParams {
   summaryDraft: string;
   usedMemoryIds?: string[];
   unresolvedQuestions?: string[];
+  preserveSourceStructure?: boolean;
   markComplete?: boolean;
 }
 
@@ -205,10 +277,16 @@ export const SESSION_ID_BYTES = 8;
 export const COMMAND_OUTPUT_MAX_BYTES = Number(process.env.INSIGHT_COMMAND_OUTPUT_MAX_BYTES) || 1_000_000;
 export const SOURCE_NOTE_MAX_BYTES = Number(process.env.INSIGHT_SOURCE_NOTE_MAX_BYTES) || 512_000;
 export const STAGES = new Set<Stage>(["memory", "memory_review", "review_grill", "summary", "complete"]);
+export const INSIGHT_STATE_SCHEMA_VERSION = 1;
 
 export function shouldExpandBacklinks(): boolean {
   const value = process.env.INSIGHT_EXPAND_BACKLINKS?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes" || value === "on";
+  if (!value) return true;
+  return !["0", "false", "no", "off"].includes(value);
+}
+
+export function textHash(input: string): string {
+  return createHash("sha256").update(input).digest("hex").slice(0, 32);
 }
 
 export function nowIso(): string {

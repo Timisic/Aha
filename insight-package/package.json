@@ -9,6 +9,8 @@
   ],
   "scripts": {
     "build": "bun build extensions/insight.ts --target=node --outfile=/tmp/pi-insight-package-build.js",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm test && npm run test:ultraqa && npm run build",
     "test": "INSIGHT_EXTENSION_PATH=$PWD/extensions/insight.ts node tests/test-insight-extension.mjs",
     "test:ultraqa": "INSIGHT_EXTENSION_PATH=$PWD/extensions/insight.ts node tests/ultraqa-insight-extension.mjs",
     "smoke:offline": "pi --verbose --offline --no-tools --no-extensions -e . --print \"\""
@@ -22,5 +24,9 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "typescript": "^5.9.0"
   }
 }

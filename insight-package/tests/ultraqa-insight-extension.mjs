@@ -231,7 +231,8 @@ try {
       "- 反馈是经验差距的显影装置",
     ].join("\\n"),
   );
-  let { statePath, state } = stateFromIndex(0);
+  let { entries: normalEntries, statePath, state } = stateFromIndex(0);
+  const normalSessionDir = normalEntries[0].dir;
   assert.equal(state.originCwd, cwdA);
   assert.equal(state.stage, "memory");
   assert.deepEqual(state.explicitMemoryCues, ["反馈是经验差距的显影装置"]);
@@ -289,6 +290,31 @@ try {
   assert.equal(state.memoryQueries[2].kind, "contextual");
   record("ADV-E2E-002", "pass", "serialized qmd search populates candidates and stops at memory review");
 
+  const missingCue = createHarness(cwdA, "ok");
+  await startSession(
+    missingCue,
+    [
+      "Insight: missing cue case",
+      "",
+      "Context: ensure missing explicit cue is visible",
+      "",
+      "Connected History Notes:",
+      "- 完全不存在的旧笔记线索",
+    ].join("\\n"),
+  );
+  const missingCueResult = await missingCue.tools.get("insight_search_memory").execute(
+    "missing-cue-search",
+    { queries: [{ text: "missing cue", kind: "raw" }], limit: 4 },
+    undefined,
+    undefined,
+    missingCue.ctx,
+  );
+  const missingCueState = stateFromIndex(0).state;
+  assert.ok(missingCueResult.content[0].text.includes("Missing explicit cues"));
+  assert.deepEqual(missingCueState.missingExplicitCues, ["完全不存在的旧笔记线索"]);
+  assert.equal(missingCueState.explicitCueResults[0].status, "not_found");
+  record("ADV-E2E-002D", "pass", "missing explicit cue is displayed and persisted");
+
   const resumeHarness = createHarness(cwdA, "ok", [
     {
       type: "custom",
@@ -314,14 +340,32 @@ try {
 
   await normal.tools.get("insight_update_state").execute(
     "enter-grill",
-    { stage: "review_grill" },
+    {
+      stage: "review_grill",
+      memoryReview: {
+        candidateId: state.memoryCandidates[0].id,
+        status: "accepted",
+        rationale: "scripted user accepted this memory before grill",
+        userText: "这条可以用，进入 grill。",
+      },
+      memoryReviews: [
+        {
+          candidateId: state.memoryCandidates[1].id,
+          status: "rejected",
+          rationale: "scripted user rejected this distractor before grill",
+          userText: "这条先不用。",
+        },
+      ],
+    },
     undefined,
     undefined,
     normal.ctx,
   );
   state = JSON.parse(readFileSync(statePath, "utf-8"));
   assert.equal(state.stage, "review_grill");
-  const grillBriefingPath = join(stateFromIndex(0).entries[0].dir, "grill-briefing.md");
+  assert.ok(state.memoryReviews.some((review) => review.status === "accepted"));
+  assert.ok(state.memoryReviews.some((review) => review.status === "rejected"));
+  const grillBriefingPath = join(normalSessionDir, "grill-briefing.md");
   assert.ok(existsSync(grillBriefingPath));
   assert.ok(!readFileSync(grillBriefingPath, "utf-8").includes("multiple-choice"));
   const compactGrillMessages = await normal.emitContext([
@@ -343,8 +387,9 @@ try {
         answer: "不，继续按流程 review。",
       },
       candidateJudgment: {
-        text: "反馈的价值在于让判断暴露给修正。",
+        text: "反馈的价值在于让判断暴露给修正；边界是反馈密度不足时只会制造噪声。",
         userStatus: "pending",
+        evidenceMemoryIds: [state.memoryCandidates[0].id],
       },
       newInsight: {
         text: "反馈不是评价，而是显影",
@@ -360,20 +405,44 @@ try {
   assert.equal(state.stage, "review_grill");
   assert.equal(state.grillTurns.length, 1);
   assert.ok(state.grillTurns[0].question.includes("删除 ~/.ssh"));
+  assert.ok(state.candidateJudgments[0].text.includes("边界"));
+  assert.deepEqual(state.candidateJudgments[0].evidenceMemoryIds, [state.memoryCandidates[0].id]);
   record("ADV-E2E-003", "pass", "prompt injection text is recorded as text, not executed");
 
   await normal.tools.get("insight_append_grill_context").execute("append", {
     heading: "Stable Term",
     body: "反馈在这里指显影装置，不是外部评价。",
   });
-  const grillContext = readFileSync(join(stateFromIndex(0).entries[0].dir, "grill-context.md"), "utf-8");
+  const grillContext = readFileSync(join(normalSessionDir, "grill-context.md"), "utf-8");
   assert.ok(grillContext.includes("反馈在这里指显影装置"));
   record("ADV-E2E-004", "pass", "grill context appends process note");
+
+  await assert.rejects(
+    normal.tools.get("insight_save_summary").execute(
+      "summary-before-readiness",
+      {
+        summaryDraft: "# Summary Draft\n\n原判断 -> 新判断：反馈是显影装置。",
+        usedMemoryIds: [state.memoryCandidates[0].id],
+      },
+      undefined,
+      undefined,
+      normal.ctx,
+    ),
+    /insight_confirm_readiness/,
+  );
+
+  await normal.tools.get("insight_confirm_readiness").execute(
+    "readiness",
+    { userText: "可以总结了" },
+    undefined,
+    undefined,
+    normal.ctx,
+  );
 
   await normal.tools.get("insight_save_summary").execute(
     "summary",
     {
-      summaryDraft: "# Summary Draft\n\n原判断 -> 新判断：反馈是显影装置。",
+      summaryDraft: "# Summary Draft\n\n原判断 -> 新判断：反馈是显影装置。\n\nBoundary: 反馈密度不足时可能只是噪声。\n\nUnresolved questions: 如何判断反馈密度足够？",
       usedMemoryIds: [state.memoryCandidates[0].id],
       unresolvedQuestions: ["如何判断反馈密度足够？"],
       markComplete: true,
@@ -384,7 +453,10 @@ try {
   );
   state = JSON.parse(readFileSync(statePath, "utf-8"));
   assert.equal(state.stage, "complete");
-  assert.ok(existsSync(join(stateFromIndex(0).entries[0].dir, "summary-draft.md")));
+  assert.ok(state.summaryDraft.includes("原判断 -> 新判断"));
+  assert.ok(state.summaryDraft.includes("Boundary:"));
+  assert.ok(state.summaryDraft.includes("Unresolved questions:"));
+  assert.ok(existsSync(join(normalSessionDir, "summary-draft.md")));
   record("ADV-E2E-005", "pass", "summary save marks complete and writes file");
 
   const cross = createHarness(cwdB, "ok");

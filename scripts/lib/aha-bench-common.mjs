@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { expandHome } from "./aha-bench-evaluation.mjs";
+import { expandHome, qmdExpectedPath } from "./aha-bench-evaluation.mjs";
+import {
+  buildVaultPathResolver,
+  resolveVaultPath,
+} from "../../insight-package/src/path-resolver.js";
 
 export {
   compactLine,
@@ -94,11 +98,27 @@ export function validateCase(caseItem) {
     throw new Error(`${caseId}: provide either insight_input, or source_note_path with an optional insight_thought.`);
   }
   assertArrayOfStrings(caseItem.must_recall, "must_recall", caseId);
-  if (caseItem.must_recall.length < 1 || caseItem.must_recall.length > 8) {
-    throw new Error(`${caseId}: must_recall should contain 1-8 files.`);
+  if (!caseItem.expected_no_recall && (caseItem.must_recall.length < 1 || caseItem.must_recall.length > 8)) {
+    throw new Error(`${caseId}: must_recall should contain 1-8 files unless expected_no_recall is true.`);
+  }
+  if (caseItem.expected_no_recall && caseItem.must_recall.length !== 0) {
+    throw new Error(`${caseId}: expected_no_recall cases should leave must_recall empty.`);
   }
   if (caseItem.nice_to_have !== undefined) {
     assertArrayOfStrings(caseItem.nice_to_have, "nice_to_have", caseId);
+  }
+  const goldIdentities = [...caseItem.must_recall, ...(caseItem.nice_to_have ?? [])].map(qmdExpectedPath);
+  const duplicates = goldIdentities.filter((identity, index) => goldIdentities.indexOf(identity) !== index);
+  if (duplicates.length > 0) {
+    throw new Error(`${caseId}: benchmark gold paths contain duplicate canonical identities: ${Array.from(new Set(duplicates)).join(", ")}`);
+  }
+  const vaultRoot = expandHome(process.env.AHA_BENCH_VAULT_ROOT || "/Users/hong/Obsidian Notes");
+  const resolver = buildVaultPathResolver(vaultRoot);
+  for (const goldPath of [...caseItem.must_recall, ...(caseItem.nice_to_have ?? [])]) {
+    const resolved = resolveVaultPath(goldPath, resolver);
+    if (resolved.status === "ambiguous") {
+      throw new Error(`${caseId}: ambiguous benchmark gold path ${goldPath}: ${resolved.matches.join(", ")}`);
+    }
   }
 }
 

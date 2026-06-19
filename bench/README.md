@@ -35,12 +35,14 @@ Do not hand-write search keywords as the source of truth. The source of truth is
 Benchmark queries are generated from the resolved raw input only; they do not read `must_recall` or `nice_to_have`, and cases should not contain hand-tuned query fields.
 By default the scripts ask a query-generation agent to translate raw input into `intent:` / `lex:` / `vec:` / `hyde:`. The old deterministic extraction rules remain as fallback for offline or failed agent runs.
 
+Keep the active suite at 12-20 real cases. It should cover semantic-only inputs, exact explicit cues, missing explicit cues, challenge memories, bounds memories, cross-domain resemblance, no-related-memory negatives, source-note self-hits, duplicate basenames, aliases, absolute paths, `qmd://` paths, long source notes, second-round retrieval, QMD partial failure, query-agent fallback, and reranker fallback. Cases should be realistic `/insight` inputs, not synthetic query strings.
+
 Path notes:
 
 - `source_note_path` can be an absolute path, a path relative to this `bench/` folder, or a path under the Obsidian vault root.
 - By default the vault root is `/Users/hong/Obsidian Notes`.
 - Override it with `AHA_BENCH_VAULT_ROOT=/path/to/vault` if needed.
-- `must_recall` paths can be absolute or collection-relative. QMD bench compares path suffixes, so either form is usually fine.
+- `must_recall` paths can be absolute or collection-relative, but they must resolve to a unique canonical vault-relative identity. The scorer no longer accepts suffix-only matches because duplicate basenames can create false hits.
 
 Minimal path-based case:
 
@@ -135,6 +137,36 @@ The L2 report marks each must-recall note as `qmd_query`, `qmd_vsearch`, `qmd_se
 
 L2 still does not evaluate the final Agent presentation. It does not judge whether the final `Note | Relation | Hit | Why` table is persuasive; it checks whether required notes are present after agent reranking.
 
+Run the standard ablation suite:
+
+```bash
+node scripts/bench/run-pipeline-ablations.mjs
+```
+
+This writes one child report per variant under `bench/reports/latest/pipeline-ablations/` and a summary at `bench/reports/latest/pipeline-ablations.json`. The variants compare:
+
+- `raw-only` versus multi-query retrieval.
+- backlinks off versus on.
+- `reranker none` versus the configured reranker.
+- first-10 backlink seeds versus fair query-kind seeds.
+- source-note filter off versus on.
+
+Use `-- <pipeline options>` to pass options through to every child run, for example:
+
+```bash
+node scripts/bench/run-pipeline-ablations.mjs -- --query-generator rules --reranker none
+```
+
+## L3 Core Loop
+
+Run the scripted human-in-the-loop contract benchmark:
+
+```bash
+node scripts/bench/run-l3-core-loop.mjs
+```
+
+The L3 wrapper runs the deterministic UltraQA extension harness and writes `bench/reports/latest/l3-core-loop.json` plus a timestamped archive. It verifies the tool-level contract around candidate display, user memory review, readiness gating, summary artifact creation, source-note non-mutation, resume, and second memory search.
+
 ## First-Version Metrics
 
 Primary metric:
@@ -144,14 +176,21 @@ Primary metric:
 
 Review metric:
 
+- `target_coverage_at_k`: must-recall hits divided by the number of expected targets that could fit in top K.
 - `found_must_recall_ranks`: sorted ranks for found must-recall notes, such as `[2, 3, 7, 10]`.
 - `must_recall_ranks`: file-by-file rank details for each must-recall note.
-- `worst_must_rank`: the latest rank among the must-recall notes that were found.
+- `worst_must_rank`: the latest must-recall rank, with a miss counted as `K + 1` so fully missed cases still penalize averages.
+- `all_must_recalled_at_k`: whether every must-recall note appeared inside top K.
+- `missing_must_count`: how many must-recall notes were not found at all.
 - `nice_to_have.recall_at_k`: how many useful-but-not-required notes appeared in the nice-to-have top K, default `20`.
 - `nice_to_have.found_nice_to_have_ranks`: sorted ranks for found nice-to-have notes.
 
 Debug field:
 
 - `unmatched_expected_files`: which must-recall notes were missed.
+- `expanded_pool.dropped_from_final_top_k`: must-recall notes present in the expanded pool but missing from final top-K.
 
-Precision and F1 are still shown by QMD, but they are not first-version decision metrics because personal-note relevance is open-ended.
+Precision and F1 are still shown by QMD, but they are not first-version decision metrics because personal-note relevance is open-ended. `precision_at_k` uses the standard returned-results denominator; `target_coverage_at_k` is usually the more useful diagnostic for this recall benchmark.
+
+Reports include reproducibility metadata such as git commit, pipeline/prompt versions, agent bins/versions/models, cache paths, QMD/Obsidian CLI versions, and vault root. Agent cache keys include the prompt version, agent binary, and model so changing models cannot silently reuse stale query/rerank outputs.
+L2 reports also include the configured query mode, backlink seed strategy, source-note filter status, a vault markdown snapshot hash, index/collection metadata, cache hit/miss counts inferred from agent generation provenance, fallback counts, and QMD/Obsidian timeout counts.

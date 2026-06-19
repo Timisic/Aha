@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, relative, resolve } from "node:path";
 import {
   collectResultItems,
-  compactLine,
   filterSourceNoteFromResults,
   pathsMatch,
   pickFirstString,
-  qmdExpectedPath,
   readBenchmarkCases,
   resolveQmdQueriesForCase,
   scoreNiceToHave,
@@ -19,6 +18,10 @@ import {
   textFromUnknown,
 } from "../lib/aha-bench-common.mjs";
 import { rerankCandidatesForCase } from "../lib/aha-agent-rerank.mjs";
+import {
+  buildVaultPathResolver as sharedBuildVaultPathResolver,
+  resolveVaultPath as sharedResolveVaultPath,
+} from "../../insight-package/src/path-resolver.js";
 
 const DEFAULTS = {
   cases: "bench/aha-memory-cases.json",
@@ -47,6 +50,9 @@ const DEFAULTS = {
   rerankAgentTimeoutMs: 300_000,
   includeDraft: false,
   backlinks: true,
+  queryMode: "multi",
+  seedStrategy: "fair",
+  sourceNoteFilter: true,
 };
 
 function usage() {
@@ -65,6 +71,8 @@ function usage() {
     "  --seed-limit <n>               QMD seeds used for backlinks, default 10",
     "  --backlinks-per-seed <n>       Default 5",
     "  --backlink-limit <n>           Default 20",
+    "  --qmd-timeout-ms <n>           Default: 90000",
+    "  --obsidian-timeout-ms <n>      Default: 8000",
     "  --query-generator <agent|rules> Default: agent",
     "  --query-agent-bin <bin>         Default: codex",
     "  --query-agent-model <model>",
@@ -81,6 +89,9 @@ function usage() {
     "  --no-rerank-agent-fallback",
     "  --include-draft                Include draft cases",
     "  --no-backlinks                 Disable Obsidian backlink expansion",
+    "  --query-mode <multi|raw-only>   Default: multi",
+    "  --seed-strategy <fair|first>    Backlink seed strategy, default fair",
+    "  --no-source-note-filter        Keep source note self-hits in scoring",
   ].join("\n");
 }
 
@@ -96,6 +107,10 @@ function parseArgs() {
     }
     if (arg === "--no-backlinks") {
       options.backlinks = false;
+      continue;
+    }
+    if (arg === "--no-source-note-filter") {
+      options.sourceNoteFilter = false;
       continue;
     }
     if (arg === "--no-query-agent-cache") {
@@ -157,8 +172,17 @@ function parseArgs() {
       case "--backlink-limit":
         options.backlinkLimit = Number(value);
         break;
+      case "--qmd-timeout-ms":
+        options.qmdTimeoutMs = Number(value);
+        break;
+      case "--obsidian-timeout-ms":
+        options.obsidianTimeoutMs = Number(value);
+        break;
       case "--query-generator":
         options.queryGenerator = value;
+        break;
+      case "--query-mode":
+        options.queryMode = value;
         break;
       case "--query-agent-bin":
         options.queryAgentBin = value;
@@ -187,15 +211,24 @@ function parseArgs() {
       case "--rerank-agent-timeout-ms":
         options.rerankAgentTimeoutMs = Number(value);
         break;
+      case "--seed-strategy":
+        options.seedStrategy = value;
+        break;
       default:
         throw new Error(`Unknown option: ${arg}`);
     }
   }
 
-  for (const key of ["limit", "seedLimit", "backlinksPerSeed", "backlinkLimit", "queryAgentTimeoutMs", "rerankAgentTimeoutMs"]) {
+  for (const key of ["limit", "seedLimit", "backlinksPerSeed", "backlinkLimit", "qmdTimeoutMs", "obsidianTimeoutMs", "queryAgentTimeoutMs", "rerankAgentTimeoutMs"]) {
     if (!Number.isFinite(options[key]) || options[key] < 1) {
       throw new Error(`${key} must be a positive number.`);
     }
+  }
+  if (!["multi", "raw-only"].includes(options.queryMode)) {
+    throw new Error("queryMode must be multi or raw-only.");
+  }
+  if (!["fair", "first"].includes(options.seedStrategy)) {
+    throw new Error("seedStrategy must be fair or first.");
   }
   return options;
 }
@@ -269,67 +302,16 @@ function vaultRoot() {
   return resolve(process.env.AHA_BENCH_VAULT_ROOT?.trim() || "/Users/hong/Obsidian Notes");
 }
 
-function listMarkdownFiles(root, dir = root) {
-  const files = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name.startsWith(".")) continue;
-    const fullPath = resolve(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...listMarkdownFiles(root, fullPath));
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-      files.push(relative(root, fullPath).replace(/\\/g, "/"));
-    }
-  }
-  return files;
-}
-
-function mapSet(map, key, value) {
-  const normalizedKey = String(key ?? "").toLowerCase();
-  if (normalizedKey && !map.has(normalizedKey)) map.set(normalizedKey, value);
-}
-
 function buildVaultResolver() {
-  const root = vaultRoot();
-  const files = listMarkdownFiles(root);
-  const byRelative = new Map();
-  const bySlug = new Map();
-  const byBasename = new Map();
-
-  for (const file of files) {
-    mapSet(byRelative, stripPathDecorations(file), file);
-    mapSet(bySlug, qmdExpectedPath(file), file);
-    mapSet(byBasename, basename(file, ".md"), file);
-  }
-
-  return { root, files, byRelative, bySlug, byBasename };
+  return sharedBuildVaultPathResolver(vaultRoot());
 }
 
 function candidateVaultRelativePath(path, resolver) {
-  const rawValue = String(path ?? "").trim();
-  if (!rawValue) return "";
-
-  const qmdPath = qmdUriPath(rawValue);
-  const cleaned = stripPathDecorations(qmdPath || rawValue);
-  const candidates = [];
-
-  if (isAbsolute(cleaned)) {
-    const rel = relative(resolver.root, cleaned).replace(/\\/g, "/");
-    if (rel && !rel.startsWith("..") && !isAbsolute(rel)) candidates.push(rel);
-  } else {
-    candidates.push(cleaned.replace(/^\/+/, ""));
+  const resolved = sharedResolveVaultPath(path, resolver);
+  if (resolved.status === "resolved") return resolved.path;
+  if (resolved.status === "ambiguous") {
+    throw new Error(`Ambiguous benchmark candidate path: ${path} -> ${resolved.matches.join(", ")}`);
   }
-
-  candidates.push(basename(cleaned, ".md"));
-
-  for (const candidate of candidates) {
-    const relativeMatch = resolver.byRelative.get(stripPathDecorations(candidate).toLowerCase());
-    if (relativeMatch) return relativeMatch;
-    const slugMatch = resolver.bySlug.get(qmdExpectedPath(candidate).toLowerCase());
-    if (slugMatch) return slugMatch;
-    const basenameMatch = resolver.byBasename.get(basename(candidate, ".md").toLowerCase());
-    if (basenameMatch) return basenameMatch;
-  }
-
   return "";
 }
 
@@ -534,6 +516,41 @@ function expandBacklinkCandidates(seeds, caseItem, queryText, options, resolver)
   return { candidates, errors };
 }
 
+function selectQuerySpecs(querySpecs, options) {
+  if (options.queryMode === "multi") return querySpecs;
+  const rawQuery = querySpecs.find((query) => query.kind === "raw");
+  return [rawQuery ?? querySpecs[0]].filter(Boolean);
+}
+
+function seedGroup(candidate) {
+  return candidate.queryKind || candidate.queryCommand || candidate.source || "unknown";
+}
+
+function selectBacklinkSeeds(candidates, options) {
+  if (options.seedStrategy === "first") return candidates.slice(0, options.seedLimit);
+
+  const grouped = new Map();
+  for (const candidate of candidates) {
+    const key = seedGroup(candidate);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(candidate);
+  }
+
+  const groups = Array.from(grouped.values());
+  const selected = [];
+  for (let offset = 0; selected.length < options.seedLimit; offset += 1) {
+    let added = false;
+    for (const group of groups) {
+      if (!group[offset]) continue;
+      selected.push(group[offset]);
+      added = true;
+      if (selected.length >= options.seedLimit) break;
+    }
+    if (!added) break;
+  }
+  return selected;
+}
+
 function mergeCandidates(candidates, limit) {
   const seen = new Set();
   const merged = [];
@@ -671,7 +688,10 @@ function printSummary(report) {
   console.log("");
   console.log(`Report: ${report.report}`);
   console.log(`Cases: ${report.summary.cases}`);
+  console.log(`Query mode: ${report.query_mode}`);
   console.log(`Backlinks: ${report.backlinks_enabled ? "enabled" : "disabled"}`);
+  console.log(`Seed strategy: ${report.seed_strategy}`);
+  console.log(`Source-note filter: ${report.source_note_filter_enabled ? "enabled" : "disabled"}`);
   console.log(`Reranker: ${report.reranker}`);
   console.log("");
 
@@ -705,6 +725,9 @@ function printSummary(report) {
   console.log(`| QMD direct must-recall matches | ${report.summary.qmd_direct_matches} |`);
   console.log(`| backlink must-recall matches | ${report.summary.backlink_matches} |`);
   console.log(`| missing must-recall matches | ${report.summary.missing_matches} |`);
+  console.log(`| expanded pool hits dropped from top-K | ${report.summary.expanded_pool_dropped_topk_count} |`);
+  console.log(`| fallbacks | ${report.diagnostics.fallback_count} |`);
+  console.log(`| timeouts | ${report.diagnostics.timeout_count} |`);
 }
 
 function timestampForPath() {
@@ -720,6 +743,133 @@ function archiveReportPath(reportPath) {
   return resolve("bench/reports/archive", `${prefix}-${timestampForPath()}.json`);
 }
 
+function vaultSnapshotMetadata(root = vaultRoot()) {
+  const hash = createHash("sha256");
+  let markdownFileCount = 0;
+
+  function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const fullPath = resolve(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md")) continue;
+      const relativePath = relative(root, fullPath).replace(/\\/g, "/");
+      const stat = statSync(fullPath);
+      markdownFileCount += 1;
+      hash.update(relativePath);
+      hash.update("\0");
+      hash.update(String(stat.size));
+      hash.update("\0");
+      hash.update(String(Math.floor(stat.mtimeMs)));
+      hash.update("\0");
+    }
+  }
+
+  try {
+    walk(root);
+    return {
+      root,
+      markdown_file_count: markdownFileCount,
+      hash: hash.digest("hex"),
+    };
+  } catch (error) {
+    return {
+      root,
+      markdown_file_count: markdownFileCount,
+      hash: null,
+      error: error.message,
+    };
+  }
+}
+
+function commandOutput(command, args) {
+  const result = spawnSync(command, args, {
+    encoding: "utf-8",
+    timeout: 10_000,
+  });
+  if (result.error || result.status !== 0) return "";
+  return String(result.stdout || result.stderr || "").trim().split(/\r?\n/)[0] ?? "";
+}
+
+function reportMetadata(options) {
+  return {
+    generated_at: new Date().toISOString(),
+    git_commit: commandOutput("git", ["rev-parse", "HEAD"]),
+    git_status_short: commandOutput("git", ["status", "--short"]),
+    pipeline_version: "aha-pipeline-bench-v2",
+    query_prompt_version: "aha-qmd-query-plan-agent-v1",
+    rerank_prompt_version: "aha-agent-rerank-v1",
+    query_agent_bin: options.queryAgentBin,
+    query_agent_version: commandOutput(options.queryAgentBin, ["--version"]),
+    query_agent_model: options.queryAgentModel || null,
+    query_agent_cache: options.queryAgentCache || null,
+    rerank_agent_bin: options.rerankAgentBin,
+    rerank_agent_version: commandOutput(options.rerankAgentBin, ["--version"]),
+    rerank_agent_model: options.rerankAgentModel || null,
+    rerank_agent_cache: options.rerankAgentCache || null,
+    qmd_bin: options.qmd,
+    qmd_version: commandOutput(options.qmd, ["--version"]),
+    obsidian_bin: options.obsidian,
+    obsidian_version: commandOutput(options.obsidian, ["--version"]),
+    vault_root: vaultRoot(),
+    vault_snapshot: vaultSnapshotMetadata(),
+    index_snapshot: {
+      index: options.index,
+      collection: options.collection || null,
+      qmd_bin: options.qmd,
+    },
+  };
+}
+
+function sourceNoteEval(files, sourceNotePath, options) {
+  if (options.sourceNoteFilter) return filterSourceNoteFromResults(files, sourceNotePath);
+  return {
+    files,
+    source_note_rank: null,
+  };
+}
+
+function countBy(results, predicate) {
+  return results.reduce((count, result) => count + (predicate(result) ? 1 : 0), 0);
+}
+
+function countErrors(results, pattern) {
+  let count = 0;
+  for (const result of results) {
+    for (const error of result.pipeline?.errors ?? []) {
+      if (pattern.test(error)) count += 1;
+    }
+  }
+  return count;
+}
+
+function reportDiagnostics(results) {
+  const queryCacheHits = countBy(results, (result) => result.query_generated_by === "agent-cache");
+  const queryAgentRuns = countBy(results, (result) => result.query_generated_by === "agent");
+  const queryFallbacks = countBy(results, (result) => !!result.query_generation_fallback);
+  const rerankCacheHits = countBy(results, (result) => result.pipeline?.rerank_generated_by === "agent-cache");
+  const rerankAgentRuns = countBy(results, (result) => result.pipeline?.rerank_generated_by === "agent");
+  const rerankFallbacks = countBy(results, (result) => !!result.pipeline?.rerank_fallback);
+  const qmdTimeouts = countErrors(results, /qmd query timed out/i);
+  const obsidianTimeouts = countErrors(results, /obsidian backlinks timed out/i);
+
+  return {
+    query_cache_hits: queryCacheHits,
+    query_cache_misses: queryAgentRuns,
+    query_fallbacks: queryFallbacks,
+    rerank_cache_hits: rerankCacheHits,
+    rerank_cache_misses: rerankAgentRuns,
+    rerank_fallbacks: rerankFallbacks,
+    fallback_count: queryFallbacks + rerankFallbacks,
+    qmd_timeout_count: qmdTimeouts,
+    obsidian_timeout_count: obsidianTimeouts,
+    timeout_count: qmdTimeouts + obsidianTimeouts,
+  };
+}
+
 function main() {
   const options = parseArgs();
   const { cases, collection: defaultCollection, expectedInTopK, expectedNiceInTopK } = readBenchmarkCases(options.cases, {
@@ -732,14 +882,15 @@ function main() {
   for (const caseItem of cases) {
     const startedAt = Date.now();
     const generatedQuery = resolveQmdQueriesForCase(caseItem, options);
-    const querySpecs = generatedQuery.queries;
+    const querySpecs = selectQuerySpecs(generatedQuery.queries, options);
     const queryText = querySpecs.map((query) => query.query || query.text || "").join("\n\n---\n\n");
     const qmdRuns = runQmdQueries(querySpecs, collection, options);
     const qmdCandidates = mergeCandidateEvidence(qmdRuns.flatMap((runItem) => runItem.candidates));
     const qmdErrors = qmdRuns.flatMap((runItem) => runItem.errors);
+    const backlinkSeeds = selectBacklinkSeeds(qmdCandidates, options);
 
     const backlinkResult = options.backlinks
-      ? expandBacklinkCandidates(qmdCandidates, caseItem, queryText, options, resolver)
+      ? expandBacklinkCandidates(backlinkSeeds, caseItem, queryText, options, resolver)
       : { candidates: [], errors: [] };
     const expandedPool = mergeCandidateEvidence([...qmdCandidates, ...backlinkResult.candidates]);
     const rerankResult = rerankCandidatesForCase(
@@ -760,9 +911,9 @@ function main() {
     const qmdFiles = candidateFiles(qmdCandidates);
     const pipelineFiles = candidateFiles(finalCandidates);
     const expandedPoolFiles = candidateFiles(expandedPool);
-    const qmdEval = filterSourceNoteFromResults(qmdFiles, sourceNotePath);
-    const pipelineEval = filterSourceNoteFromResults(pipelineFiles, sourceNotePath);
-    const expandedPoolEval = filterSourceNoteFromResults(expandedPoolFiles, sourceNotePath);
+    const qmdEval = sourceNoteEval(qmdFiles, sourceNotePath, options);
+    const pipelineEval = sourceNoteEval(pipelineFiles, sourceNotePath, options);
+    const expandedPoolEval = sourceNoteEval(expandedPoolFiles, sourceNotePath, options);
     const qmdScore = scoreResults(qmdEval.files, caseItem.must_recall, topK);
     const qmdNiceScore = scoreNiceToHave(qmdEval.files, niceToHave, niceTopK);
     const pipelineScore = scoreResults(pipelineEval.files, caseItem.must_recall, topK);
@@ -771,6 +922,9 @@ function main() {
       expandedPoolEval.files,
       caseItem.must_recall,
       Math.max(topK, expandedPool.length || topK),
+    );
+    const expandedPoolDroppedFromTopK = expandedPoolScore.matched_files.filter((file) =>
+      pipelineScore.unmatched_expected_files.includes(file),
     );
     const expandedPoolNiceScore = scoreNiceToHave(
       expandedPoolEval.files,
@@ -795,6 +949,7 @@ function main() {
       query_generated_by: generatedQuery.query_generated_by,
       query_generation_fallback: generatedQuery.query_generation_fallback,
       query_generation_error: generatedQuery.query_generation_error,
+      query_mode: options.queryMode,
       expected_files: caseItem.must_recall,
       expected_in_top_k: topK,
       nice_expected_in_top_k: niceTopK,
@@ -831,6 +986,13 @@ function main() {
         })),
         errors: [...qmdErrors, ...backlinkResult.errors],
       },
+      backlink_seed_strategy: options.seedStrategy,
+      backlink_seeds: backlinkSeeds.map((candidate) => ({
+        title: candidate.title,
+        file: candidatePath(candidate),
+        source: sourceLabel(candidate),
+        queryKind: candidate.queryKind,
+      })),
       backlink_candidates: backlinkResult.candidates.map((candidate) => ({
         title: candidate.title,
         file: candidatePath(candidate),
@@ -845,6 +1007,7 @@ function main() {
         candidate_count: expandedPool.length,
         qmd_candidate_count: qmdCandidates.length,
         backlink_candidate_count: backlinkResult.candidates.length,
+        dropped_from_final_top_k: expandedPoolDroppedFromTopK,
       },
       must_recall_sources: pipelineScore.must_recall_ranks.map((item) => ({
         file: item.file,
@@ -865,6 +1028,7 @@ function main() {
   const report = {
     timestamp: new Date().toISOString(),
     report: options.report,
+    metadata: reportMetadata(options),
     cases: options.cases,
     index: options.index,
     collection,
@@ -873,8 +1037,12 @@ function main() {
     backlinks_per_seed: options.backlinksPerSeed,
     backlink_limit: options.backlinkLimit,
     backlinks_enabled: options.backlinks,
+    query_mode: options.queryMode,
+    seed_strategy: options.seedStrategy,
+    source_note_filter_enabled: options.sourceNoteFilter,
     reranker: options.reranker,
     results,
+    diagnostics: reportDiagnostics(results),
     summary: summarizePipelineEvaluation(results),
   };
 
