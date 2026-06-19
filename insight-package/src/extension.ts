@@ -10,6 +10,8 @@ import { evaluateStageToolPolicy } from "./stage-policy.ts";
 import { recordTrajectoryContextBuilt, recordTrajectoryContextSeen, recordTrajectorySessionRestored, recordTrajectoryToolPolicy } from "./trajectory.ts";
 
 export function registerInsightExtension(pi: ExtensionAPI): void {
+  const globalState = globalThis as { __ahaInsightExtensionRegisterCount?: number };
+  globalState.__ahaInsightExtensionRegisterCount = (globalState.__ahaInsightExtensionRegisterCount ?? 0) + 1;
   const runtime = createInsightRuntime();
 
   pi.on("session_start", (_event, ctx) => {

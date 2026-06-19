@@ -187,7 +187,7 @@ writeFileSync(
 );
 chmodSync(fakeObsidian, 0o755);
 
-const extensionModule = await import(process.env.INSIGHT_EXTENSION_PATH ?? "/Users/hong/.pi/agent/extensions/insight.ts");
+const extensionModule = await import(process.env.INSIGHT_EXTENSION_PATH ?? new URL("../../insight-package/extensions/insight.ts", import.meta.url).href);
 const extension = extensionModule.default;
 
 try {

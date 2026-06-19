@@ -1,0 +1,111 @@
+{
+  "description": "Public synthetic Aha memory benchmark cases with no private vault content.",
+  "version": 1,
+  "collection": "synthetic",
+  "expected_in_top_k": 10,
+  "nice_expected_in_top_k": 12,
+  "cases": [
+    {
+      "id": "synthetic-direct-support",
+      "status": "active",
+      "type": "direct support",
+      "description": "Direct support memory should be recalled for feedback-density insight.",
+      "insight_input": "Insight: feedback density may matter more than effort volume when learning. Context: I want an old note that supports this mechanism.",
+      "must_recall": ["support/direct-support.md"],
+      "nice_to_have": ["source/old-memory.md"],
+      "annotation_note": "Covers direct support."
+    },
+    {
+      "id": "synthetic-challenge",
+      "status": "active",
+      "type": "challenge",
+      "description": "Counterexample memory should challenge the current judgment.",
+      "insight_input": "Insight: more feedback is always better. Context: find a counterexample about bad feedback channels and calibration.",
+      "must_recall": ["challenge/counterexample.md"],
+      "nice_to_have": [],
+      "annotation_note": "Covers challenge/counterexample."
+    },
+    {
+      "id": "synthetic-boundary",
+      "status": "active",
+      "type": "boundary condition",
+      "description": "Boundary memory should preserve no-memory workflow constraints.",
+      "insight_input": "Insight: when a search returns no candidates, the workflow needs an explicit checkpoint instead of pretending memory exists.",
+      "must_recall": ["boundary/quiet-boundary.md"],
+      "nice_to_have": [],
+      "annotation_note": "Covers boundary conditions."
+    },
+    {
+      "id": "synthetic-cross-domain",
+      "status": "active",
+      "type": "cross-domain resemblance",
+      "description": "Cross-domain resemblance should connect garden trellis and thinking scaffold.",
+      "insight_input": "Insight: a thinking scaffold may work like a garden trellis: it guides growth without producing it.",
+      "must_recall": ["resemblance/garden-resemblance.md"],
+      "nice_to_have": [],
+      "annotation_note": "Covers cross-domain resemblance."
+    },
+    {
+      "id": "synthetic-duplicate-basename",
+      "status": "active",
+      "type": "duplicate basenames",
+      "description": "Duplicate basenames should remain distinct in expected paths.",
+      "insight_input": "Insight: duplicate project-note basenames can hide whether I mean mentor review cadence or shipping package smoke checks.",
+      "must_recall": ["duplicates/alpha/project-note.md", "duplicates/beta/project-note.md"],
+      "nice_to_have": [],
+      "annotation_note": "Covers duplicate basenames."
+    },
+    {
+      "id": "synthetic-alias",
+      "status": "active",
+      "type": "aliases",
+      "description": "Alias cue should recall the north-star note.",
+      "insight_input": "Insight: I need a guiding constraint, almost like a compass note, to keep Aha from drifting categories.",
+      "must_recall": ["aliases/north-star.md"],
+      "nice_to_have": [],
+      "annotation_note": "Covers aliases."
+    },
+    {
+      "id": "synthetic-source-self-hit",
+      "status": "active",
+      "type": "source-note self-hit",
+      "description": "Source-note self-hit should be excluded before scoring old memory.",
+      "source_note_path": "source/source-note.md",
+      "insight_thought": "Feedback density should point to old reviewed evidence, not count the current source note as success.",
+      "must_recall": ["source/old-memory.md"],
+      "nice_to_have": ["support/direct-support.md"],
+      "annotation_note": "Covers source-note self-hit filtering."
+    },
+    {
+      "id": "synthetic-explicit-cue-deep",
+      "status": "active",
+      "type": "explicit cue below top-k",
+      "description": "Explicit cue can be deeper than the first few generic candidates.",
+      "insight_input": "Insight: the explicit cue below top-K should still be visible in deterministic benchmark evidence.",
+      "must_recall": ["cues/deep-cue.md"],
+      "nice_to_have": [],
+      "annotation_note": "Covers explicit cue below top-K."
+    },
+    {
+      "id": "synthetic-second-round",
+      "status": "active",
+      "type": "second-round retrieval",
+      "description": "Second-round retrieval fixture should remain in the public suite.",
+      "insight_input": "Insight: after memory review opens a new direction, a second round retrieval can be necessary before summary.",
+      "must_recall": ["second-round/second-round.md"],
+      "nice_to_have": [],
+      "annotation_note": "Covers second-round retrieval."
+    },
+    {
+      "id": "synthetic-no-related-memory",
+      "status": "active",
+      "type": "no-related-memory",
+      "description": "No-related-memory case has no must-recall labels and checks empty-gold scoring.",
+      "insight_input": "Insight: this synthetic case intentionally has no related prior memory and should not tune against private labels.",
+      "expected_no_recall": true,
+      "must_recall": [],
+      "nice_to_have": [],
+      "annotation_note": "Covers no-related-memory."
+    }
+  ]
+}

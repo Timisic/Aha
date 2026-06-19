@@ -1,0 +1,16 @@
+{
+  "name": "public-synthetic-baseline",
+  "version": 1,
+  "cases_file": "bench/synthetic/aha-memory-cases.json",
+  "vault_root": "bench/synthetic/vault",
+  "deterministic": true,
+  "required_modes": ["l1-qmd", "l2-pipeline-reranker-none", "l3-core-loop"],
+  "thresholds": {
+    "l1_min_avg_recall_at_k": 1,
+    "l2_min_avg_pipeline_recall_at_k": 1,
+    "l2_max_missing_matches": 0,
+    "l3_core_loop_ok": true
+  },
+  "private_data_allowed": false,
+  "networked_model_calls_allowed": false
+}

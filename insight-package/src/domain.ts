@@ -22,7 +22,29 @@ export type MemoryQueryInputKind =
   | "bounds";
 export type MemoryRelation = "supports" | "challenges" | "bounds" | "resembles";
 export type MemoryReviewStatus = "accepted" | "rejected" | "uncertain";
+export type MemorySearchOutcome = "candidates_found" | "no_candidates" | "failed";
 export type ExplicitCueStatus = "found_top_k" | "found_pool" | "not_found" | "ambiguous";
+
+export interface UserDecisionProvenance {
+  userTurnRef: string;
+  userTextHash: string;
+  userText?: string;
+  verifiedAt: string;
+}
+
+export interface ReviewedMemoryEvidence extends UserDecisionProvenance {
+  actionId: string;
+  candidateId: string;
+  title: string;
+  slug?: string;
+  relation: MemoryRelation;
+  reason: string;
+  whyReadFirst: string;
+  status: MemoryReviewStatus;
+  rationale?: string;
+  reviewedAt: string;
+  canonicalIdentity?: string;
+}
 
 export interface QmdStructuredQuery {
   intent: string;
@@ -38,6 +60,8 @@ export interface InsightSession {
   originCwd: string;
   rawInsight: string;
   context: string;
+  displayTitle?: string;
+  archivedAt?: string;
   sourceNote?: {
     path?: string;
     content: string;
@@ -59,8 +83,15 @@ export interface InsightSession {
     rank?: number;
     matchedCandidateIds?: string[];
   }>;
+  memorySearchOutcome?: MemorySearchOutcome;
   memoryCandidatePool: MemoryCandidate[];
   memoryCandidates: MemoryCandidate[];
+  candidateTable?: {
+    version: string;
+    createdAt: string;
+    candidateIds: string[];
+  };
+  reviewedMemoryEvidence: ReviewedMemoryEvidence[];
   memoryReviews: Array<{
     candidateId: string;
     status: MemoryReviewStatus;
@@ -68,14 +99,22 @@ export interface InsightSession {
     reviewedAt: string;
     userTurnRef?: string;
     userTextHash?: string;
+    actionId?: string;
   }>;
+  noRelevantMemory?: UserDecisionProvenance & {
+    actionId: string;
+    confirmedAt: string;
+  };
   usedMemoryIds: string[];
+  appliedActionIds: string[];
   newInsights: Array<{
+    actionId?: string;
     text: string;
     openedDirection: boolean;
     triggeredMemorySearch: boolean;
   }>;
   grillTurns: Array<{
+    actionId?: string;
     question: string;
     answer?: string;
     resultingInsight?: string;
@@ -89,13 +128,18 @@ export interface InsightSession {
     evidenceMemoryIds?: string[];
     proposedAt?: string;
     userTurnRef?: string;
+    userTextHash?: string;
+    confirmedAt?: string;
+    actionId?: string;
     replacesId?: string;
   }>;
   summaryReadiness?: {
+    actionId?: string;
     confirmedAt: string;
     userText: string;
     userTurnRef?: string;
     userTextHash: string;
+    verifiedAt?: string;
   };
   summaryDraft?: string;
   unresolvedQuestions: string[];
@@ -107,6 +151,11 @@ export interface MemoryCandidate {
     id: string;
     title: string;
     slug?: string;
+    canonicalPath?: string;
+    canonicalId?: string;
+    identityStatus?: "resolved" | "ambiguous" | "unresolved";
+    identityMatches?: string[];
+    aliases?: string[];
     relation: MemoryRelation;
     reason: string;
     whyReadFirst: string;
@@ -150,6 +199,7 @@ export interface InsightUpdateStateParams {
     text: string;
     userStatus?: "pending" | "accepted" | "rejected" | "revised";
     evidenceMemoryIds?: string[];
+    userText?: string;
     userTurnRef?: string;
     replacesId?: string;
   };
@@ -175,6 +225,11 @@ export interface InsightConfirmReadinessParams {
   userTurnRef?: string;
 }
 
+export interface InsightConfirmNoRelevantMemoryParams {
+  userText: string;
+  userTurnRef?: string;
+}
+
 export interface InsightSearchMemoryParams {
   queries: Array<{
     text?: string;
@@ -189,6 +244,11 @@ export interface MemorySearchCandidate {
   id: string;
   title: string;
   slug?: string;
+  canonicalPath?: string;
+  canonicalId?: string;
+  identityStatus?: "resolved" | "ambiguous" | "unresolved";
+  identityMatches?: string[];
+  aliases?: string[];
   content?: string;
   rank?: number;
   queryText: string;
@@ -210,11 +270,33 @@ export interface ObsidianBacklink {
   sourceTitle: string;
 }
 
+export type ProviderOutcomeStatus =
+  | "ok"
+  | "empty"
+  | "timeout"
+  | "cancelled"
+  | "unavailable"
+  | "invalid_output"
+  | "failed"
+  | "partial";
+
 export interface CommandResult {
   stdout: string;
   stderr: string;
   code: number | null;
   killed: boolean;
+  cancelled?: boolean;
+  timedOut?: boolean;
+}
+
+export interface ProviderOutcome<T> {
+  status: ProviderOutcomeStatus;
+  value: T;
+  diagnostics: string[];
+  command?: string;
+  durationMs?: number;
+  timedOut?: boolean;
+  cancelled?: boolean;
 }
 
 export interface InsightAppendGrillContextParams {
@@ -271,12 +353,17 @@ export const GRILL_INSIGHT_PATH = join(
 );
 export const QMD_TIMEOUT_MS = 90_000;
 export const OBSIDIAN_TIMEOUT_MS = 8_000;
+export const RETRIEVAL_DEADLINE_MS = Number(process.env.INSIGHT_RETRIEVAL_DEADLINE_MS) || QMD_TIMEOUT_MS;
+export const QMD_QUERY_CONCURRENCY = Math.max(1, Number(process.env.INSIGHT_QMD_QUERY_CONCURRENCY) || 3);
+export const BACKLINK_CONCURRENCY = Math.max(1, Number(process.env.INSIGHT_BACKLINK_CONCURRENCY) || 4);
+export const PROCESS_KILL_GRACE_MS = Math.max(25, Number(process.env.INSIGHT_PROCESS_KILL_GRACE_MS) || 250);
 export const BACKLINK_SEED_LIMIT = 10;
 export const BACKLINKS_PER_SEED_LIMIT = 5;
 export const BACKLINK_CANDIDATE_LIMIT = 20;
 export const SESSION_ID_BYTES = 8;
 export const COMMAND_OUTPUT_MAX_BYTES = Number(process.env.INSIGHT_COMMAND_OUTPUT_MAX_BYTES) || 1_000_000;
 export const SOURCE_NOTE_MAX_BYTES = Number(process.env.INSIGHT_SOURCE_NOTE_MAX_BYTES) || 512_000;
+export const STAGE_BRIEFING_TOTAL_MAX_BYTES = Number(process.env.INSIGHT_STAGE_BRIEFING_TOTAL_MAX_BYTES) || 96_000;
 export const STAGES = new Set<Stage>(["memory", "memory_review", "review_grill", "summary", "complete"]);
 export const INSIGHT_STATE_SCHEMA_VERSION = 1;
 

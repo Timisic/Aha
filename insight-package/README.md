@@ -1,69 +1,69 @@
 # Aha Pi Extension Package
 
-`pi-insight-package` contains Aha's `/insight` Pi Extension as a Git-manageable Pi package.
+This package contains Aha's installable `/insight` Pi extension.
 
-The package preserves Aha's Insight-to-Judgment workflow:
+## Package contract
 
-- `/insight` creates a session from editor input, or cancels active insight mode.
-- `/insight <content>` creates a session directly.
-- `/insight list`, `/insight resume <selector>`, and `/insight current` keep the existing behavior.
-- Existing session state remains under the configured Insight runtime root, normally `~/.pi/agent/insights/`.
+- Package name: `@timisic/aha-pi-insight`.
+- Install path today: Git checkout or Git dependency.
+- License: MIT.
+- Supported host: macOS/Linux, Node.js `>=22.19.0 <26`, Bun `>=1.2.0 <2` for builds.
+- Supported peers: `@earendil-works/pi-coding-agent >=0.79.0 <0.80.0`, `@earendil-works/pi-tui >=0.79.0 <0.80.0`, `typebox >=1.1.0 <2`.
 
-## Package Layout
+Normal dependency resolution uses package imports. `PI_TYPEBOX_PATH` and `PI_TUI_PATH` remain advanced escape hatches for non-standard Pi installs.
 
-- `extensions/insight.ts` is the Pi extension entrypoint.
-- `src/domain.ts` defines session schema types, stage names, constants, and shared utilities.
-- `src/session.ts` handles state paths, index files, session restore, bindings, and grill-context files.
-- `src/source-note.ts` handles Obsidian/source-note parsing, source-root limits, size limits, structure hints, and refresh.
-- `src/memory.ts` handles QMD search, backlink expansion, dedupe, labels, rendering, and memory-stage guardrails.
-- `src/prompts.ts` builds stage prompts and Review-Grill briefing.
-- `src/commands.ts` registers `/insight`.
-- `src/tools.ts` registers `insight_search_memory`, `insight_update_state`, `insight_append_grill_context`, and `insight_save_summary`.
-- `tests/` contains regression and adversarial workflow tests.
+## Commands
 
-## Loading Locally
-
-Install or load the package from its directory:
-
-```bash
-pi install /Users/hong/Downloads/Pi/insight-package
+```text
+/insight
+/insight <raw thought and context>
+/insight list
+/insight resume <session-id-or-directory>
+/insight current
+/insight doctor
+/insight doctor --json
 ```
 
-For a one-off smoke test without changing settings:
+`/insight doctor` is read-only except for a small write probe in the configured insight home. It runs one synthetic QMD query and does not enumerate or print real note contents.
+
+## Local setup
 
 ```bash
-pi --verbose --offline --no-tools --no-extensions -e /Users/hong/Downloads/Pi/insight-package --print ""
-```
-
-Do not also keep the old single-file extension enabled at `~/.pi/agent/extensions/insight.ts`, or Pi will try to register `/insight` twice.
-
-## Tests
-
-```bash
+npm ci
+npm run typecheck
 npm test
+npm run test:doctor
 npm run test:ultraqa
 npm run build
-npm run smoke:offline
+npm run demo:offline
 ```
 
-The adversarial test covers resume, stage guardrails, QMD timeout cleanup, oversized output, misleading failed output, corrupt state, path spoofing, cancel behavior, and summary saving.
+Load in Pi from this directory:
 
-## Git Boundary
+```bash
+pi install .
+```
 
-Git should manage this package directory only. Do not initialize Git in `~/.pi/agent`.
+Smoke load from the repository root:
 
-Excluded runtime/private data includes:
+```bash
+pi --verbose --offline --no-tools --no-extensions -e ./insight-package --print ""
+```
 
-- Pi sessions, logs, settings, auth, and model files
-- insight runtime state under `~/.pi/agent/insights/`
-- `node_modules`, build outputs, local env files, and backups
+Do not keep the legacy single-file extension enabled at `~/.pi/agent/extensions/insight.ts`; Pi will register `/insight` twice.
+
+## Layout
+
+- `extensions/insight.ts`: Pi extension entrypoint.
+- `src/config.ts`: supported envelope and configuration defaults.
+- `src/doctor.ts`: `/insight doctor` checks and formatting.
+- `src/commands.ts`: command registration.
+- `src/tools.ts`: workflow tools.
+- `src/session.ts`: session state and artifact paths.
+- `src/memory*.ts`: QMD/backlink retrieval and reranking.
+- `demo-vault/`: public synthetic first-run fixture.
+- `tests/`: regression, UltraQA, and doctor tests.
 
 ## Rollback
 
-The old single-file extension can be kept as a backup with a non-`.ts` suffix, for example:
-
-```bash
-~/.pi/agent/extensions/insight.ts.bak-20260609
-```
-
-To roll back, remove this package from Pi settings, rename the backup to `insight.ts`, then reload Pi.
+Remove this package from Pi settings or reinstall a previous Git revision. Keep old backups renamed with a non-`.ts` suffix.

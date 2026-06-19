@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { ActiveSession, CommandResult, MemoryQueryCommand, MemoryQueryKind, QmdStructuredQuery } from "./domain.ts";
 import { compactLine, nowIso } from "./domain.ts";
+import { writeTextAtomic } from "./session.ts";
 
 const EVENT_PREVIEW_BYTES = Number(process.env.INSIGHT_TRAJECTORY_EVENT_PREVIEW_BYTES) || 8_192;
 const ARTIFACT_MAX_BYTES = Number(process.env.INSIGHT_TRAJECTORY_ARTIFACT_MAX_BYTES) || 512_000;
@@ -84,7 +85,7 @@ export function writeTrajectoryArtifact(
         }
       : payload;
     const serialized = JSON.stringify(normalizeJsonValue(body, 0, ARTIFACT_MAX_BYTES), null, 2) + "\n";
-    writeFileSync(path, serialized, "utf-8");
+    writeTextAtomic(path, serialized);
     return {
       path,
       relativePath: join("trajectory", safeGroup, basename(path)),

@@ -20,6 +20,9 @@ import {
 import { rerankCandidatesForCase } from "../lib/aha-agent-rerank.mjs";
 import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
+  deterministicFallbackCanonicalId,
+  normalizeIdentityHint,
+  resolveNoteIdentity,
   resolveVaultPath as sharedResolveVaultPath,
 } from "../../insight-package/src/path-resolver.js";
 
@@ -280,7 +283,16 @@ function fileLabel(path) {
 }
 
 function candidatePath(candidate) {
-  return candidate.file || candidate.path || candidate.slug || candidate.title;
+  return candidate.canonicalPath || candidate.file || candidate.path || candidate.slug || candidate.title;
+}
+
+function candidateIdentityKey(candidate) {
+  if (candidate.canonicalId) return candidate.canonicalId;
+  const resolver = buildVaultResolver();
+  const resolved = resolveNoteIdentity(candidatePath(candidate), resolver);
+  if (resolved.status === "resolved") return resolved.canonicalId;
+  if (resolved.status === "ambiguous") return deterministicFallbackCanonicalId({ path: candidatePath(candidate), title: candidate.title, content: candidate.content });
+  return normalizeIdentityHint(candidatePath(candidate)) || deterministicFallbackCanonicalId({ title: candidate.title, content: candidate.content });
 }
 
 function stripPathDecorations(path) {
@@ -299,7 +311,7 @@ function qmdUriPath(path) {
 }
 
 function vaultRoot() {
-  return resolve(process.env.AHA_BENCH_VAULT_ROOT?.trim() || "/Users/hong/Obsidian Notes");
+  return resolve(process.env.AHA_BENCH_VAULT_ROOT?.trim() || "~/Obsidian Notes");
 }
 
 function buildVaultResolver() {
@@ -555,7 +567,7 @@ function mergeCandidates(candidates, limit) {
   const seen = new Set();
   const merged = [];
   for (const candidate of candidates) {
-    const key = candidatePath(candidate);
+    const key = candidateIdentityKey(candidate);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     merged.push(candidate);
@@ -580,17 +592,16 @@ function mergeCandidateEvidence(candidates) {
   const byKey = new Map();
   const merged = [];
   for (const candidate of candidates) {
-    const key = candidatePath(candidate);
+    const key = candidateIdentityKey(candidate);
     if (!key) continue;
-    const normalizedKey = key.toLowerCase();
-    const existing = byKey.get(normalizedKey);
+    const existing = byKey.get(key);
     if (!existing) {
       const next = {
         ...candidate,
         sources: sourceList(candidate),
         expansionSources: candidate.expansionFrom ? [candidate.expansionFrom] : [],
       };
-      byKey.set(normalizedKey, next);
+      byKey.set(key, next);
       merged.push(next);
       continue;
     }

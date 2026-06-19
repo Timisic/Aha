@@ -12,15 +12,7 @@ export interface StageToolBlock {
   reason: string;
 }
 
-export function stageLabel(stage: Stage): string {
-  switch (stage) {
-    case "memory": return "Memory";
-    case "memory_review": return "Memory Review";
-    case "review_grill": return "Grill";
-    case "summary": return "Summary";
-    case "complete": return "Complete";
-  }
-}
+export { stageLabel } from "./user-facing.ts";
 
 export function evaluateInsightUpdatePolicy(
   params: InsightUpdateStateParams,
@@ -28,28 +20,37 @@ export function evaluateInsightUpdatePolicy(
 ): InsightUpdatePolicyResult {
   const previousStage = activeSession.session.stage;
   const targetStage = params.stage ?? previousStage;
-  const candidateIds = new Set(activeSession.session.memoryCandidates.map((candidate) => candidate.id));
+  const candidateIds = new Set([
+    ...activeSession.session.memoryCandidates.map((candidate) => candidate.id),
+    ...activeSession.session.memoryCandidatePool.map((candidate) => candidate.id),
+    ...activeSession.session.reviewedMemoryEvidence.map((evidence) => evidence.candidateId),
+  ]);
   const incomingReviews = [
     ...(params.memoryReview ? [params.memoryReview] : []),
     ...(params.memoryReviews ?? []),
   ];
   const hasMemoryReview =
-    activeSession.session.memoryReviews.some((review) => candidateIds.has(review.candidateId)) ||
+    activeSession.session.reviewedMemoryEvidence.some((evidence) => evidence.status !== "rejected") ||
+    activeSession.session.memoryReviews.some((review) => review.status !== "rejected" && candidateIds.has(review.candidateId)) ||
     incomingReviews.some((review) => candidateIds.has(review.candidateId));
+  const hasNoRelevantMemoryConfirmation = Boolean(activeSession.session.noRelevantMemory);
 
   if (params.stage && params.stage !== previousStage) {
     const allowed =
-      previousStage === "memory_review" && params.stage === "review_grill" ? hasMemoryReview :
+      previousStage === "memory_review" && params.stage === "review_grill" ? (hasMemoryReview || hasNoRelevantMemoryConfirmation) :
       previousStage === "review_grill" && params.stage === "memory" ? Boolean(params.newInsight?.triggeredMemorySearch) :
-      previousStage === "summary" && params.stage === "complete" ? true :
+      previousStage === "summary" && params.stage === "complete" ? false :
       false;
 
     if (!allowed) {
       if (params.stage === "review_grill" && previousStage === "memory_review" && !hasMemoryReview) {
-        throw new Error("Cannot enter review_grill until at least one memoryReview has recorded the user's candidate review.");
+        throw new Error("Cannot enter review_grill until at least one memoryReview has recorded the user's candidate review, or the user has explicitly confirmed no_relevant_memory.");
       }
       if (params.stage === "summary") {
         throw new Error("Cannot enter summary through insight_update_state. Use insight_confirm_readiness after explicit user readiness.");
+      }
+      if (previousStage === "summary" && params.stage === "complete") {
+        throw new Error("Cannot complete through insight_update_state. Use insight_save_summary(markComplete=true) after a verified final judgment.");
       }
       if (previousStage === "complete") {
         throw new Error("Cannot change a complete insight session without an explicit reopen flow.");

@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-build:
+    name: static/build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: insight-package/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+      - name: Clean install from lockfile
+        run: npm ci
+        working-directory: insight-package
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: insight-package
+      - name: Build Pi extension package
+        run: npm run build
+        working-directory: insight-package
+      - name: Generated-file cleanliness
+        run: git diff --check
+
+  workflow-regression:
+    name: workflow regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: insight-package/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+      - name: Clean install from lockfile
+        run: npm ci
+        working-directory: insight-package
+      - name: Unit/workflow regression
+        run: npm run test:workflow
+        working-directory: insight-package
+      - name: Provider contract fixtures
+        run: npm run test:contract
+        working-directory: insight-package
+      - name: UltraQA/adversarial regression
+        run: npm run test:ultraqa
+        working-directory: insight-package
+      - name: L3 deterministic core loop
+        run: npm run test:l3
+        working-directory: insight-package
+      - name: Upload L3 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: l3-core-loop-report
+          path: bench/reports/latest/l3-core-loop.json
+          if-no-files-found: ignore
+
+  clean-package-smoke:
+    name: clean package smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: ['24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: insight-package/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+      - name: Clean install from lockfile
+        run: npm ci
+        working-directory: insight-package
+      - name: Fresh-HOME clean package smoke
+        run: npm run test:smoke
+        working-directory: insight-package
+
+  synthetic-retrieval-benchmark:
+    name: synthetic retrieval benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: insight-package/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+      - name: Clean install from lockfile
+        run: npm ci
+        working-directory: insight-package
+      - name: Deterministic synthetic L1/L2/L3 baseline
+        run: npm run test:bench:synthetic
+        working-directory: insight-package
+      - name: Compact synthetic summary
+        if: always()
+        run: |
+          if [ -f bench/reports/latest/synthetic-summary.json ]; then
+            node -e 'const r=require("./bench/reports/latest/synthetic-summary.json"); console.log(JSON.stringify(r.metrics, null, 2));'
+          fi
+      - name: Upload synthetic benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-benchmark-reports
+          path: |
+            bench/reports/latest/synthetic-*.json
+            bench/reports/latest/l3-core-loop.json
+          if-no-files-found: ignore

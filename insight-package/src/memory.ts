@@ -2,13 +2,15 @@ import { spawn } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "./runtime-paths.ts";
-import { BACKLINK_CANDIDATE_LIMIT, BACKLINK_SEED_LIMIT, BACKLINKS_PER_SEED_LIMIT, COMMAND_OUTPUT_MAX_BYTES, GRILL_INSIGHT_PATH, OBSIDIAN_TIMEOUT_MS, QMD_TIMEOUT_MS, type ActiveSession, type CommandResult, type InsightSession, type MemoryCandidate, type MemoryCandidateSource, type MemoryQueryCommand, type MemoryQueryInputKind, type MemoryQueryKind, type MemoryRelation, type MemorySearchCandidate, type ObsidianBacklink, type QmdStructuredQuery, type SimpleComponent, compactLine, configuredSourceRoots, shortId, slugify } from "./domain.ts";
-import { buildVaultPathResolver, resolveVaultPath, stripPathDecorations } from "./path-resolver.js";
+import { BACKLINK_CANDIDATE_LIMIT, BACKLINK_CONCURRENCY, BACKLINK_SEED_LIMIT, BACKLINKS_PER_SEED_LIMIT, COMMAND_OUTPUT_MAX_BYTES, GRILL_INSIGHT_PATH, OBSIDIAN_TIMEOUT_MS, PROCESS_KILL_GRACE_MS, QMD_TIMEOUT_MS, type ActiveSession, type CommandResult, type InsightSession, type MemoryCandidate, type MemoryCandidateSource, type MemoryQueryCommand, type MemoryQueryInputKind, type MemoryQueryKind, type MemoryRelation, type MemorySearchCandidate, type ObsidianBacklink, type QmdStructuredQuery, type SimpleComponent, compactLine, configuredSourceRoots, shortId, slugify } from "./domain.ts";
+import { buildVaultPathResolver, deterministicFallbackCanonicalId, normalizeIdentityHint, resolveNoteIdentity, resolveVaultPath, stripPathDecorations } from "./path-resolver.js";
 import { obsidianCommand } from "./source-note.ts";
 import { summaryDraftPathFor } from "./session.ts";
 
-export function stableCandidateId(slug: string | undefined, title: string, queryText: string): string {
-  return slug || `${slugify(title || queryText)}-${shortId()}`;
+export function stableCandidateId(slug: string | undefined, title: string, queryText: string, content = ""): string {
+  const normalizedSlug = stripPathDecorations(slug);
+  if (normalizedSlug) return normalizedSlug;
+  return deterministicFallbackCanonicalId({ title: title || slugify(queryText), queryText, content });
 }
 
 export function textFromUnknown(value: unknown): string {
@@ -206,6 +208,8 @@ export function runQmdCall(
     let stderr = "";
     let killed = false;
     let settled = false;
+    let timedOut = false;
+    let cancelled = signal?.aborted === true;
 
     const cleanup = () => {
       clearTimeout(timer);
@@ -216,7 +220,7 @@ export function runQmdCall(
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ stdout, stderr, code, killed });
+      resolve({ stdout, stderr, code, killed, timedOut, cancelled });
     };
 
     const kill = () => {
@@ -227,11 +231,17 @@ export function runQmdCall(
       } else {
         child.kill("SIGKILL");
       }
-      setTimeout(() => finish(null), 250);
+      setTimeout(() => finish(null), PROCESS_KILL_GRACE_MS);
     };
 
-    const onAbort = () => kill();
-    const timer = setTimeout(kill, timeoutMs);
+    const onAbort = () => {
+      cancelled = true;
+      kill();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
 
     const onOutputExceeded = () => {
@@ -273,6 +283,8 @@ export function runCommand(
     let stderr = "";
     let killed = false;
     let settled = false;
+    let timedOut = false;
+    let cancelled = signal?.aborted === true;
 
     const cleanup = () => {
       clearTimeout(timer);
@@ -283,7 +295,7 @@ export function runCommand(
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ stdout, stderr, code, killed });
+      resolve({ stdout, stderr, code, killed, timedOut, cancelled });
     };
 
     const kill = () => {
@@ -291,11 +303,17 @@ export function runCommand(
       killed = true;
       if (child.pid) killProcessTree(child.pid);
       else child.kill("SIGKILL");
-      setTimeout(() => finish(null), 250);
+      setTimeout(() => finish(null), PROCESS_KILL_GRACE_MS);
     };
 
-    const onAbort = () => kill();
-    const timer = setTimeout(kill, timeoutMs);
+    const onAbort = () => {
+      cancelled = true;
+      kill();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
 
     const onOutputExceeded = () => {
@@ -410,12 +428,13 @@ export async function readObsidianNote(
   backlink: ObsidianBacklink,
   ctx: ExtensionCommandContext,
   signal?: AbortSignal,
+  timeoutMs = OBSIDIAN_TIMEOUT_MS,
 ): Promise<string | undefined> {
   const command = obsidianCommand();
   const args = backlink.path
     ? ["read", `path=${backlink.path}`]
     : ["read", `file=${backlink.title}`];
-  const result = await runCommand(command, args, ctx, signal);
+  const result = await runCommand(command, args, ctx, signal, timeoutMs);
   if (result.killed || result.code !== 0) return undefined;
   const output = result.stdout.trim();
   if (!output || /^Error:\s+/i.test(output)) return undefined;
@@ -453,11 +472,13 @@ function obsidianBacklinkArgSets(seed: MemoryCandidate, cwd: string): {
   const resolvers = configuredSourceRoots(cwd).map((root) => buildVaultPathResolver(root));
 
   for (const value of values) {
-    const pathCandidates = new Set<string>([value.replace(/^\/+/, "")]);
+    const pathCandidates = new Set<string>();
+    let ambiguous = false;
     for (const resolver of resolvers) {
       const resolved = resolveVaultPath(value, resolver);
       if (resolved.status === "resolved" && resolved.path) pathCandidates.add(resolved.path);
       if (resolved.status === "ambiguous") {
+        ambiguous = true;
         warnings.push({
           seedId: seed.id,
           seedTitle: seed.title,
@@ -465,6 +486,9 @@ function obsidianBacklinkArgSets(seed: MemoryCandidate, cwd: string): {
           matches: resolved.matches,
         });
       }
+    }
+    if (!ambiguous && pathCandidates.size === 0 && (value.includes("/") || value.endsWith(".md"))) {
+      pathCandidates.add(value.replace(/^\/+/, ""));
     }
 
     for (const candidatePath of pathCandidates) {
@@ -475,15 +499,33 @@ function obsidianBacklinkArgSets(seed: MemoryCandidate, cwd: string): {
         }
       }
       const base = basename(candidatePath, ".md");
-      if (base) argSets.push(["backlinks", `file=${base}`, "format=json"]);
+      if (base && !ambiguous) argSets.push(["backlinks", `file=${base}`, "format=json"]);
     }
   }
 
-  argSets.push(["backlinks", `file=${seed.title}`, "format=json"]);
+  if (seed.identityStatus !== "ambiguous") argSets.push(["backlinks", `file=${seed.title}`, "format=json"]);
   return {
     argSets: uniqueArgSets(argSets),
     warnings,
   };
+}
+
+async function mapBounded<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
 }
 
 export async function expandBacklinkCandidates(
@@ -491,39 +533,32 @@ export async function expandBacklinkCandidates(
   session: InsightSession,
   ctx: ExtensionCommandContext,
   signal?: AbortSignal,
+  options: { concurrency?: number; timeoutMs?: number } = {},
 ): Promise<{
   candidates: InsightSession["memoryCandidates"];
   resolutionWarnings: BacklinkResolutionWarning[];
 }> {
   const command = obsidianCommand();
-  const backlinkCandidates: InsightSession["memoryCandidates"] = [];
-  const resolutionWarnings: BacklinkResolutionWarning[] = [];
-  const seen = new Set<string>();
+  const timeoutMs = Math.max(1, options.timeoutMs ?? OBSIDIAN_TIMEOUT_MS);
+  const concurrency = Math.max(1, options.concurrency ?? BACKLINK_CONCURRENCY);
 
-  for (const seed of seeds.slice(0, BACKLINK_SEED_LIMIT)) {
+  const perSeed = await mapBounded(seeds.slice(0, BACKLINK_SEED_LIMIT), concurrency, async (seed) => {
     const backlinkResolution = obsidianBacklinkArgSets(seed, ctx.cwd);
-    resolutionWarnings.push(...backlinkResolution.warnings);
-
     let backlinks: ObsidianBacklink[] = [];
     for (const args of backlinkResolution.argSets) {
-      const result = await runCommand(command, args, ctx, signal);
+      if (signal?.aborted) break;
+      const result = await runCommand(command, args, ctx, signal, timeoutMs);
       if (result.killed || result.code !== 0 || !result.stdout.trim()) continue;
       backlinks = parseBacklinksOutput(result.stdout, { id: seed.id, title: seed.title });
       if (backlinks.length > 0) break;
     }
-    if (backlinks.length === 0) continue;
 
-    backlinks = backlinks.slice(0, BACKLINKS_PER_SEED_LIMIT);
-
-    for (const backlink of backlinks) {
-      const key = backlink.path || backlink.title;
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-
-      backlink.content = await readObsidianNote(backlink, ctx, signal);
+    const candidates: InsightSession["memoryCandidates"] = [];
+    for (const backlink of backlinks.slice(0, BACKLINKS_PER_SEED_LIMIT)) {
+      if (signal?.aborted) break;
+      backlink.content = await readObsidianNote(backlink, ctx, signal, timeoutMs);
       if (!isBacklinkRelevant(backlink, session)) continue;
-
-      const candidate = toMemoryCandidate(
+      candidates.push(toMemoryCandidate(
         {
           id: stableCandidateId(backlink.path, backlink.title, seed.title),
           title: backlink.title,
@@ -536,22 +571,33 @@ export async function expandBacklinkCandidates(
           expansionType: "backlink",
         },
         session,
-      );
+      ));
+    }
+
+    return {
+      candidates,
+      resolutionWarnings: backlinkResolution.warnings,
+    };
+  });
+
+  const backlinkCandidates: InsightSession["memoryCandidates"] = [];
+  const resolutionWarnings = perSeed.flatMap((item) => item.resolutionWarnings);
+  const seen = new Set<string>();
+  for (const item of perSeed) {
+    for (const candidate of item.candidates) {
+      const key = candidate.slug || candidate.title;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
       backlinkCandidates.push(candidate);
       if (backlinkCandidates.length >= BACKLINK_CANDIDATE_LIMIT) {
-        return {
-          candidates: backlinkCandidates,
-          resolutionWarnings,
-        };
+        return { candidates: backlinkCandidates, resolutionWarnings };
       }
     }
   }
 
-  return {
-    candidates: backlinkCandidates,
-    resolutionWarnings,
-  };
+  return { candidates: backlinkCandidates, resolutionWarnings };
 }
+
 
 export function parseMemorySearchCandidates(
   output: string,
@@ -575,7 +621,7 @@ export function parseMemorySearchCandidates(
           textFromUnknown(item).slice(0, 500);
         const score = record.score;
         return {
-          id: stableCandidateId(slug, title, queryText),
+          id: stableCandidateId(slug, title, queryText, content),
           title,
           slug,
           content,
@@ -594,7 +640,7 @@ export function parseMemorySearchCandidates(
       const firstLine = block.split(/\r?\n/)[0]?.replace(/^[-*#\d.\s]+/, "").trim();
       const title = firstLine || `Memory result ${index + 1}`;
       return {
-        id: stableCandidateId(undefined, title, queryText),
+        id: stableCandidateId(undefined, title, queryText, block.slice(0, 500)),
         title,
         content: block.slice(0, 500),
         rank: index + 1,
@@ -615,13 +661,49 @@ export function inferRelation(candidate: MemorySearchCandidate, session: Insight
   return "supports";
 }
 
+function resolveCandidateIdentity(candidate: MemorySearchCandidate, session: InsightSession): Pick<MemorySearchCandidate, "id" | "canonicalPath" | "canonicalId" | "identityStatus" | "identityMatches" | "aliases"> {
+  for (const root of configuredSourceRoots(session.originCwd)) {
+    const resolver = buildVaultPathResolver(root);
+    for (const value of [candidate.slug, candidate.id, candidate.title]) {
+      if (!value) continue;
+      const resolved = resolveNoteIdentity(value, resolver);
+      if (resolved.status === "resolved") {
+        return {
+          id: resolved.canonicalId,
+          canonicalPath: resolved.canonicalPath,
+          canonicalId: resolved.canonicalId,
+          identityStatus: "resolved",
+          aliases: resolved.aliases,
+        };
+      }
+      if (resolved.status === "ambiguous") {
+        return {
+          id: deterministicFallbackCanonicalId({ path: candidate.slug, title: candidate.title, content: candidate.content, queryText: candidate.queryText }),
+          identityStatus: "ambiguous",
+          identityMatches: resolved.matches.map((match: { canonicalId: string }) => match.canonicalId),
+        };
+      }
+    }
+  }
+  return {
+    id: deterministicFallbackCanonicalId({ path: candidate.slug, title: candidate.title, content: candidate.content, queryText: candidate.queryText }),
+    identityStatus: "unresolved",
+  };
+}
+
 export function toMemoryCandidate(candidate: MemorySearchCandidate, session: InsightSession) {
   const relation = inferRelation(candidate, session);
   const snippet = (candidate.content ?? "").replace(/\s+/g, " ").slice(0, 140);
+  const identity = resolveCandidateIdentity(candidate, session);
   return {
-    id: candidate.id,
+    id: identity.id,
     title: candidate.title,
-    slug: candidate.slug,
+    slug: candidate.slug ?? identity.canonicalPath,
+    canonicalPath: identity.canonicalPath,
+    canonicalId: identity.canonicalId,
+    identityStatus: identity.identityStatus,
+    identityMatches: identity.identityMatches,
+    aliases: identity.aliases,
     relation,
     reason: snippet || "Retrieved by QMD as potentially relevant prior memory.",
     whyReadFirst:
@@ -646,14 +728,18 @@ export function toMemoryCandidate(candidate: MemorySearchCandidate, session: Ins
   };
 }
 
+function candidateIdentityKey(candidate: InsightSession["memoryCandidates"][number]): string {
+  return candidate.canonicalId || candidate.id || normalizeIdentityHint(candidate.slug) || normalizeIdentityHint(candidate.title);
+}
+
 export function mergeCandidates(
   existing: InsightSession["memoryCandidates"],
   incoming: InsightSession["memoryCandidates"],
 ): InsightSession["memoryCandidates"] {
-  const seen = new Set(existing.map((candidate) => candidate.slug || candidate.title));
+  const seen = new Set(existing.map(candidateIdentityKey));
   const merged = [...existing];
   for (const candidate of incoming) {
-    const key = candidate.slug || candidate.title;
+    const key = candidateIdentityKey(candidate);
     if (seen.has(key)) continue;
     seen.add(key);
     merged.push(candidate);
@@ -668,7 +754,7 @@ export function mergeCandidateEvidence(
   const merged: InsightSession["memoryCandidates"] = [];
 
   for (const candidate of candidates) {
-    const key = candidate.slug || candidate.title;
+    const key = candidateIdentityKey(candidate);
     if (!key) continue;
     const existing = byKey.get(key);
     if (!existing) {
@@ -709,6 +795,10 @@ export function mergeCandidateEvidence(
         ...(incomingSignals.expansionFroms ?? (incomingSignals.expansionFrom ? [incomingSignals.expansionFrom] : [])),
       ])),
     };
+    if (!existing.slug && candidate.slug) existing.slug = candidate.slug;
+    if (!existing.canonicalPath && candidate.canonicalPath) existing.canonicalPath = candidate.canonicalPath;
+    if (!existing.canonicalId && candidate.canonicalId) existing.canonicalId = candidate.canonicalId;
+    if (!existing.aliases && candidate.aliases) existing.aliases = candidate.aliases;
     if (!existing.reason && candidate.reason) existing.reason = candidate.reason;
     if (!existing.whyReadFirst && candidate.whyReadFirst) existing.whyReadFirst = candidate.whyReadFirst;
   }
