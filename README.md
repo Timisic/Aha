@@ -1,12 +1,16 @@
-# Pi Insight Extension
+# Aha
+
+一个用于 Insight-to-Judgment 的 Pi Extension。
 
 把突然出现的想法，带着旧笔记一起走到一份可回看的判断草稿。
 
-这个 Pi 本地扩展提供一条 `/insight` 工作流：你把当前想法、背景和可选的原始笔记贴进去，Agent 会帮你检索相关旧笔记、组织回看顺序、提出追问，并在你确认后输出 summary draft。
+Aha 提供一条 `/insight` 工作流：你把当前想法、背景和可选的原始笔记贴进去，Agent 会帮你检索相关旧笔记、组织回看顺序、提出追问，并在你确认后输出 summary draft。
 
 它重点降低的是这段认知阻力：从“我感觉这个想法很重要”，到“我能说清它连接了哪些旧经验、改变了什么判断、应该怎样沉淀下来”。
 
-![Insight-to-Judgment 流程图](./docs/assets/insight-flowchart.png)
+<p align="center">
+  <img src="./docs/assets/insight-flowchart.png" alt="Aha Insight-to-Judgment workflow" width="560" />
+</p>
 
 ## 快速开始
 
@@ -33,11 +37,11 @@
 
 ### 找回旧记忆
 
-很多想法出现时，只能隐约感觉它和过去某些笔记、项目、场景有关。`/insight` 会把当前想法交给 agent 生成多条结构化 QMD 查询，再用 QMD 和 Obsidian backlink 找回本地旧笔记。
+很多想法出现时，只能隐约感觉它和过去某些笔记、项目、场景有关。Aha 会把当前想法交给 agent 生成多条结构化 QMD 查询，再用 QMD 和 Obsidian backlink 找回本地旧笔记。
 
 ### 降低重新翻找成本
 
-你不用先在知识库里自己翻一轮。扩展会先给出一张 agent rerank 后的候选表，让你从几个最可能相关的旧笔记开始看。
+你不用先在知识库里自己翻一轮。Aha 会先给出一张 agent rerank 后的候选表，让你从几个最可能相关的旧笔记开始看。
 
 ### 显影相似、反例和边界
 
@@ -142,7 +146,7 @@ insights/
 - 旧笔记是 memory candidates，需要用户 Review 后才进入最终判断。
 - Summary 由用户明确触发，Agent 不自动跳到完成。
 - 原始 Obsidian 笔记由用户掌控，扩展只输出建议和 draft。
-- Pi core 保持不变，产品能力放在 extension 层。
+- Pi core 保持不变，Aha 的产品能力放在 extension 层。
 - 本地 JSON 记录 session state，让多阶段认知过程不会丢。
 
 ## 当前状态
@@ -236,7 +240,7 @@ bun run test
 bun run test:ultraqa
 ```
 
-构建检查扩展：
+构建检查 Aha extension：
 
 ```bash
 bun build /Users/hong/Downloads/Pi/insight-package/extensions/insight.ts --target=node --outfile=/tmp/insight-extension-build.js

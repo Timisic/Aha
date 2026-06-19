@@ -1,8 +1,8 @@
-# Pi Insight Package
+# Aha Pi Extension Package
 
-`pi-insight-package` provides the `/insight` Pi extension as a Git-manageable Pi package.
+`pi-insight-package` contains Aha's `/insight` Pi Extension as a Git-manageable Pi package.
 
-The package preserves the existing Insight-to-Judgment workflow:
+The package preserves Aha's Insight-to-Judgment workflow:
 
 - `/insight` creates a session from editor input, or cancels active insight mode.
 - `/insight <content>` creates a session directly.
