@@ -3,6 +3,7 @@ import { buildAgentPrompt, buildStagePrompt } from "./prompts.ts";
 import { createSession, listSessionSummary, loadSession } from "./session.ts";
 import { clearInsightMode, persistActiveSessionBinding, persistInactiveSessionBinding, prepareAgentPrompt, setActiveSession, type InsightRuntime } from "./runtime.ts";
 import { normalizeInsightArgs } from "./domain.ts";
+import { recordTrajectoryEvent } from "./trajectory.ts";
 
 export function registerInsightCommands(pi: ExtensionAPI, runtime: InsightRuntime): void {
   pi.registerCommand("insight", {
@@ -33,6 +34,11 @@ export function registerInsightCommands(pi: ExtensionAPI, runtime: InsightRuntim
 
         setActiveSession(runtime, ctx, resumed);
         persistActiveSessionBinding(pi, resumed);
+        recordTrajectoryEvent(resumed, "session_restored", {
+          source: "insight_resume_command",
+          sessionDir: resumed.sessionDir,
+          statePath: resumed.statePath,
+        });
         ctx.ui.notify(`Resumed insight session: ${resumed.session.id}`, "info");
         prepareAgentPrompt(runtime, resumed, buildStagePrompt(resumed));
         return;
@@ -49,6 +55,10 @@ export function registerInsightCommands(pi: ExtensionAPI, runtime: InsightRuntim
 
       if (!pasted && (runtime.activeSession || runtime.pendingAgentPrompt)) {
         const id = runtime.activeSession?.session.id ?? runtime.pendingAgentPrompt?.sessionId;
+        recordTrajectoryEvent(runtime.activeSession, "session_cancelled", {
+          source: "blank_insight_command",
+          pendingPromptSessionId: runtime.pendingAgentPrompt?.sessionId,
+        });
         clearInsightMode(runtime, ctx);
         persistInactiveSessionBinding(pi);
         ctx.ui.notify(`Insight mode cancelled${id ? `: ${id}` : ""}`, "info");
@@ -72,6 +82,12 @@ export function registerInsightCommands(pi: ExtensionAPI, runtime: InsightRuntim
       const created = createSession(ctx.cwd, input);
       setActiveSession(runtime, ctx, created);
       persistActiveSessionBinding(pi, created);
+      recordTrajectoryEvent(created, "session_started", {
+        source: "insight_command",
+        sessionDir: created.sessionDir,
+        statePath: created.statePath,
+        originCwd: ctx.cwd,
+      });
       prepareAgentPrompt(runtime, created, buildAgentPrompt(created));
       ctx.ui.notify(`Insight session created: ${created.session.id}`, "info");
       pi.sendUserMessage(input, { deliverAs: "followUp" });

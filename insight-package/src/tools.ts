@@ -9,6 +9,62 @@ import { buildReviewGrillPrompt, writeGrillBriefing } from "./prompts.ts";
 import { persistActiveSessionBinding, prepareAgentPrompt, saveActiveState, type InsightRuntime } from "./runtime.ts";
 import { evaluateInsightUpdatePolicy, shouldCreateReviewGrillBriefing } from "./stage-policy.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { recordTrajectoryEvent, summarizeTrajectoryValue, writeTrajectoryArtifact } from "./trajectory.ts";
+
+async function withToolTrajectory<T>(
+  runtime: InsightRuntime,
+  toolName: string,
+  toolCallId: string,
+  params: unknown,
+  execute: () => Promise<T> | T,
+): Promise<T> {
+  const startedAt = Date.now();
+  const activeAtStart = runtime.activeSession;
+  const inputArtifact = writeTrajectoryArtifact(
+    activeAtStart,
+    "tool-calls",
+    `tool-${toolCallId || toolName}-${toolName}-input`,
+    params,
+  );
+  recordTrajectoryEvent(activeAtStart, "tool_started", {
+    toolName,
+    toolCallId,
+    input: summarizeTrajectoryValue(params),
+    inputArtifact,
+  });
+
+  try {
+    const result = await execute();
+    const activeAtFinish = runtime.activeSession ?? activeAtStart;
+    const outputArtifact = writeTrajectoryArtifact(
+      activeAtFinish,
+      "tool-results",
+      `tool-${toolCallId || toolName}-${toolName}-result`,
+      result,
+    );
+    recordTrajectoryEvent(activeAtFinish, "tool_finished", {
+      toolName,
+      toolCallId,
+      status: "ok",
+      durationMs: Date.now() - startedAt,
+      output: summarizeTrajectoryValue(result),
+      outputArtifact,
+      details: summarizeTrajectoryValue((result as { details?: unknown } | undefined)?.details),
+    });
+    return result;
+  } catch (error) {
+    recordTrajectoryEvent(runtime.activeSession ?? activeAtStart, "tool_finished", {
+      toolName,
+      toolCallId,
+      status: "error",
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error
+        ? { name: error.name, message: error.message, stack: error.stack }
+        : String(error),
+    });
+    throw error;
+  }
+}
 
 export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, Type: Type): void {
   pi.registerTool({
@@ -55,13 +111,15 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
       limit: Type.Optional(Type.Number()),
     }),
     async execute(
-      _toolCallId: string,
+      toolCallId: string,
       params: InsightSearchMemoryParams,
       signal,
       _onUpdate,
       ctx,
     ) {
-      return runInsightMemoryRetrieval(pi, runtime, params, signal, ctx);
+      return withToolTrajectory(runtime, "insight_search_memory", toolCallId, params, () =>
+        runInsightMemoryRetrieval(pi, runtime, params, signal, ctx),
+      );
     },
   });
 
@@ -111,7 +169,8 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
       ),
       summaryDraft: Type.Optional(Type.String()),
     }),
-    async execute(_toolCallId: string, params: InsightUpdateStateParams, _signal, _onUpdate, ctx) {
+    async execute(toolCallId: string, params: InsightUpdateStateParams, _signal, _onUpdate, ctx) {
+      return withToolTrajectory(runtime, "insight_update_state", toolCallId, params, () => {
       if (!runtime.activeSession) {
         return {
           content: [{ type: "text", text: "No active /insight session." }],
@@ -208,6 +267,7 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
           grillBriefingPath,
         },
       };
+      });
     },
   });
 
@@ -220,7 +280,8 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
       heading: Type.Optional(Type.String()),
       body: Type.String(),
     }),
-    async execute(_toolCallId: string, params: InsightAppendGrillContextParams) {
+    async execute(toolCallId: string, params: InsightAppendGrillContextParams) {
+      return withToolTrajectory(runtime, "insight_append_grill_context", toolCallId, params, () => {
       if (!runtime.activeSession) {
         return {
           content: [{ type: "text", text: "No active /insight session." }],
@@ -242,6 +303,7 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
         content: [{ type: "text", text: `Updated grill context section '${heading}': ${runtime.activeSession.grillContextPath}` }],
         details: { ok: true, grillContextPath: runtime.activeSession.grillContextPath },
       };
+      });
     },
   });
 
@@ -255,7 +317,8 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
       unresolvedQuestions: Type.Optional(Type.Array(Type.String())),
       markComplete: Type.Optional(Type.Boolean()),
     }),
-    async execute(_toolCallId: string, params: InsightSaveSummaryParams, _signal, _onUpdate, ctx) {
+    async execute(toolCallId: string, params: InsightSaveSummaryParams, _signal, _onUpdate, ctx) {
+      return withToolTrajectory(runtime, "insight_save_summary", toolCallId, params, () => {
       if (!runtime.activeSession) {
         return {
           content: [{ type: "text", text: "No active /insight session." }],
@@ -302,6 +365,7 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
           stage: runtime.activeSession.session.stage,
         },
       };
+      });
     },
   });
 }
