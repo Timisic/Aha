@@ -60,8 +60,12 @@ export function grillContextPathFor(sessionDir: string): string {
   return join(sessionDir, "grill-context.md");
 }
 
+export function stageBriefingPathFor(sessionDir: string): string {
+  return join(sessionDir, "stage-briefing.md");
+}
+
 export function grillBriefingPathFor(sessionDir: string): string {
-  return join(sessionDir, "grill-briefing.md");
+  return stageBriefingPathFor(sessionDir);
 }
 
 export function summaryDraftPathFor(sessionDir: string): string {
@@ -276,12 +280,13 @@ export function createSession(cwd: string, input: string): ActiveSession {
 
   const statePath = statePathFor(sessionDir);
   const grillContextPath = grillContextPathFor(sessionDir);
-  const grillBriefingPath = grillBriefingPathFor(sessionDir);
+  const stageBriefingPath = stageBriefingPathFor(sessionDir);
+  const grillBriefingPath = stageBriefingPath;
   writeState(statePath, session);
   writeInitialGrillContext(grillContextPath, session);
   writeIndex(cwd, sessionDir, session);
 
-  return { sessionDir, statePath, grillContextPath, grillBriefingPath, session };
+  return { sessionDir, statePath, grillContextPath, stageBriefingPath, grillBriefingPath, session };
 }
 
 export function findSessionDirs(cwd: string): string[] {
@@ -322,6 +327,7 @@ export function loadSessionDir(cwd: string, sessionDir: string): ActiveSession |
     sessionDir: safeDir,
     statePath,
     grillContextPath: grillContextPathFor(safeDir),
+    stageBriefingPath: stageBriefingPathFor(safeDir),
     grillBriefingPath: grillBriefingPathFor(safeDir),
     session,
   };

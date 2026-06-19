@@ -1,54 +1,103 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { GRILL_INSIGHT_PATH, type ActiveSession, type InsightSession, compactLine } from "./domain.ts";
 import { formatMemoryCandidateTable, sourceLabel } from "./memory.ts";
-import { sourceNoteMemoryContext, sourceNoteStructureHint } from "./source-note.ts";
+import { readObsidianSync, readSourceNoteFileFallback, sourceNoteMemoryContext, sourceNoteStructureHint } from "./source-note.ts";
 
-export function selectedMemoryForGrillBriefing(session: InsightSession): InsightSession["memoryCandidates"] {
-  const used = new Set(session.usedMemoryIds);
-  const selected = [
-    ...session.memoryCandidates.filter((candidate) => used.has(candidate.id)),
-    ...session.memoryCandidates.filter((candidate) => !used.has(candidate.id)),
-  ];
-  const unique = new Map<string, InsightSession["memoryCandidates"][number]>();
-  for (const candidate of selected) {
-    unique.set(candidate.id, candidate);
+const STAGE_BRIEFING_NOTE_MAX_BYTES =
+  Number(process.env.INSIGHT_STAGE_BRIEFING_NOTE_MAX_BYTES) || 64_000;
+
+export function selectedMemoryForStageBriefing(session: InsightSession): InsightSession["memoryCandidates"] {
+  const reviewed = session.memoryReviews.filter((review) => review.status !== "rejected");
+  if (reviewed.length > 0) {
+    const statusRank = new Map(reviewed.map((review, index) => [
+      review.candidateId,
+      review.status === "accepted" ? index : index + 1_000,
+    ]));
+    return session.memoryCandidates
+      .filter((candidate) => statusRank.has(candidate.id))
+      .sort((a, b) => (statusRank.get(a.id) ?? 0) - (statusRank.get(b.id) ?? 0));
   }
-  return Array.from(unique.values()).slice(0, 5);
+
+  const used = new Set(session.usedMemoryIds);
+  return session.memoryCandidates.filter((candidate) => used.has(candidate.id));
 }
 
-export function buildGrillBriefing(active: ActiveSession): string {
-  const { session, sessionDir, statePath, grillContextPath, grillBriefingPath } = active;
-  const memoryLines = selectedMemoryForGrillBriefing(session).map((candidate) => {
+function noteContentForStageBriefing(
+  candidate: InsightSession["memoryCandidates"][number],
+  originCwd: string,
+): { content?: string; source?: string } {
+  const slug = candidate.slug?.trim();
+  const attempts: Array<{ label: string; read: () => string | undefined }> = [];
+
+  if (slug) {
+    attempts.push({
+      label: `path=${slug}`,
+      read: () => readObsidianSync(["read", `path=${slug}`], originCwd),
+    });
+    attempts.push({
+      label: `file-fallback:${slug}`,
+      read: () => readSourceNoteFileFallback(slug, originCwd),
+    });
+  }
+
+  attempts.push({
+    label: `file=${candidate.title}`,
+    read: () => readObsidianSync(["read", `file=${candidate.title}`], originCwd),
+  });
+
+  for (const attempt of attempts) {
+    const content = attempt.read()?.trim();
+    if (content) return { content: truncateStageBriefingNote(content), source: attempt.label };
+  }
+
+  return {};
+}
+
+function truncateStageBriefingNote(content: string): string {
+  const bytes = Buffer.byteLength(content, "utf-8");
+  if (bytes <= STAGE_BRIEFING_NOTE_MAX_BYTES) return content;
+  const preview = Buffer.from(content, "utf-8")
+    .subarray(0, STAGE_BRIEFING_NOTE_MAX_BYTES)
+    .toString("utf-8");
+  return `${preview}\n\n[stage-briefing: note content truncated from ${bytes} bytes]`;
+}
+
+function reviewStatusFor(session: InsightSession, candidateId: string): string {
+  return session.memoryReviews.find((review) => review.candidateId === candidateId)?.status ?? "unreviewed";
+}
+
+export function buildStageBriefing(active: ActiveSession): string {
+  const { session, sessionDir, statePath, grillContextPath, stageBriefingPath } = active;
+  const memorySections = selectedMemoryForStageBriefing(session).map((candidate, index) => {
+    const note = noteContentForStageBriefing(candidate, session.originCwd);
     return [
-      `- ${candidate.title}`,
-      `  关系: ${candidate.relation}; 来源: ${sourceLabel(candidate)}`,
-      `  可形成的认知阻力: ${compactLine(candidate.reason || candidate.whyReadFirst)}`,
+      `### ${index + 1}. ${candidate.title}`,
+      "",
+      `- Review status: ${reviewStatusFor(session, candidate.id)}`,
+      `- Relation: ${candidate.relation}`,
+      `- Source: ${sourceLabel(candidate)}`,
+      candidate.slug ? `- Path: ${candidate.slug}` : undefined,
+      `- Hit: ${compactLine(candidate.reason || candidate.whyReadFirst)}`,
+      `- Why this matters: ${compactLine(candidate.whyReadFirst || candidate.reason)}`,
+      note.source ? `- Content source: ${note.source}` : "- Content source: unavailable",
+      "",
+      "```markdown",
+      note.content ?? "[Note content unavailable. Use Obsidian CLI only if exact note text is required for the next grill question.]",
+      "```",
     ].join("\n");
-  });
-  const judgmentLines = session.candidateJudgments.map((judgment) => {
-    return `- [${judgment.userStatus}] ${compactLine(judgment.text)}`;
-  });
-  const insightLines = session.newInsights.map((insight) => `- ${compactLine(insight.text)}`);
-  const unresolvedLines = session.unresolvedQuestions.map((question) => `- ${compactLine(question)}`);
-  const grillTurnLines = session.grillTurns.slice(-3).map((turn) => {
-    return [
-      `- 问: ${compactLine(turn.question)}`,
-      turn.answer ? `  答: ${compactLine(turn.answer)}` : undefined,
-      turn.resultingInsight ? `  结果: ${compactLine(turn.resultingInsight)}` : undefined,
-    ].filter(Boolean).join("\n");
   });
 
   return [
-    "# Grill Briefing",
+    "# Stage Briefing",
     "",
-    "这是进入 review_grill 时使用的阶段切换 compact。它保留有用判断材料，降低前一阶段 memory search 表格、工具轨迹和展示格式指令的影响。",
+    "这是进入 review_grill 时使用的唯一阶段切换上下文。它保留原始 insight、当前语境、用户 review 后可用于 grill 的旧笔记证据和 grill 阶段规则；不要依赖 memory 阶段的工具调用、QMD 输出或重复候选表格。",
     "",
     "## Session Files",
     "",
     `- Session directory: ${sessionDir}`,
     `- State JSON: ${statePath}`,
     `- Grill context: ${grillContextPath}`,
-    `- Grill briefing: ${grillBriefingPath}`,
+    `- Stage briefing: ${stageBriefingPath}`,
     "",
     "## 原始 Insight",
     "",
@@ -58,25 +107,9 @@ export function buildGrillBriefing(active: ActiveSession): string {
     "",
     session.context,
     "",
-    "## 可用的旧笔记阻力",
+    "## Grill Evidence Notes",
     "",
-    memoryLines.length > 0 ? memoryLines.join("\n") : "- 暂无已确认有用的旧笔记候选。",
-    "",
-    "## 正在形成的候选判断",
-    "",
-    judgmentLines.length > 0 ? judgmentLines.join("\n") : "- 暂无稳定候选判断。",
-    "",
-    "## 新方向",
-    "",
-    insightLines.length > 0 ? insightLines.join("\n") : "- 暂无记录。",
-    "",
-    "## 最近的 Grill Turn",
-    "",
-    grillTurnLines.length > 0 ? grillTurnLines.join("\n") : "- 暂无记录。",
-    "",
-    "## 未解决问题",
-    "",
-    unresolvedLines.length > 0 ? unresolvedLines.join("\n") : "- 暂无。",
+    memorySections.length > 0 ? memorySections.join("\n\n") : "- 暂无 accepted/uncertain 的旧笔记证据；先让用户确认 memory candidate，再继续 grill。",
     "",
     "## Grill 模式规则",
     "",
@@ -88,11 +121,15 @@ export function buildGrillBriefing(active: ActiveSession): string {
   ].join("\n");
 }
 
-export function writeGrillBriefing(active: ActiveSession): string {
-  const briefing = buildGrillBriefing(active);
-  writeFileSync(active.grillBriefingPath, briefing.trim() + "\n", "utf-8");
+export const buildGrillBriefing = buildStageBriefing;
+
+export function writeStageBriefing(active: ActiveSession): string {
+  const briefing = buildStageBriefing(active);
+  writeFileSync(active.stageBriefingPath, briefing.trim() + "\n", "utf-8");
   return briefing;
 }
+
+export const writeGrillBriefing = writeStageBriefing;
 
 export function loadGrillInsightInstructions(): string {
   if (!existsSync(GRILL_INSIGHT_PATH)) {
@@ -169,10 +206,10 @@ export function buildMemoryReviewPrompt(active: ActiveSession): string {
 }
 
 export function buildReviewGrillPrompt(active: ActiveSession): string {
-  const { session, sessionDir, statePath, grillContextPath, grillBriefingPath } = active;
-  const briefing = existsSync(grillBriefingPath)
-    ? readFileSync(grillBriefingPath, "utf-8").trim()
-    : buildGrillBriefing(active);
+  const { session, sessionDir, statePath, grillContextPath, stageBriefingPath } = active;
+  const briefing = existsSync(stageBriefingPath)
+    ? readFileSync(stageBriefingPath, "utf-8").trim()
+    : buildStageBriefing(active);
 
   return [
     "Enter the Review-Grill Loop for the active /insight session.",
@@ -183,9 +220,9 @@ export function buildReviewGrillPrompt(active: ActiveSession): string {
     `- Session directory: ${sessionDir}`,
     `- State JSON: ${statePath}`,
     `- Grill context: ${grillContextPath}`,
-    `- Grill briefing: ${grillBriefingPath}`,
+    `- Stage briefing: ${stageBriefingPath}`,
     "",
-    "Use this compact grill briefing as the current stage context:",
+    "Use this compact stage briefing as the current stage context. Ignore prior memory-stage tool chatter, QMD traces, and duplicate candidate tables unless the user explicitly asks to debug retrieval.",
     briefing,
     "",
     "Your next actions:",

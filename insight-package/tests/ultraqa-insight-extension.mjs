@@ -365,9 +365,9 @@ try {
   assert.equal(state.stage, "review_grill");
   assert.ok(state.memoryReviews.some((review) => review.status === "accepted"));
   assert.ok(state.memoryReviews.some((review) => review.status === "rejected"));
-  const grillBriefingPath = join(normalSessionDir, "grill-briefing.md");
-  assert.ok(existsSync(grillBriefingPath));
-  assert.ok(!readFileSync(grillBriefingPath, "utf-8").includes("multiple-choice"));
+  const stageBriefingPath = join(normalSessionDir, "stage-briefing.md");
+  assert.ok(existsSync(stageBriefingPath));
+  assert.ok(!readFileSync(stageBriefingPath, "utf-8").includes("multiple-choice"));
   const compactGrillMessages = await normal.emitContext([
     { role: "user", content: "old memory-review chatter", timestamp: Date.now() - 3 },
     { role: "assistant", content: "| Title | Source | Relation |", timestamp: Date.now() - 2 },
@@ -375,7 +375,7 @@ try {
     { role: "user", content: "进入 grill 后继续", timestamp: Date.now() },
   ]);
   assert.equal(compactGrillMessages.length, 2);
-  assert.ok(compactGrillMessages[0].content.includes("Grill Briefing"));
+  assert.ok(compactGrillMessages[0].content.includes("Stage Briefing"));
   assert.equal(compactGrillMessages[1].content, "进入 grill 后继续");
   record("ADV-E2E-002C", "pass", "entering grill writes briefing and compacts next model context");
 
