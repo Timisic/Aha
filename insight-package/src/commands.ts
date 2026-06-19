@@ -3,7 +3,7 @@ import { buildAgentPrompt, buildStagePrompt } from "./prompts.ts";
 import { createSession, listSessionSummary, loadSession } from "./session.ts";
 import { clearInsightMode, persistActiveSessionBinding, persistInactiveSessionBinding, prepareAgentPrompt, setActiveSession, type InsightRuntime } from "./runtime.ts";
 import { normalizeInsightArgs } from "./domain.ts";
-import { recordTrajectoryEvent } from "./trajectory.ts";
+import { recordTrajectorySessionCancelled, recordTrajectorySessionRestored, recordTrajectorySessionStarted } from "./trajectory.ts";
 
 export function registerInsightCommands(pi: ExtensionAPI, runtime: InsightRuntime): void {
   pi.registerCommand("insight", {
@@ -34,7 +34,7 @@ export function registerInsightCommands(pi: ExtensionAPI, runtime: InsightRuntim
 
         setActiveSession(runtime, ctx, resumed);
         persistActiveSessionBinding(pi, resumed);
-        recordTrajectoryEvent(resumed, "session_restored", {
+        recordTrajectorySessionRestored(resumed, {
           source: "insight_resume_command",
           sessionDir: resumed.sessionDir,
           statePath: resumed.statePath,
@@ -55,7 +55,7 @@ export function registerInsightCommands(pi: ExtensionAPI, runtime: InsightRuntim
 
       if (!pasted && (runtime.activeSession || runtime.pendingAgentPrompt)) {
         const id = runtime.activeSession?.session.id ?? runtime.pendingAgentPrompt?.sessionId;
-        recordTrajectoryEvent(runtime.activeSession, "session_cancelled", {
+        recordTrajectorySessionCancelled(runtime.activeSession, {
           source: "blank_insight_command",
           pendingPromptSessionId: runtime.pendingAgentPrompt?.sessionId,
         });
@@ -82,7 +82,7 @@ export function registerInsightCommands(pi: ExtensionAPI, runtime: InsightRuntim
       const created = createSession(ctx.cwd, input);
       setActiveSession(runtime, ctx, created);
       persistActiveSessionBinding(pi, created);
-      recordTrajectoryEvent(created, "session_started", {
+      recordTrajectorySessionStarted(created, {
         source: "insight_command",
         sessionDir: created.sessionDir,
         statePath: created.statePath,
