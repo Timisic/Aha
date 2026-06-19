@@ -127,6 +127,7 @@ export interface ActiveSession {
   sessionDir: string;
   statePath: string;
   grillContextPath: string;
+  stageBriefingPath: string;
   grillBriefingPath: string;
   session: InsightSession;
 }

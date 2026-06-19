@@ -5,7 +5,7 @@ import { memorySearchResultComponent } from "./memory.ts";
 import { runInsightMemoryRetrieval } from "./memory-retrieval.ts";
 import { missingSourceNoteSummaryHeadings, refreshSourceNoteFromObsidian, sourceNoteSummaryWarnings } from "./source-note.ts";
 import { appendMarkdownSection, localizedGrillHeading, summaryDraftPathFor } from "./session.ts";
-import { buildReviewGrillPrompt, writeGrillBriefing } from "./prompts.ts";
+import { buildReviewGrillPrompt, writeStageBriefing } from "./prompts.ts";
 import { persistActiveSessionBinding, prepareAgentPrompt, saveActiveState, type InsightRuntime } from "./runtime.ts";
 import { assertCanConfirmReadiness, assertCanSaveSummary, evaluateInsightUpdatePolicy, shouldCreateReviewGrillBriefing } from "./stage-policy.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -310,10 +310,10 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
         runtime.activeSession.session.summaryDraft = params.summaryDraft;
       }
 
-      let grillBriefingPath: string | undefined;
+      let stageBriefingPath: string | undefined;
       if (shouldCreateReviewGrillBriefing(previousStage, runtime.activeSession.session.stage)) {
-        writeGrillBriefing(runtime.activeSession);
-        grillBriefingPath = runtime.activeSession.grillBriefingPath;
+        writeStageBriefing(runtime.activeSession);
+        stageBriefingPath = runtime.activeSession.stageBriefingPath;
         prepareAgentPrompt(runtime, runtime.activeSession, buildReviewGrillPrompt(runtime.activeSession), { compact: true });
       }
 
@@ -324,10 +324,10 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
         content: [
           {
             type: "text",
-            text: grillBriefingPath
+            text: stageBriefingPath
               ? [
                   `Updated insight state: ${runtime.activeSession.session.stage}`,
-                  `Created grill briefing: ${grillBriefingPath}`,
+                  `Created stage briefing: ${stageBriefingPath}`,
                   "The next user turn will use a compact Review-Grill context.",
                 ].join("\n")
               : `Updated insight state: ${runtime.activeSession.session.stage}`,
@@ -337,7 +337,8 @@ export function registerInsightTools(pi: ExtensionAPI, runtime: InsightRuntime, 
           ok: true,
           statePath: runtime.activeSession.statePath,
           stage: runtime.activeSession.session.stage,
-          grillBriefingPath,
+          stageBriefingPath,
+          grillBriefingPath: stageBriefingPath,
         },
       };
       });

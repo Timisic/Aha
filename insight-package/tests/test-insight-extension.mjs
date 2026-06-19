@@ -230,6 +230,10 @@ writeFileSync(
     "  const pathArg = args.find((arg) => arg.startsWith('path='));",
     "  if (pathArg && existsSync(pathArg.slice('path='.length))) {",
     "    process.stdout.write(readFileSync(pathArg.slice('path='.length), 'utf-8'));",
+    "  } else if (joined.includes('feedback-visible-gap')) {",
+    "    process.stdout.write('# 反馈是经验差距的显影装置\\n\\n反馈原文：把经验差距、理解缺口、判断偏差和半成品边界暴露出来。');",
+    "  } else if (joined.includes('feedback-loop-source')) {",
+    "    process.stdout.write('# 反馈迭代的来源动力\\n\\n反馈迭代原文：输出得到反馈时，也需要避免确认偏差。');",
     "  } else if (joined.includes('feedback-linked-context')) {",
     "    process.stdout.write('反馈密度会影响学习系统中判断被修正的速度。');",
     "  } else if (joined.includes('unrelated-shopping')) {",
@@ -855,19 +859,23 @@ try {
   );
   state = JSON.parse(readFileSync(statePath, "utf-8"));
   assert.equal(state.stage, "review_grill");
-  const grillBriefingPath = join(sessionDir, "grill-briefing.md");
-  assert.ok(existsSync(grillBriefingPath), "grill-briefing.md written when entering grill");
-  const grillBriefing = readFileSync(grillBriefingPath, "utf-8");
-  assert.ok(grillBriefing.includes("Grill Briefing"));
-  assert.ok(!grillBriefing.includes("multiple-choice"), "briefing does not hard-ban answer forms");
-  assert.ok(grillBriefing.includes("可用的旧笔记阻力"));
+  const stageBriefingPath = join(sessionDir, "stage-briefing.md");
+  assert.ok(existsSync(stageBriefingPath), "stage-briefing.md written when entering grill");
+  const stageBriefing = readFileSync(stageBriefingPath, "utf-8");
+  assert.ok(stageBriefing.includes("Stage Briefing"));
+  assert.ok(!stageBriefing.includes("multiple-choice"), "briefing does not hard-ban answer forms");
+  assert.ok(stageBriefing.includes("Grill Evidence Notes"));
+  assert.ok(stageBriefing.includes("反馈原文：把经验差距"), "briefing includes accepted note source content");
+  assert.ok(!stageBriefing.includes("qmd trace noise"), "briefing excludes prior tool noise");
   const compactGrillMessages = await harness.emitContext([
     { role: "user", content: "旧 memory 表格消息", timestamp: Date.now() - 2 },
     { role: "assistant", content: "| Note | Relation |", timestamp: Date.now() - 1 },
     { role: "user", content: "进入 grill 后继续", timestamp: Date.now() },
   ]);
   assert.equal(compactGrillMessages.length, 2, "entering grill compacts context to hidden briefing plus latest user turn");
-  assert.ok(compactGrillMessages[0].content.includes("Grill Briefing"));
+  assert.ok(compactGrillMessages[0].content.includes("Stage Briefing"));
+  assert.ok(compactGrillMessages[0].content.includes("反馈原文：把经验差距"));
+  assert.ok(!compactGrillMessages[0].content.includes("| Note | Relation |"));
   assert.equal(compactGrillMessages[1].content, "进入 grill 后继续");
   assert.ok(
     harness.notifications.some((item) => item.status?.[1] === `insight ${state.id} · Grill`),

@@ -834,7 +834,7 @@ export function memorySearchResultComponent(result: { details?: unknown }): Simp
 export function isInsightStateDiscoveryCommand(command: string): boolean {
   const normalized = command.replace(/\s+/g, " ").trim();
   if (!/\b(find|fd|rg|ls)\b/.test(normalized)) return false;
-  return /(state\.json|grill-context\.md|grill-briefing\.md|summary-draft\.md)/.test(normalized);
+  return /(state\.json|grill-context\.md|grill-briefing\.md|stage-briefing\.md|summary-draft\.md)/.test(normalized);
 }
 
 export function isDirectQmdShellCommand(command: string): boolean {
@@ -865,6 +865,7 @@ export function isInsightMemoryStageReadBlocked(input: unknown, activeSession?: 
     ? [
         activeSession.statePath,
         activeSession.grillContextPath,
+        activeSession.stageBriefingPath,
         activeSession.grillBriefingPath,
         summaryDraftPathFor(activeSession.sessionDir),
         GRILL_INSIGHT_PATH,

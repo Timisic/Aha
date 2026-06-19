@@ -24,6 +24,10 @@ _Avoid_: prompt, background text
 The original Obsidian note or note excerpt the user provides as part of context for an insight session. It is optional, but when present it anchors the final summary draft and should not be edited directly by default.
 _Avoid_: source of truth, output document
 
+**Source Note Snapshot**:
+The captured content shape of a source note at intake, used to preserve summary structure and warn about drift without rewriting the original note.
+_Avoid_: editable source, final document
+
 **Insight Input**:
 The actual material the user gives `/insight` at session start. It is usually a source note alone, or a source note plus one fresh user thought; it is not usually a short search query, remembered title, or isolated keyword.
 _Avoid_: search query, keyword prompt, remembered title
@@ -39,6 +43,10 @@ _Avoid_: inferred related note, semantic guess
 **Missing Explicit Cue**:
 An explicit memory cue that the system attempted to retrieve but could not find. It should be surfaced to the user rather than silently dropped.
 _Avoid_: irrelevant cue, failed judgment
+
+**Explicit Cue Result**:
+The retrieval status of a user-provided memory cue: found in displayed candidates, found only in the pool, not found, or ambiguous.
+_Avoid_: missing cue only, search score
 
 **Memory**:
 Prior notes, reviews, knowledge-base entries, judgments, projects, scenes, or artifacts that the user has written or confirmed before. Memory is local past material, not generic web search or temporary model association.
@@ -68,6 +76,14 @@ _Avoid_: completed review, relevance score, background
 A retrieved old note presented for the user's review. Memory candidates may be merged from multiple searches, deduplicated, and shown in a compact table with title, relation, reason, and why to read it first, not as a completed interpretation.
 _Avoid_: reviewed note, final evidence, exhaustive result
 
+**Memory Candidate Pool**:
+The bounded ranked pool of retrieved candidates kept across memory searches. Displayed memory candidates are only the top slice shown to the user.
+_Avoid_: visible table, final evidence
+
+**Memory Review**:
+The user's explicit acceptance, rejection, or uncertainty judgment about a memory candidate before it can shape grill or summary.
+_Avoid_: passive viewing, agent-selected evidence
+
 **Memory Candidate Recall Benchmark**:
 A small retrieval benchmark that evaluates whether the Memory Stage surfaces the old notes that should become review candidates for a realistic insight input. It scores candidate-note recall and ranking, not the quality of the final judgment, grilling, or summary draft.
 _Avoid_: full Aha quality evaluation, final-answer evaluation, summary quality score
@@ -75,6 +91,10 @@ _Avoid_: full Aha quality evaluation, final-answer evaluation, summary quality s
 **Memory Pipeline Benchmark**:
 A benchmark that approximates the Memory Stage retrieval pipeline by running structured QMD retrieval, expanding QMD seed candidates through Obsidian backlinks, merging candidates, and scoring whether must-recall memories appear in the final candidate list.
 _Avoid_: QMD-only benchmark, final summary evaluation, human judgment quality score
+
+**Core Loop Benchmark**:
+A scripted benchmark for the human-in-the-loop contract across candidate display, memory review, readiness gating, summary save, source-note non-mutation, resume, and second memory search.
+_Avoid_: retrieval benchmark, summary quality score
 
 **Benchmark Case**:
 One human-authored evaluation example for the Memory Candidate Recall Benchmark. Its source of truth is the realistic insight input plus the must-recall memories; executable QMD queries may be derived from it by an agent or script.
