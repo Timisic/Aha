@@ -2,6 +2,24 @@
 
 This folder holds the small evaluation set for Aha / Pi `/insight` memory recall.
 
+
+## Public Synthetic Baseline
+
+The required CI benchmark uses only repository-owned synthetic data and never reads `bench/aha-memory-cases.json`:
+
+```bash
+npm --prefix insight-package run test:bench:synthetic
+```
+
+Inputs and baseline files:
+
+- `bench/synthetic/aha-memory-cases.json` — public active cases covering direct support, challenge/counterexample, boundary condition, cross-domain resemblance, no-related-memory, duplicate basenames, aliases, source-note self-hit, explicit cue below top-K, and second-round retrieval.
+- `bench/synthetic/vault/` — public Markdown fixture vault.
+- `bench/baselines/synthetic-baseline.json` — machine-readable thresholds.
+- `bench/baselines/synthetic-baseline.md` — human-readable summary.
+
+The required gate uses `--query-generator rules` and `--reranker none`; networked model calls are reserved for `.github/workflows/agent-bench.yml`, which is manual and non-gating. CI uploads generated `bench/reports/latest/synthetic-*.json` as artifacts rather than committing them.
+
 ## What To Maintain
 
 Real benchmark cases live in the local-only `aha-memory-cases.json`. This file can contain private note text and Obsidian paths, so it is ignored by Git and should not be committed.

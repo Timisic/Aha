@@ -46,7 +46,7 @@ function sliceSourceNote(content, caseItem) {
 export function readSourceNote(sourceNotePath, casesDir, caseId, caseItem = {}) {
   const rawPath = expandHome(String(sourceNotePath ?? "").trim());
   if (!rawPath) return "";
-  const vaultRoot = expandHome(process.env.AHA_BENCH_VAULT_ROOT || "/Users/hong/Obsidian Notes");
+  const vaultRoot = expandHome(process.env.AHA_BENCH_VAULT_ROOT || "~/Obsidian Notes");
   const candidates = isAbsolute(rawPath)
     ? [rawPath]
     : [
@@ -112,7 +112,7 @@ export function validateCase(caseItem) {
   if (duplicates.length > 0) {
     throw new Error(`${caseId}: benchmark gold paths contain duplicate canonical identities: ${Array.from(new Set(duplicates)).join(", ")}`);
   }
-  const vaultRoot = expandHome(process.env.AHA_BENCH_VAULT_ROOT || "/Users/hong/Obsidian Notes");
+  const vaultRoot = expandHome(process.env.AHA_BENCH_VAULT_ROOT || "~/Obsidian Notes");
   const resolver = buildVaultPathResolver(vaultRoot);
   for (const goldPath of [...caseItem.must_recall, ...(caseItem.nice_to_have ?? [])]) {
     const resolved = resolveVaultPath(goldPath, resolver);

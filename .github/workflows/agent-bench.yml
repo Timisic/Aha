@@ -1,0 +1,80 @@
+name: Optional Agent Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      query_agent_bin:
+        description: Agent CLI used for query generation
+        required: false
+        default: codex
+      rerank_agent_bin:
+        description: Agent CLI used for reranking
+        required: false
+        default: codex
+      query_agent_model:
+        description: Optional query-agent model override
+        required: false
+        default: ''
+      rerank_agent_model:
+        description: Optional rerank-agent model override
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  agent-benchmark:
+    name: experimental agent synthetic benchmark
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: insight-package/package-lock.json
+      - name: Clean install from lockfile
+        run: npm ci
+        working-directory: insight-package
+      - name: Run optional agent query/rerank experiment if agent CLIs exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bench/reports/latest
+          if ! command -v "${{ inputs.query_agent_bin }}" >/dev/null 2>&1 || ! command -v "${{ inputs.rerank_agent_bin }}" >/dev/null 2>&1; then
+            cat > bench/reports/latest/agent-bench-skipped.json <<JSON
+          {
+            "status": "skipped",
+            "reason": "requested agent CLI not installed on runner",
+            "query_agent_bin": "${{ inputs.query_agent_bin }}",
+            "rerank_agent_bin": "${{ inputs.rerank_agent_bin }}",
+            "experimental": true,
+            "required_merge_check": false
+          }
+          JSON
+            cat bench/reports/latest/agent-bench-skipped.json
+            exit 0
+          fi
+          AHA_BENCH_VAULT_ROOT="$PWD/bench/synthetic/vault" \
+          node scripts/bench/run-pipeline-bench.mjs \
+            --cases bench/synthetic/aha-memory-cases.json \
+            --report bench/reports/latest/agent-synthetic-pipeline.json \
+            --index synthetic \
+            --collection synthetic \
+            --qmd "$PWD/scripts/bench/synthetic-provider.mjs" \
+            --obsidian "$PWD/scripts/bench/synthetic-provider.mjs" \
+            --query-generator agent \
+            --query-agent-bin "${{ inputs.query_agent_bin }}" \
+            --query-agent-model "${{ inputs.query_agent_model }}" \
+            --reranker agent \
+            --rerank-agent-bin "${{ inputs.rerank_agent_bin }}" \
+            --rerank-agent-model "${{ inputs.rerank_agent_model }}"
+      - name: Upload experimental reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: optional-agent-benchmark-reports
+          path: bench/reports/latest/agent-*.json
+          if-no-files-found: ignore

@@ -1,51 +1,37 @@
 # Scripts
 
-This directory keeps executable project scripts grouped by workflow.
-
-## Layout
+Executable project scripts are grouped by workflow.
 
 ```text
 scripts/
-  bench/
-    build-fixture.mjs       # Build a qmd bench fixture from active cases.
-    run-qmd-bench.mjs       # L1: QMD-only retrieval benchmark.
-    run-pipeline-bench.mjs  # L2: query agent -> QMD -> backlinks -> rerank benchmark.
-    summarize-report.mjs    # Print a compact QMD bench report summary.
-  insight/
-    test-extension.mjs      # Standard /insight extension regression test.
-    ultraqa-extension.mjs   # Adversarial /insight regression matrix.
-  lib/
-    aha-*.mjs               # Shared benchmark query, scoring, and rerank helpers.
+  bench/                 # L1/L2 benchmark runners and report summaries.
+  insight/               # Extension smoke/demo scripts.
+  lib/                   # Shared benchmark helpers.
 ```
 
-## Common Commands
-
-Run the extension regression suite against the package source:
+## Extension checks
 
 ```bash
-INSIGHT_EXTENSION_PATH=/Users/hong/Downloads/Pi/insight-package/extensions/insight.ts \
-  bun scripts/insight/test-extension.mjs
+cd insight-package
+npm test
+npm run test:ultraqa
+npm run test:doctor
+npm run build
+npm run demo:offline
 ```
 
-Run adversarial extension checks:
+From the repository root, run the first-run synthetic demo directly:
 
 ```bash
-INSIGHT_EXTENSION_PATH=/Users/hong/Downloads/Pi/insight-package/extensions/insight.ts \
-  bun scripts/insight/ultraqa-extension.mjs
+node scripts/insight/demo-offline.mjs
 ```
 
-Run the QMD-only benchmark:
+## Benchmarks
 
 ```bash
-cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json # first run only; then edit local private cases
+cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json
 node scripts/bench/run-qmd-bench.mjs
-```
-
-Run the pipeline benchmark:
-
-```bash
 node scripts/bench/run-pipeline-bench.mjs
 ```
 
-Latest benchmark reports are written to `bench/reports/latest/`.
-Timestamped historical reports are written to `bench/reports/archive/`.
+Latest benchmark reports are written to `bench/reports/latest/`; timestamped historical reports are written to `bench/reports/archive/`.

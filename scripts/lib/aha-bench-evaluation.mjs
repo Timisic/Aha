@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { buildVaultPathResolver, normalizeIdentityHint, resolveNoteIdentity, slugPath as sharedSlugPath } from "../../insight-package/src/path-resolver.js";
 
 export function expandHome(path) {
   if (path === "~") return homedir();
@@ -7,42 +8,41 @@ export function expandHome(path) {
   return path;
 }
 
+function vaultRoot() {
+  return expandHome(process.env.AHA_BENCH_VAULT_ROOT || "/Users/hong/Obsidian Notes");
+}
+
+function resolveForScore(path) {
+  const resolver = buildVaultPathResolver(vaultRoot());
+  const resolved = resolveNoteIdentity(expandHome(String(path ?? "")), resolver);
+  return resolved.status === "resolved" ? resolved.canonicalId : "";
+}
+
 export function normalizePathForScore(path) {
-  let normalized = String(path ?? "");
-  if (normalized.startsWith("qmd://")) {
-    const withoutScheme = normalized.slice("qmd://".length);
-    const slashIdx = withoutScheme.indexOf("/");
-    normalized = slashIdx >= 0 ? withoutScheme.slice(slashIdx + 1) : withoutScheme;
-  }
-  normalized = normalized.replace(/[?#].*$/, "");
-  return normalized.toLowerCase().replace(/^\/+|\/+$/g, "");
+  return normalizeIdentityHint(expandHome(String(path ?? "")));
 }
 
 function vaultRelativePath(path) {
   const normalized = normalizePathForScore(expandHome(String(path ?? "")));
-  const vaultRoot = normalizePathForScore(expandHome(process.env.AHA_BENCH_VAULT_ROOT || "/Users/hong/Obsidian Notes"));
+  const vaultRoot = normalizePathForScore(expandHome(process.env.AHA_BENCH_VAULT_ROOT || "~/Obsidian Notes"));
   if (normalized === vaultRoot) return "";
   if (normalized.startsWith(`${vaultRoot}/`)) return normalized.slice(vaultRoot.length + 1);
   return normalized;
 }
 
 function slugPath(path) {
-  return vaultRelativePath(path)
-    .split("/")
-    .map((segment) =>
-      segment
-        .replace(/[\s，。；;、：:（）()【】\[\]《》<>!?！？]+/g, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-+|-+$/g, ""),
-    )
-    .join("/");
+  return sharedSlugPath(vaultRelativePath(path));
 }
 
 export function qmdExpectedPath(path) {
-  return slugPath(path);
+  const resolved = resolveForScore(path);
+  return resolved || slugPath(path);
 }
 
 export function pathsMatch(result, expected) {
+  const rr = resolveForScore(result);
+  const er = resolveForScore(expected);
+  if (rr || er) return !!rr && !!er && rr === er;
   const nr = normalizePathForScore(result);
   const ne = normalizePathForScore(expected);
   const sr = slugPath(result);

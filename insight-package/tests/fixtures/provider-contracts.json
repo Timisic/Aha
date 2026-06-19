@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "qmd": [
+    { "name": "valid-array", "stdout": "[{\"file\":\"support/direct-support.md\",\"title\":\"Direct Support\",\"snippet\":\"feedback loop\",\"score\":0.9}]", "exitCode": 0, "expectedStatus": "ok", "expectedCount": 1 },
+    { "name": "valid-object-results", "stdout": "{\"results\":[{\"path\":\"challenge/counterexample.md\",\"content\":\"calibrated signal\"}]}", "exitCode": 0, "expectedStatus": "ok", "expectedCount": 1 },
+    { "name": "empty-result", "stdout": "[]", "exitCode": 0, "expectedStatus": "empty", "expectedCount": 0 },
+    { "name": "partial-nonzero", "stdout": "[{\"file\":\"boundary/quiet-boundary.md\"}]", "stderr": "provider warning", "exitCode": 2, "expectedStatus": "partial", "expectedCount": 1 },
+    { "name": "connectivity-failure", "stdout": "[]", "stderr": "connect ECONNREFUSED 127.0.0.1:18081", "exitCode": 1, "expectedStatus": "unavailable", "expectedCount": 0 },
+    { "name": "timeout-cancellation", "stdout": "", "stderr": "", "exitCode": null, "timedOut": true, "expectedStatus": "timeout", "expectedCount": 0 },
+    { "name": "oversized-output", "stdoutBytes": 1200000, "exitCode": 0, "expectedStatus": "oversized", "expectedCount": 0 },
+    { "name": "malformed-json", "stdout": "{not json", "exitCode": 0, "expectedStatus": "malformed", "expectedCount": 0 }
+  ],
+  "obsidian": [
+    { "name": "backlink-json", "stdout": "[{\"path\":\"support/direct-support.md\",\"title\":\"Direct Support\",\"count\":1}]", "exitCode": 0, "expectedStatus": "ok", "expectedCount": 1 },
+    { "name": "backlink-text", "stdout": "support/direct-support.md\nchallenge/counterexample.md\n", "exitCode": 0, "expectedStatus": "ok", "expectedCount": 2 },
+    { "name": "ambiguous-note", "stdout": "duplicates/alpha/project-note.md\nduplicates/beta/project-note.md\n", "exitCode": 0, "expectedStatus": "ambiguous", "expectedCount": 2 },
+    { "name": "note-read-failure", "stdout": "", "stderr": "not found", "exitCode": 1, "expectedStatus": "unavailable", "expectedCount": 0 }
+  ],
+  "reranker": [
+    { "name": "valid-ranked", "stdout": "{\"ranked_ids\":[\"c001\",\"c002\"]}", "exitCode": 0, "expectedStatus": "ok", "expectedCount": 2 },
+    { "name": "empty-ranked", "stdout": "{\"ranked_ids\":[]}", "exitCode": 0, "expectedStatus": "empty", "expectedCount": 0 },
+    { "name": "malformed-ranked", "stdout": "not-json", "exitCode": 0, "expectedStatus": "malformed", "expectedCount": 0 },
+    { "name": "partial-ranked", "stdout": "{\"ranked_ids\":[\"c001\"]}", "stderr": "agent warning", "exitCode": 2, "expectedStatus": "partial", "expectedCount": 1 }
+  ]
+}
