@@ -104,6 +104,15 @@ function createHarness(cwd, initialSessionEntries = []) {
   };
 }
 
+function readTrajectoryEvents(sessionDir) {
+  const eventsPath = join(sessionDir, "trajectory", "events.jsonl");
+  return readFileSync(eventsPath, "utf-8")
+    .trim()
+    .split(/\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
 const cwd = mkdtempSync(join(tmpdir(), "insight-extension-cwd-"));
 const otherCwd = mkdtempSync(join(tmpdir(), "insight-extension-other-cwd-"));
 const insightHome = mkdtempSync(join(tmpdir(), "insight-extension-home-"));
@@ -118,6 +127,8 @@ process.env.QMD_ARGS_LOG = qmdArgsLog;
 process.env.INSIGHT_EXPAND_BACKLINKS = "1";
 process.env.INSIGHT_MEMORY_RERANKER = "none";
 process.env.INSIGHT_COMMAND_OUTPUT_MAX_BYTES = "4096";
+delete process.env.INSIGHT_TRAJECTORY;
+delete process.env.INSIGHT_DEBUG_TRAJECTORY;
 
 writeFileSync(
   fakeQmd,
@@ -130,6 +141,11 @@ writeFileSync(
     "if ((process.env.QMD_FAKE_MODE || '') === 'large') {",
     "  process.stdout.write('x'.repeat(128 * 1024));",
     "  setInterval(() => {}, 1000);",
+    "}",
+    "if ((process.env.QMD_FAKE_MODE || '') === 'connectivity') {",
+    "  process.stderr.write('Error: connect ECONNREFUSED 127.0.0.1:18081');",
+    "  process.stdout.write('[]');",
+    "  process.exit(0);",
     "}",
     "process.stdout.write(JSON.stringify([",
     "  {",
@@ -248,6 +264,7 @@ try {
   const grillPath = join(sessionDir, "grill-context.md");
   assert.ok(existsSync(statePath), "state.json created");
   assert.ok(existsSync(grillPath), "grill-context.md created");
+  assert.ok(!existsSync(join(sessionDir, "trajectory")), "trajectory directory is not created when disabled");
   const initialGrillContext = readFileSync(grillPath, "utf-8");
   assert.ok(initialGrillContext.includes("# Insight Grill 上下文"));
   assert.ok(initialGrillContext.includes("## Language"));
@@ -383,6 +400,130 @@ try {
     ),
     "explicit qmd search keeps the original lexical query",
   );
+  assert.ok(!existsSync(join(sessionDir, "trajectory")), "disabled trajectory remains off after context and tool activity");
+
+  process.env.INSIGHT_TRAJECTORY = "1";
+  const trajectoryHarness = createHarness(cwd);
+  await trajectoryHarness.commands.get("insight").handler(
+    [
+      "Insight: 轨迹调试需要看到模型上下文和工具行为",
+      "",
+      "Context: 这是 L2 trajectory 的测试。",
+    ].join("\n"),
+    trajectoryHarness.ctx,
+  );
+  const trajectoryIndex = JSON.parse(readFileSync(indexPath, "utf-8"));
+  const trajectorySessionDir = trajectoryIndex[0].dir;
+  const trajectoryStatePath = join(trajectorySessionDir, "state.json");
+  let trajectoryEvents = readTrajectoryEvents(trajectorySessionDir);
+  assert.ok(trajectoryEvents.some((event) => event.event === "session_started"), "trajectory records session start");
+  assert.ok(existsSync(join(trajectorySessionDir, "trajectory", "events.jsonl")), "trajectory events jsonl is created when enabled");
+
+  const trajectoryMessages = await trajectoryHarness.emitContext([
+    { role: "user", content: "正式进入 trajectory 测试", timestamp: Date.now() },
+  ]);
+  assert.equal(trajectoryMessages.length, 2, "trajectory test still injects hidden context once");
+  trajectoryEvents = readTrajectoryEvents(trajectorySessionDir);
+  const contextBuilt = trajectoryEvents.find((event) => event.event === "context_built");
+  assert.ok(contextBuilt, "trajectory records context injection");
+  assert.equal(contextBuilt.data.beforeMessageCount, 1);
+  assert.equal(contextBuilt.data.afterMessageCount, 2);
+  assert.equal(contextBuilt.data.insertAt, 0);
+  assert.ok(contextBuilt.data.contextHash, "context trajectory event includes a stable context hash");
+  assert.ok(existsSync(contextBuilt.data.artifact.path), "context trajectory event links to an artifact");
+  assert.ok(
+    readFileSync(contextBuilt.data.artifact.path, "utf-8").includes("hidden-insight-session-context"),
+    "context artifact preserves hidden Aha prompt content",
+  );
+
+  const trajectoryBlocked = await trajectoryHarness.emitToolCall("bash", {
+    command: "qmd query should be blocked",
+  });
+  assert.equal(trajectoryBlocked?.block, true, "trajectory test still blocks direct qmd shell calls");
+  trajectoryEvents = readTrajectoryEvents(trajectorySessionDir);
+  assert.ok(
+    trajectoryEvents.some((event) => event.event === "tool_call_blocked" && event.data.toolName === "bash"),
+    "trajectory records blocked tool policy decisions",
+  );
+
+  const trajectorySearchResult = await trajectoryHarness.tools.get("insight_search_memory").execute(
+    "trajectory-search",
+    { queries: [{ text: "trajectory debug memory", kind: "raw" }], limit: 4 },
+    undefined,
+    undefined,
+    trajectoryHarness.ctx,
+  );
+  assert.ok(
+    trajectorySearchResult.content[0].text.includes("| Note | Relation | Hit | Why |"),
+    "trajectory-enabled search keeps user-facing memory table unchanged",
+  );
+  trajectoryEvents = readTrajectoryEvents(trajectorySessionDir);
+  for (const eventName of [
+    "tool_started",
+    "tool_finished",
+    "memory_query_started",
+    "qmd_call_finished",
+    "backlink_expansion_finished",
+    "memory_candidates_merged",
+    "rerank_finished",
+    "state_saved",
+  ]) {
+    assert.ok(
+      trajectoryEvents.some((event) => event.event === eventName),
+      `trajectory records ${eventName}`,
+    );
+  }
+  const toolFinished = trajectoryEvents.find(
+    (event) => event.event === "tool_finished" && event.data.toolName === "insight_search_memory",
+  );
+  assert.equal(toolFinished.data.status, "ok");
+  assert.ok(existsSync(toolFinished.data.outputArtifact.path), "successful tool result is linked as an artifact");
+  const trajectoryState = JSON.parse(readFileSync(trajectoryStatePath, "utf-8"));
+  assert.equal(trajectoryState.stage, "memory_review");
+
+  const trajectoryRestoreHarness = createHarness(cwd, [
+    {
+      type: "custom",
+      customType: "insight.active_session",
+      data: { active: true, sessionId: trajectoryState.id },
+      id: "trajectory-custom-restore",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+    },
+  ]);
+  await trajectoryRestoreHarness.emitSessionStart("resume");
+  trajectoryEvents = readTrajectoryEvents(trajectorySessionDir);
+  assert.ok(
+    trajectoryEvents.some((event) => event.event === "session_restored" && event.data.source === "session_start"),
+    "trajectory records enabled session restore",
+  );
+
+  process.env.QMD_FAKE_MODE = "connectivity";
+  const connectivityHarness = createHarness(cwd);
+  await connectivityHarness.commands.get("insight").handler(
+    "Insight: connectivity issue trajectory\n\nContext: QMD tunnel down path",
+    connectivityHarness.ctx,
+  );
+  const connectivityIndex = JSON.parse(readFileSync(indexPath, "utf-8"));
+  const connectivitySessionDir = connectivityIndex[0].dir;
+  const connectivityResult = await connectivityHarness.tools.get("insight_search_memory").execute(
+    "trajectory-connectivity",
+    { queries: [{ text: "connectivity issue", kind: "raw" }], limit: 4 },
+    undefined,
+    undefined,
+    connectivityHarness.ctx,
+  );
+  assert.ok(connectivityResult.content[0].text.includes("Search issues"), "connectivity path still reports search issues");
+  const connectivityEvents = readTrajectoryEvents(connectivitySessionDir);
+  const qmdConnectivityEvent = connectivityEvents.find((event) => event.event === "qmd_call_finished");
+  assert.ok(qmdConnectivityEvent.data.connectivityIssue, "trajectory records QMD connectivity issues");
+  assert.equal(qmdConnectivityEvent.data.parsedCandidateCount, 0);
+  assert.ok(
+    connectivityEvents.some((event) => event.event === "state_saved" && event.data.candidateCount === 0),
+    "no-candidate connectivity path records state save metadata",
+  );
+  delete process.env.QMD_FAKE_MODE;
+  delete process.env.INSIGHT_TRAJECTORY;
 
   const secondSearchResult = await harness.tools.get("insight_search_memory").execute(
     "tool-1b",
@@ -842,4 +983,6 @@ try {
   delete process.env.INSIGHT_EXPAND_BACKLINKS;
   delete process.env.INSIGHT_MEMORY_RERANKER;
   delete process.env.INSIGHT_COMMAND_OUTPUT_MAX_BYTES;
+  delete process.env.INSIGHT_TRAJECTORY;
+  delete process.env.INSIGHT_DEBUG_TRAJECTORY;
 }

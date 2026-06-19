@@ -10,10 +10,13 @@ import {
   parseMemorySearchCandidates,
   qmdConnectivityIssue,
   runQmdCall,
+  structuredQmdQuery,
+  structuredQmdQueryFromObject,
   toMemoryCandidate,
 } from "./memory.ts";
 import { rerankMemoryCandidates } from "./memory-rerank.ts";
 import { persistActiveSessionBinding, saveActiveState, type InsightRuntime } from "./runtime.ts";
+import { recordTrajectoryEvent, summarizeTrajectoryValue, writeTrajectoryArtifact } from "./trajectory.ts";
 
 export async function runInsightMemoryRetrieval(
   pi: ExtensionAPI,
@@ -34,6 +37,7 @@ export async function runInsightMemoryRetrieval(
   const found: InsightSession["memoryCandidates"] = [];
   const errors: string[] = [];
   const active = runtime.activeSession;
+  const previousStage = active.session.stage;
 
   for (const query of params.queries) {
     const kind = normalizeMemoryQueryKind(query.kind);
@@ -51,6 +55,28 @@ export async function runInsightMemoryRetrieval(
       qmd: query.qmd,
     });
 
+    const qmdQuery = command === "qmd search"
+      ? text
+      : query.qmd
+        ? structuredQmdQueryFromObject(query.qmd, text, kind)
+        : structuredQmdQuery(text, kind);
+    const queryArtifact = writeTrajectoryArtifact(active, "memory", "memory-query", {
+      kind,
+      command,
+      text,
+      qmd: query.qmd,
+      qmdQuery,
+    });
+    recordTrajectoryEvent(active, "memory_query_started", {
+      kind,
+      command,
+      text: summarizeTrajectoryValue(text),
+      qmd: query.qmd,
+      qmdQuery: summarizeTrajectoryValue(qmdQuery),
+      queryArtifact,
+      retrievalLimit,
+    });
+    const qmdStartedAt = Date.now();
     const result = await runQmdCall(command, text, retrievalLimit, ctx, signal, undefined, kind, query.qmd);
 
     const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
@@ -71,6 +97,29 @@ export async function runInsightMemoryRetrieval(
         active.session,
       ),
     );
+    const outputArtifact = writeTrajectoryArtifact(active, "memory", "qmd-output", {
+      kind,
+      command,
+      text,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      code: result.code,
+      killed: result.killed,
+      connectivityIssue,
+      parsedCandidates,
+    });
+    recordTrajectoryEvent(active, "qmd_call_finished", {
+      kind,
+      command,
+      durationMs: Date.now() - qmdStartedAt,
+      code: result.code,
+      killed: result.killed,
+      connectivityIssue,
+      stdout: summarizeTrajectoryValue(result.stdout),
+      stderr: summarizeTrajectoryValue(result.stderr),
+      parsedCandidateCount: parsedCandidates.length,
+      outputArtifact,
+    });
 
     if (connectivityIssue && parsedCandidates.length === 0) {
       errors.push(`${text}: ${connectivityIssue}`);
@@ -92,6 +141,12 @@ export async function runInsightMemoryRetrieval(
   }
 
   const qmdSeeds = mergeCandidates([], found).slice(0, 10);
+  recordTrajectoryEvent(active, "backlink_expansion_started", {
+    enabled: shouldExpandBacklinks(),
+    seedCount: qmdSeeds.length,
+    seedIds: qmdSeeds.map((candidate) => candidate.id),
+  });
+  const backlinkStartedAt = Date.now();
   const backlinkCandidates = shouldExpandBacklinks()
     ? await expandBacklinkCandidates(
         qmdSeeds,
@@ -100,12 +155,35 @@ export async function runInsightMemoryRetrieval(
         signal,
       )
     : [];
+  recordTrajectoryEvent(active, "backlink_expansion_finished", {
+    enabled: shouldExpandBacklinks(),
+    durationMs: Date.now() - backlinkStartedAt,
+    seedCount: qmdSeeds.length,
+    outputCount: backlinkCandidates.length,
+    candidateIds: backlinkCandidates.map((candidate) => candidate.id),
+  });
 
   const candidatePool = mergeCandidateEvidence(mergeCandidates(
     active.session.memoryCandidates,
     [...found, ...backlinkCandidates],
   ));
+  recordTrajectoryEvent(active, "memory_candidates_merged", {
+    previousCandidateCount: active.session.memoryCandidates.length,
+    qmdCandidateCount: found.length,
+    backlinkCandidateCount: backlinkCandidates.length,
+    mergedCandidateCount: candidatePool.length,
+  });
+  const rerankStartedAt = Date.now();
   const rerank = rerankMemoryCandidates(active.session, candidatePool, limit);
+  recordTrajectoryEvent(active, "rerank_finished", {
+    durationMs: Date.now() - rerankStartedAt,
+    inputCount: candidatePool.length,
+    outputCount: rerank.candidates.length,
+    selectedCount: Math.min(rerank.candidates.length, limit),
+    generatedBy: rerank.generatedBy,
+    fallback: rerank.fallback,
+    error: rerank.error,
+  });
   if (rerank.error) errors.push(rerank.error);
 
   active.session.memoryCandidates = rerank.candidates.slice(0, limit);
@@ -132,6 +210,14 @@ export async function runInsightMemoryRetrieval(
   }
   saveActiveState(ctx, active);
   persistActiveSessionBinding(pi, active);
+  recordTrajectoryEvent(active, "state_saved", {
+    previousStage,
+    stage: active.session.stage,
+    statePath: active.statePath,
+    candidateCount: active.session.memoryCandidates.length,
+    errorCount: errors.length,
+    errors,
+  });
 
   return {
     content: [
