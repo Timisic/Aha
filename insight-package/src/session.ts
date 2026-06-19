@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { SESSION_BINDING_CUSTOM_TYPE, STAGES, type ActiveSession, type InsightSession, type InsightSessionBinding, nowIso, dateStamp, shortId, slugify, isPathInside, textFromUnknown } from "./domain.ts";
+import { INSIGHT_STATE_SCHEMA_VERSION, SESSION_BINDING_CUSTOM_TYPE, STAGES, type ActiveSession, type InsightSession, type InsightSessionBinding, type Stage, nowIso, dateStamp, shortId, slugify, isPathInside, textFromUnknown } from "./domain.ts";
 import { extractMarkdownPath, parseInsightInput, readSourceNoteWithObsidian, titleFromMarkdownPath } from "./source-note.ts";
 
 export function cleanSessionTitle(value: string): string {
@@ -72,6 +72,7 @@ export function createInitialState(input: string, cwd: string): InsightSession {
   const parsed = parseInsightInput(input, cwd);
   const timestamp = nowIso();
   return {
+    schemaVersion: INSIGHT_STATE_SCHEMA_VERSION,
     id: shortId(),
     stage: "memory",
     originCwd: cwd,
@@ -81,7 +82,10 @@ export function createInitialState(input: string, cwd: string): InsightSession {
     memoryQueries: [],
     explicitMemoryCues: parsed.explicitMemoryCues,
     missingExplicitCues: [],
+    explicitCueResults: [],
+    memoryCandidatePool: [],
     memoryCandidates: [],
+    memoryReviews: [],
     usedMemoryIds: [],
     newInsights: [],
     grillTurns: [],
@@ -117,14 +121,41 @@ export function isInsightSession(value: unknown): value is InsightSession {
   );
 }
 
+export function migrateInsightSession(session: InsightSession): InsightSession {
+  return {
+    ...session,
+    schemaVersion: INSIGHT_STATE_SCHEMA_VERSION,
+    memoryQueries: Array.isArray(session.memoryQueries) ? session.memoryQueries : [],
+    explicitMemoryCues: Array.isArray(session.explicitMemoryCues) ? session.explicitMemoryCues : [],
+    missingExplicitCues: Array.isArray(session.missingExplicitCues) ? session.missingExplicitCues : [],
+    explicitCueResults: Array.isArray(session.explicitCueResults) ? session.explicitCueResults : [],
+    memoryCandidatePool: Array.isArray(session.memoryCandidatePool)
+      ? session.memoryCandidatePool
+      : Array.isArray(session.memoryCandidates) ? session.memoryCandidates : [],
+    memoryCandidates: Array.isArray(session.memoryCandidates) ? session.memoryCandidates : [],
+    memoryReviews: Array.isArray(session.memoryReviews) ? session.memoryReviews : [],
+    usedMemoryIds: Array.isArray(session.usedMemoryIds) ? session.usedMemoryIds : [],
+    newInsights: Array.isArray(session.newInsights) ? session.newInsights : [],
+    grillTurns: Array.isArray(session.grillTurns) ? session.grillTurns : [],
+    candidateJudgments: Array.isArray(session.candidateJudgments) ? session.candidateJudgments : [],
+    unresolvedQuestions: Array.isArray(session.unresolvedQuestions) ? session.unresolvedQuestions : [],
+  };
+}
+
 export function readSessionState(path: string): InsightSession | undefined {
   const session = readJsonFile<unknown>(path);
-  return isInsightSession(session) ? session : undefined;
+  return isInsightSession(session) ? migrateInsightSession(session) : undefined;
+}
+
+function writeJsonAtomic(path: string, value: unknown): void {
+  const tmpPath = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+  writeFileSync(tmpPath, JSON.stringify(value, null, 2) + "\n", "utf-8");
+  renameSync(tmpPath, path);
 }
 
 export function writeState(path: string, session: InsightSession): void {
   session.updatedAt = nowIso();
-  writeFileSync(path, JSON.stringify(session, null, 2) + "\n", "utf-8");
+  writeJsonAtomic(path, session);
 }
 
 export function writeIndex(cwd: string, sessionDir: string, session: InsightSession): void {
@@ -143,7 +174,7 @@ export function writeIndex(cwd: string, sessionDir: string, session: InsightSess
   const next = [entry, ...current.filter((item) => item.id !== session.id && item.dir !== sessionDir)]
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 50);
-  writeFileSync(path, JSON.stringify(next, null, 2) + "\n", "utf-8");
+  writeJsonAtomic(path, next);
 }
 
 export function writeInitialGrillContext(path: string, session: InsightSession): void {

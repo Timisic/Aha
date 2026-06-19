@@ -24,14 +24,38 @@ export function stageLabel(stage: Stage): string {
 
 export function evaluateInsightUpdatePolicy(
   params: InsightUpdateStateParams,
-  previousStage: Stage,
+  activeSession: ActiveSession,
 ): InsightUpdatePolicyResult {
+  const previousStage = activeSession.session.stage;
   const targetStage = params.stage ?? previousStage;
+  const candidateIds = new Set(activeSession.session.memoryCandidates.map((candidate) => candidate.id));
+  const incomingReviews = [
+    ...(params.memoryReview ? [params.memoryReview] : []),
+    ...(params.memoryReviews ?? []),
+  ];
+  const hasMemoryReview =
+    activeSession.session.memoryReviews.some((review) => candidateIds.has(review.candidateId)) ||
+    incomingReviews.some((review) => candidateIds.has(review.candidateId));
 
-  if (params.stage === "review_grill" && previousStage !== "memory_review" && previousStage !== "review_grill") {
-    throw new Error(
-      `Cannot enter review_grill from ${previousStage}. Complete memory search and reach memory_review first.`,
-    );
+  if (params.stage && params.stage !== previousStage) {
+    const allowed =
+      previousStage === "memory_review" && params.stage === "review_grill" ? hasMemoryReview :
+      previousStage === "review_grill" && params.stage === "memory" ? Boolean(params.newInsight?.triggeredMemorySearch) :
+      previousStage === "summary" && params.stage === "complete" ? true :
+      false;
+
+    if (!allowed) {
+      if (params.stage === "review_grill" && previousStage === "memory_review" && !hasMemoryReview) {
+        throw new Error("Cannot enter review_grill until at least one memoryReview has recorded the user's candidate review.");
+      }
+      if (params.stage === "summary") {
+        throw new Error("Cannot enter summary through insight_update_state. Use insight_confirm_readiness after explicit user readiness.");
+      }
+      if (previousStage === "complete") {
+        throw new Error("Cannot change a complete insight session without an explicit reopen flow.");
+      }
+      throw new Error(`Cannot transition insight stage from ${previousStage} to ${params.stage}.`);
+    }
   }
 
   if (params.grillTurn && targetStage !== "review_grill") {
@@ -46,6 +70,27 @@ export function evaluateInsightUpdatePolicy(
     targetStage,
     stageOnlyNoOp: Boolean(params.stage && params.stage === previousStage && providedKeys.length === 1),
   };
+}
+
+export function assertCanConfirmReadiness(activeSession: ActiveSession): void {
+  if (activeSession.session.stage !== "review_grill") {
+    throw new Error(`Cannot confirm summary readiness while stage is ${activeSession.session.stage}. Enter review_grill first.`);
+  }
+}
+
+export function assertCanSaveSummary(activeSession: ActiveSession): void {
+  if (activeSession.session.stage !== "summary") {
+    throw new Error(`Cannot save summary while stage is ${activeSession.session.stage}. Use insight_confirm_readiness first.`);
+  }
+  if (!activeSession.session.summaryReadiness) {
+    throw new Error("Cannot save summary without recorded summaryReadiness evidence.");
+  }
+}
+
+export function assertCanSearchMemory(activeSession: ActiveSession): void {
+  if (activeSession.session.stage === "summary" || activeSession.session.stage === "complete") {
+    throw new Error(`Cannot search memory while stage is ${activeSession.session.stage}.`);
+  }
 }
 
 export function shouldCreateReviewGrillBriefing(previousStage: Stage, currentStage: Stage): boolean {

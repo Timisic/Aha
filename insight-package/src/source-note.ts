@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { COMMAND_OUTPUT_MAX_BYTES, OBSIDIAN_TIMEOUT_MS, SECTION_NAMES, SOURCE_NOTE_MAX_BYTES, configuredSourceRoots, isPathInside, type InsightSession } from "./domain.ts";
+import { COMMAND_OUTPUT_MAX_BYTES, OBSIDIAN_TIMEOUT_MS, SECTION_NAMES, SOURCE_NOTE_MAX_BYTES, configuredSourceRoots, isPathInside, textHash, type InsightSession } from "./domain.ts";
+
+type SourceNoteSnapshot = NonNullable<InsightSession["sourceNote"]>;
 
 export function stripMarkdownExtension(name: string): string {
   return name.replace(/\.md$/i, "");
@@ -94,6 +96,26 @@ export function readSourceNoteWithObsidian(
   return undefined;
 }
 
+function headingTitlesFromContent(content: string): string[] {
+  return Array.from(
+    new Set(
+      content
+        .split(/\r?\n/)
+        .map((line) => line.match(/^#{1,6}\s+(.+?)\s*$/)?.[1]?.trim())
+        .filter((line): line is string => Boolean(line)),
+    ),
+  ).slice(0, 20);
+}
+
+function snapshotSourceNote(sourceNote: { path?: string; content: string } | undefined): SourceNoteSnapshot | undefined {
+  if (!sourceNote) return undefined;
+  return {
+    ...sourceNote,
+    contentHash: textHash(sourceNote.content),
+    headingsSnapshot: headingTitlesFromContent(sourceNote.content),
+  };
+}
+
 export function extractSection(input: string, names: string[]): string | undefined {
   const lines = input.split(/\r?\n/);
   const wanted = new Set(names.map((name) => name.toLowerCase()));
@@ -127,7 +149,7 @@ export function extractSection(input: string, names: string[]): string | undefin
 export function parseInsightInput(input: string, cwd: string): {
   rawInsight: string;
   context: string;
-  sourceNote?: { path?: string; content: string };
+  sourceNote?: SourceNoteSnapshot;
   explicitMemoryCues: string[];
 } {
   const trimmed = input.replace(/\\n/g, "\n").trim();
@@ -149,7 +171,7 @@ export function parseInsightInput(input: string, cwd: string): {
     "obsidian笔记",
   ]);
   const explicitSourceNoteInput = isExplicitSourceNoteInput(trimmed);
-  const sourceNote =
+  const sourceNote = snapshotSourceNote(
     sourceNoteContent
       ? readSourceNoteWithObsidian(`Source note:\n${sourceNoteContent}`, cwd, {
           allowPathRead: true,
@@ -159,7 +181,8 @@ export function parseInsightInput(input: string, cwd: string): {
       : readSourceNoteWithObsidian(trimmed, cwd, {
           allowPathRead: explicitSourceNoteInput,
           allowFileFallback: explicitSourceNoteInput,
-        });
+        }),
+  );
 
   const explicitCueText = extractSection(trimmed, [
     "connected history notes",
@@ -182,16 +205,7 @@ export function parseInsightInput(input: string, cwd: string): {
 }
 
 export function sourceNoteHeadingTitles(session: InsightSession): string[] {
-  const content = session.sourceNote?.content;
-  if (!content) return [];
-  return Array.from(
-    new Set(
-      content
-        .split(/\r?\n/)
-        .map((line) => line.match(/^#{1,6}\s+(.+?)\s*$/)?.[1]?.trim())
-        .filter((line): line is string => Boolean(line)),
-    ),
-  ).slice(0, 20);
+  return session.sourceNote?.headingsSnapshot ?? headingTitlesFromContent(session.sourceNote?.content ?? "");
 }
 
 export function missingSourceNoteSummaryHeadings(summaryDraft: string, session: InsightSession): string[] {
@@ -199,6 +213,20 @@ export function missingSourceNoteSummaryHeadings(summaryDraft: string, session: 
     const pattern = new RegExp(`^#{1,6}\\s+${escapeRegExp(heading)}\\s*$`, "m");
     return !pattern.test(summaryDraft);
   });
+}
+
+export function sourceNoteSummaryWarnings(summaryDraft: string, session: InsightSession): string[] {
+  const warnings: string[] = [];
+  const sourceNote = session.sourceNote;
+  if (!sourceNote?.content) return warnings;
+  if (sourceNote.contentHash && textHash(sourceNote.content) !== sourceNote.contentHash) {
+    warnings.push("Source note content changed after session intake; summary used the latest readable content with the original heading snapshot.");
+  }
+  const missingHeadings = missingSourceNoteSummaryHeadings(summaryDraft, session);
+  if (missingHeadings.length > 0) {
+    warnings.push(`Summary draft does not preserve source-note headings: ${missingHeadings.join(", ")}`);
+  }
+  return warnings;
 }
 
 export function sourceNoteStructureHint(session: InsightSession): string {
@@ -237,12 +265,15 @@ export function sourceNoteMemoryContext(session: InsightSession): string {
 }
 
 export function refreshSourceNoteFromObsidian(session: InsightSession, cwd: string): void {
-  const sourcePath = session.sourceNote?.path;
+  const sourceNote = session.sourceNote;
+  const sourcePath = sourceNote?.path;
   if (!sourcePath) return;
   const content = readSourceNoteWithObsidian(sourcePath, cwd)?.content;
   if (!content) return;
   session.sourceNote = {
     path: sourcePath,
     content,
+    contentHash: sourceNote.contentHash,
+    headingsSnapshot: sourceNote.headingsSnapshot,
   };
 }

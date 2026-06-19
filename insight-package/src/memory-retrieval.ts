@@ -1,11 +1,10 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { InsightSearchMemoryParams, InsightSession } from "./domain.ts";
+import type { ExplicitCueStatus, InsightSearchMemoryParams, InsightSession, MemoryCandidate, MemoryQueryKind } from "./domain.ts";
 import { normalizeMemoryQueryKind, shouldExpandBacklinks } from "./domain.ts";
 import {
   expandBacklinkCandidates,
   formatMemoryCandidateTable,
   mergeCandidateEvidence,
-  mergeCandidates,
   normalizeMemoryQueryCommand,
   parseMemorySearchCandidates,
   qmdConnectivityIssue,
@@ -16,7 +15,111 @@ import {
 } from "./memory.ts";
 import { rerankMemoryCandidates } from "./memory-rerank.ts";
 import { persistActiveSessionBinding, saveActiveState, type InsightRuntime } from "./runtime.ts";
+import { assertCanSearchMemory } from "./stage-policy.ts";
 import { recordTrajectoryEvent, recordTrajectoryMemoryQueryStarted, recordTrajectoryQmdCallFinished } from "./trajectory.ts";
+
+const MEMORY_CANDIDATE_POOL_LIMIT = 100;
+
+function normalizedIdentity(value: string | undefined): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/^qmd:\/\/[^/]+\//, "")
+    .replace(/[?#].*$/, "")
+    .replace(/\\/g, "/")
+    .replace(/\.md$/i, "")
+    .replace(/^\/+|\/+$/g, "")
+    .toLowerCase();
+}
+
+function candidateIdentityText(candidate: MemoryCandidate): string {
+  return [
+    candidate.id,
+    candidate.title,
+    candidate.slug,
+    candidate.reason,
+  ].filter(Boolean).join("\n").toLowerCase();
+}
+
+function isSourceNoteSelfHit(session: InsightSession, candidate: MemoryCandidate): boolean {
+  const sourcePath = normalizedIdentity(session.sourceNote?.path);
+  if (!sourcePath) return false;
+  const sourceTitle = normalizedIdentity(sourcePath.split("/").at(-1));
+  const candidateSlug = normalizedIdentity(candidate.slug);
+  const candidateId = normalizedIdentity(candidate.id);
+  const candidateTitle = normalizedIdentity(candidate.title);
+  return Boolean(
+    (candidateSlug && candidateSlug === sourcePath) ||
+    (candidateId && candidateId === sourcePath) ||
+    (candidateTitle && candidateTitle === sourceTitle),
+  );
+}
+
+function explicitCueResults(
+  cues: string[],
+  displayed: MemoryCandidate[],
+  rankedPool: MemoryCandidate[],
+): InsightSession["explicitCueResults"] {
+  return cues.map((cue) => {
+    const normalizedCue = cue.toLowerCase();
+    const poolMatches = rankedPool.filter((candidate) =>
+      candidateIdentityText(candidate).includes(normalizedCue),
+    );
+    if (poolMatches.length === 0) {
+      return { cue, status: "not_found" as ExplicitCueStatus };
+    }
+    if (poolMatches.length > 1) {
+      return {
+        cue,
+        status: "ambiguous" as ExplicitCueStatus,
+        matchedCandidateIds: poolMatches.map((candidate) => candidate.id),
+      };
+    }
+    const [candidate] = poolMatches;
+    const topIndex = displayed.findIndex((item) => item.id === candidate.id);
+    if (topIndex >= 0) {
+      return {
+        cue,
+        status: "found_top_k" as ExplicitCueStatus,
+        candidateId: candidate.id,
+        rank: topIndex + 1,
+      };
+    }
+    const poolIndex = rankedPool.findIndex((item) => item.id === candidate.id);
+    return {
+      cue,
+      status: "found_pool" as ExplicitCueStatus,
+      candidateId: candidate.id,
+      rank: poolIndex >= 0 ? poolIndex + 1 : undefined,
+    };
+  });
+}
+
+function selectBacklinkSeeds(candidates: MemoryCandidate[], limit: number): MemoryCandidate[] {
+  const grouped = new Map<MemoryQueryKind | "unknown", MemoryCandidate[]>();
+  for (const candidate of candidates) {
+    const kinds = candidate.searchSignals?.queryKinds ??
+      (candidate.searchSignals?.queryKind ? [candidate.searchSignals.queryKind] : []);
+    const key = kinds[0] ?? "unknown";
+    grouped.set(key, [...(grouped.get(key) ?? []), candidate]);
+  }
+
+  const seeds: MemoryCandidate[] = [];
+  const seen = new Set<string>();
+  const groups = Array.from(grouped.values());
+  for (let offset = 0; seeds.length < limit; offset += 1) {
+    let added = false;
+    for (const group of groups) {
+      const candidate = group[offset];
+      if (!candidate || seen.has(candidate.id)) continue;
+      seen.add(candidate.id);
+      seeds.push(candidate);
+      added = true;
+      if (seeds.length >= limit) break;
+    }
+    if (!added) break;
+  }
+  return seeds;
+}
 
 export async function runInsightMemoryRetrieval(
   pi: ExtensionAPI,
@@ -37,6 +140,7 @@ export async function runInsightMemoryRetrieval(
   const found: InsightSession["memoryCandidates"] = [];
   const errors: string[] = [];
   const active = runtime.activeSession;
+  assertCanSearchMemory(active);
   const previousStage = active.session.stage;
 
   for (const query of params.queries) {
@@ -85,6 +189,7 @@ export async function runInsightMemoryRetrieval(
             command === "qmd search" ? "qmd_search" :
             command === "qmd vsearch" ? "qmd_vsearch" :
             "qmd_query",
+          queryKind: kind,
         },
         active.session,
       ),
@@ -118,38 +223,60 @@ export async function runInsightMemoryRetrieval(
     found.push(...parsedCandidates);
   }
 
-  const qmdSeeds = mergeCandidates([], found).slice(0, 10);
+  const qmdSeeds = selectBacklinkSeeds(mergeCandidateEvidence(found), 10);
   recordTrajectoryEvent(active, "backlink_expansion_started", {
     enabled: shouldExpandBacklinks(),
     seedCount: qmdSeeds.length,
     seedIds: qmdSeeds.map((candidate) => candidate.id),
+    seedKinds: qmdSeeds.map((candidate) => candidate.searchSignals?.queryKinds ?? candidate.searchSignals?.queryKind ?? "unknown"),
   });
   const backlinkStartedAt = Date.now();
-  const backlinkCandidates = shouldExpandBacklinks()
+  const backlinkResult = shouldExpandBacklinks()
     ? await expandBacklinkCandidates(
         qmdSeeds,
         active.session,
         ctx,
         signal,
       )
-    : [];
+    : { candidates: [], resolutionWarnings: [] };
+  const backlinkCandidates = backlinkResult.candidates;
   recordTrajectoryEvent(active, "backlink_expansion_finished", {
     enabled: shouldExpandBacklinks(),
     durationMs: Date.now() - backlinkStartedAt,
     seedCount: qmdSeeds.length,
     outputCount: backlinkCandidates.length,
     candidateIds: backlinkCandidates.map((candidate) => candidate.id),
+    resolutionWarnings: backlinkResult.resolutionWarnings,
   });
 
-  const candidatePool = mergeCandidateEvidence(mergeCandidates(
-    active.session.memoryCandidates,
-    [...found, ...backlinkCandidates],
-  ));
+  const mergedPool = mergeCandidateEvidence([
+    active.session.memoryCandidatePool.length > 0 ? active.session.memoryCandidatePool : active.session.memoryCandidates,
+    found,
+    backlinkCandidates,
+  ].flat());
+  const sourceNoteSelfHits = mergedPool.filter((candidate) => isSourceNoteSelfHit(active.session, candidate));
+  const candidatePool = mergedPool
+    .filter((candidate) => !isSourceNoteSelfHit(active.session, candidate))
+    .slice(0, MEMORY_CANDIDATE_POOL_LIMIT);
+  if (sourceNoteSelfHits.length > 0) {
+    recordTrajectoryEvent(active, "source_note_self_hits_filtered", {
+      count: sourceNoteSelfHits.length,
+      sourceNotePath: active.session.sourceNote?.path,
+      candidates: sourceNoteSelfHits.map((candidate) => ({
+        id: candidate.id,
+        title: candidate.title,
+        slug: candidate.slug,
+        poolRank: mergedPool.findIndex((item) => item.id === candidate.id) + 1,
+      })),
+    });
+  }
   recordTrajectoryEvent(active, "memory_candidates_merged", {
-    previousCandidateCount: active.session.memoryCandidates.length,
+    previousCandidateCount: active.session.memoryCandidatePool.length || active.session.memoryCandidates.length,
     qmdCandidateCount: found.length,
     backlinkCandidateCount: backlinkCandidates.length,
-    mergedCandidateCount: candidatePool.length,
+    mergedCandidateCount: mergedPool.length,
+    sourceNoteSelfHitCount: sourceNoteSelfHits.length,
+    boundedPoolCount: candidatePool.length,
   });
   const rerankStartedAt = Date.now();
   const rerank = rerankMemoryCandidates(active.session, candidatePool, limit);
@@ -164,16 +291,19 @@ export async function runInsightMemoryRetrieval(
   });
   if (rerank.error) errors.push(rerank.error);
 
-  active.session.memoryCandidates = rerank.candidates.slice(0, limit);
+  const rankedPool = rerank.candidates.slice(0, MEMORY_CANDIDATE_POOL_LIMIT);
+  active.session.memoryCandidatePool = rankedPool;
+  active.session.memoryCandidates = rankedPool.slice(0, limit);
 
   if (active.session.explicitMemoryCues.length > 0) {
-    const candidateText = active.session.memoryCandidates
-      .map((candidate) => `${candidate.title} ${candidate.slug ?? ""}`)
-      .join("\n")
-      .toLowerCase();
-    active.session.missingExplicitCues = active.session.explicitMemoryCues.filter(
-      (cue) => !candidateText.includes(cue.toLowerCase()),
+    active.session.explicitCueResults = explicitCueResults(
+      active.session.explicitMemoryCues,
+      active.session.memoryCandidates,
+      rankedPool,
     );
+    active.session.missingExplicitCues = active.session.explicitCueResults
+      .filter((result) => result.status === "not_found")
+      .map((result) => result.cue);
   }
 
   if (active.session.memoryCandidates.length === 0) {
@@ -193,6 +323,8 @@ export async function runInsightMemoryRetrieval(
     stage: active.session.stage,
     statePath: active.statePath,
     candidateCount: active.session.memoryCandidates.length,
+    candidatePoolCount: active.session.memoryCandidatePool.length,
+    explicitCueResults: active.session.explicitCueResults,
     errorCount: errors.length,
     errors,
   });
@@ -231,6 +363,8 @@ export async function runInsightMemoryRetrieval(
             error: rerank.error,
           },
           memoryCandidates: active.session.memoryCandidates,
+          memoryCandidatePool: active.session.memoryCandidatePool,
+          explicitCueResults: active.session.explicitCueResults,
         },
       };
 }

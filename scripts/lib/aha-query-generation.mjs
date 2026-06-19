@@ -146,18 +146,26 @@ export function defaultQueryGenerationOptions(overrides = {}) {
   };
 }
 
-function queryObjectCacheKey(caseItem) {
+function queryObjectCacheKey(caseItem, options) {
   const hash = createHash("sha256")
     .update(QUERY_AGENT_PROMPT_VERSION)
+    .update("\0")
+    .update(String(options.queryAgentBin || "codex"))
+    .update("\0")
+    .update(String(options.queryAgentModel || ""))
     .update("\0")
     .update(String(caseItem._resolved_insight_input ?? ""))
     .digest("hex");
   return `${caseItem.id}:${hash}`;
 }
 
-function queryPlanCacheKey(caseItem) {
+function queryPlanCacheKey(caseItem, options) {
   const hash = createHash("sha256")
     .update(QUERY_PLAN_AGENT_PROMPT_VERSION)
+    .update("\0")
+    .update(String(options.queryAgentBin || "codex"))
+    .update("\0")
+    .update(String(options.queryAgentModel || ""))
     .update("\0")
     .update(String(caseItem._resolved_insight_input ?? ""))
     .digest("hex");
@@ -563,7 +571,7 @@ export function resolveQmdQueryForCase(caseItem, options = {}) {
   }
 
   const cachePath = queryOptions.queryAgentCache ? resolve(queryOptions.queryAgentCache) : "";
-  const cacheKey = queryObjectCacheKey(caseItem);
+  const cacheKey = queryObjectCacheKey(caseItem, queryOptions);
   const cache = readQueryObjectCache(cachePath);
   const cached = cache.entries[cacheKey]?.query;
   if (cached) {
@@ -583,6 +591,8 @@ export function resolveQmdQueryForCase(caseItem, options = {}) {
       generated_at: new Date().toISOString(),
       generator: "codex-exec",
       prompt_version: QUERY_AGENT_PROMPT_VERSION,
+      agent_bin: queryOptions.queryAgentBin,
+      agent_model: queryOptions.queryAgentModel,
       query: queryObject,
     };
     writeQueryObjectCache(cachePath, cache);
@@ -628,7 +638,7 @@ export function resolveQmdQueriesForCase(caseItem, options = {}) {
   }
 
   const cachePath = queryOptions.queryAgentCache ? resolve(queryOptions.queryAgentCache) : "";
-  const cacheKey = queryPlanCacheKey(caseItem);
+  const cacheKey = queryPlanCacheKey(caseItem, queryOptions);
   const cache = readQueryObjectCache(cachePath);
   const cached = cache.entries[cacheKey]?.queries;
   if (cached) {
@@ -650,6 +660,8 @@ export function resolveQmdQueriesForCase(caseItem, options = {}) {
       generated_at: new Date().toISOString(),
       generator: "codex-exec",
       prompt_version: QUERY_PLAN_AGENT_PROMPT_VERSION,
+      agent_bin: queryOptions.queryAgentBin,
+      agent_model: queryOptions.queryAgentModel,
       queries: plan.queries,
     };
     writeQueryObjectCache(cachePath, cache);

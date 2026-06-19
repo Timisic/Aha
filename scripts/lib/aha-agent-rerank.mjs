@@ -52,9 +52,13 @@ function candidateCacheShape(candidate) {
   };
 }
 
-function rerankCacheKey(caseItem, candidates) {
+function rerankCacheKey(caseItem, candidates, options) {
   const hash = createHash("sha256")
     .update(RERANK_AGENT_PROMPT_VERSION)
+    .update("\0")
+    .update(String(options.rerankAgentBin || "codex"))
+    .update("\0")
+    .update(String(options.rerankAgentModel || ""))
     .update("\0")
     .update(String(caseItem._resolved_insight_input ?? ""))
     .update("\0")
@@ -270,7 +274,7 @@ export function rerankCandidatesForCase(caseItem, candidates, options = {}) {
 
   const cachePath = rerankOptions.rerankAgentCache ? resolve(rerankOptions.rerankAgentCache) : "";
   const cache = readRerankCache(cachePath);
-  const cacheKey = rerankCacheKey(caseItem, annotated);
+  const cacheKey = rerankCacheKey(caseItem, annotated, rerankOptions);
   const cachedIds = cache.entries[cacheKey]?.ranked_ids;
   if (Array.isArray(cachedIds) && cachedIds.length > 0) {
     const rankedIds = parseRerankAgentOutput(
@@ -293,6 +297,8 @@ export function rerankCandidatesForCase(caseItem, candidates, options = {}) {
       generated_at: new Date().toISOString(),
       generator: "codex-exec",
       prompt_version: RERANK_AGENT_PROMPT_VERSION,
+      agent_bin: rerankOptions.rerankAgentBin,
+      agent_model: rerankOptions.rerankAgentModel,
       ranked_ids: rankedIds,
     };
     writeRerankCache(cachePath, cache);

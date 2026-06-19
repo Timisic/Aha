@@ -49,9 +49,8 @@ export function pathsMatch(result, expected) {
   const se = slugPath(expected);
   if (!nr || !ne) return false;
   if (nr === ne) return true;
-  if (nr.endsWith(ne) || ne.endsWith(nr)) return true;
   if (sr === se) return true;
-  return sr.endsWith(se) || se.endsWith(sr);
+  return false;
 }
 
 export function sourceNotePathForCase(caseItem) {
@@ -111,6 +110,28 @@ function foundRanks(ranks) {
 }
 
 export function scoreResults(resultFiles, expectedFiles, topK) {
+  if (expectedFiles.length === 0) {
+    return {
+      top_k: topK,
+      precision_at_k: 0,
+      target_coverage_at_k: 1,
+      recall: 1,
+      recall_at_1: 1,
+      recall_at_3: 1,
+      recall_at_5: 1,
+      recall_at_k: 1,
+      must_recall_ranks: [],
+      found_must_recall_ranks: [],
+      worst_must_rank: null,
+      all_must_recalled_at_k: true,
+      missing_must_count: 0,
+      f1: 0,
+      hits_at_k: 0,
+      total_expected: 0,
+      matched_files: [],
+      unmatched_expected_files: [],
+    };
+  }
   const mustRecallRanks = targetRanks(resultFiles, expectedFiles);
   const hitsAtK = mustRecallRanks.filter((item) => item.rank !== null && item.rank <= topK).length;
   const matchedFiles = mustRecallRanks
@@ -121,13 +142,16 @@ export function scoreResults(resultFiles, expectedFiles, topK) {
     .map((item) => item.file);
   const rankedHits = foundRanks(mustRecallRanks);
 
-  const denominator = Math.min(topK, expectedFiles.length);
-  const precisionAtK = denominator > 0 ? hitsAtK / denominator : 0;
+  const returnedAtK = Math.min(topK, resultFiles.length);
+  const precisionAtK = returnedAtK > 0 ? hitsAtK / returnedAtK : 0;
+  const targetCoverageAtK = hitsAtK / Math.min(topK, expectedFiles.length);
   const recall = expectedFiles.length > 0 ? matchedFiles.length / expectedFiles.length : 0;
+  const penalizedMustRanks = mustRecallRanks.map((item) => item.rank ?? topK + 1);
 
   return {
     top_k: topK,
     precision_at_k: precisionAtK,
+    target_coverage_at_k: targetCoverageAtK,
     recall,
     recall_at_1: expectedFiles.length > 0 ? hitsWithin(resultFiles, expectedFiles, 1) / expectedFiles.length : 0,
     recall_at_3: expectedFiles.length > 0 ? hitsWithin(resultFiles, expectedFiles, 3) / expectedFiles.length : 0,
@@ -135,7 +159,9 @@ export function scoreResults(resultFiles, expectedFiles, topK) {
     recall_at_k: expectedFiles.length > 0 ? hitsAtK / expectedFiles.length : 0,
     must_recall_ranks: mustRecallRanks,
     found_must_recall_ranks: rankedHits,
-    worst_must_rank: rankedHits.length > 0 ? Math.max(...rankedHits) : null,
+    worst_must_rank: penalizedMustRanks.length > 0 ? Math.max(...penalizedMustRanks) : null,
+    all_must_recalled_at_k: expectedFiles.length > 0 && hitsAtK === expectedFiles.length,
+    missing_must_count: unmatchedExpectedFiles.length,
     f1: precisionAtK + recall > 0
       ? 2 * (precisionAtK * recall) / (precisionAtK + recall)
       : 0,
@@ -205,6 +231,7 @@ export function applyBenchEvaluationPolicy(report, config) {
       stats.evaluation_excludes_source_note = !!caseConfig.sourceNotePath;
       stats.source_note_rank = filtered.source_note_rank;
       stats.precision_at_k = score.precision_at_k;
+      stats.target_coverage_at_k = score.target_coverage_at_k;
       stats.recall = score.recall;
       stats.recall_at_1 = score.recall_at_1;
       stats.recall_at_3 = score.recall_at_3;
@@ -213,6 +240,8 @@ export function applyBenchEvaluationPolicy(report, config) {
       stats.must_recall_ranks = score.must_recall_ranks;
       stats.found_must_recall_ranks = score.found_must_recall_ranks;
       stats.worst_must_rank = score.worst_must_rank;
+      stats.all_must_recalled_at_k = score.all_must_recalled_at_k;
+      stats.missing_must_count = score.missing_must_count;
       stats.hits_at_k = score.hits_at_k;
       stats.total_expected = score.total_expected;
       stats.matched_files = score.matched_files;
@@ -231,8 +260,10 @@ export function applyBenchEvaluationPolicy(report, config) {
     const niceTopKValues = numericValues(backendStats.map((stats) => stats.nice_top_k));
     const recallValues = numericValues(backendStats.map((stats) => stats.recall_at_k));
     const precisionValues = numericValues(backendStats.map((stats) => stats.precision_at_k));
+    const coverageValues = numericValues(backendStats.map((stats) => stats.target_coverage_at_k));
     const f1Values = numericValues(backendStats.map((stats) => stats.f1));
     const worstRankValues = numericValues(backendStats.map((stats) => stats.worst_must_rank));
+    const missingCountValues = numericValues(backendStats.map((stats) => stats.missing_must_count));
     const niceRecallValues = numericValues(backendStats.map((stats) => stats.nice_to_have?.recall_at_k));
     summary.top_k = topKValues[0] ?? 10;
     summary.nice_top_k = niceTopKValues[0] ?? 20;
@@ -242,8 +273,10 @@ export function applyBenchEvaluationPolicy(report, config) {
       summary.avg_recall_at_k = summary.avg_recall;
     }
     summary.avg_precision = average(precisionValues, 0);
+    summary.avg_target_coverage_at_k = average(coverageValues, 0);
     summary.avg_f1 = average(f1Values, 0);
     summary.avg_worst_must_rank = average(worstRankValues, 0);
+    summary.cases_with_must_miss = missingCountValues.filter((count) => count > 0).length;
     summary.avg_nice_to_have_recall_at_k = niceRecallValues.length > 0
       ? average(niceRecallValues, 0)
       : null;
@@ -265,6 +298,7 @@ export function summarizePipelineEvaluation(results) {
       qmd_direct_matches: 0,
       backlink_matches: 0,
       missing_matches: 0,
+      expanded_pool_dropped_topk_count: 0,
     };
   }
 
@@ -278,6 +312,7 @@ export function summarizePipelineEvaluation(results) {
   let qmdDirectMatches = 0;
   let backlinkMatches = 0;
   let missingMatches = 0;
+  let expandedPoolDroppedTopK = 0;
 
   for (const result of results) {
     qmdRecallAtK += result.qmd.score.recall_at_k;
@@ -291,6 +326,7 @@ export function summarizePipelineEvaluation(results) {
       worstMustRankCount += 1;
     }
     expandedRecall += result.expanded_pool.score.recall;
+    expandedPoolDroppedTopK += result.expanded_pool.dropped_from_final_top_k?.length ?? 0;
     for (const match of result.must_recall_sources) {
       const source = String(match.source ?? "");
       if (source === "missing") {
@@ -314,5 +350,6 @@ export function summarizePipelineEvaluation(results) {
     qmd_direct_matches: qmdDirectMatches,
     backlink_matches: backlinkMatches,
     missing_matches: missingMatches,
+    expanded_pool_dropped_topk_count: expandedPoolDroppedTopK,
   };
 }
