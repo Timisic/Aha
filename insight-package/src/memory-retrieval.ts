@@ -16,7 +16,7 @@ import {
 } from "./memory.ts";
 import { rerankMemoryCandidates } from "./memory-rerank.ts";
 import { persistActiveSessionBinding, saveActiveState, type InsightRuntime } from "./runtime.ts";
-import { recordTrajectoryEvent, summarizeTrajectoryValue, writeTrajectoryArtifact } from "./trajectory.ts";
+import { recordTrajectoryEvent, recordTrajectoryMemoryQueryStarted, recordTrajectoryQmdCallFinished } from "./trajectory.ts";
 
 export async function runInsightMemoryRetrieval(
   pi: ExtensionAPI,
@@ -60,20 +60,12 @@ export async function runInsightMemoryRetrieval(
       : query.qmd
         ? structuredQmdQueryFromObject(query.qmd, text, kind)
         : structuredQmdQuery(text, kind);
-    const queryArtifact = writeTrajectoryArtifact(active, "memory", "memory-query", {
+    recordTrajectoryMemoryQueryStarted(active, {
       kind,
       command,
       text,
       qmd: query.qmd,
       qmdQuery,
-    });
-    recordTrajectoryEvent(active, "memory_query_started", {
-      kind,
-      command,
-      text: summarizeTrajectoryValue(text),
-      qmd: query.qmd,
-      qmdQuery: summarizeTrajectoryValue(qmdQuery),
-      queryArtifact,
       retrievalLimit,
     });
     const qmdStartedAt = Date.now();
@@ -97,28 +89,14 @@ export async function runInsightMemoryRetrieval(
         active.session,
       ),
     );
-    const outputArtifact = writeTrajectoryArtifact(active, "memory", "qmd-output", {
+    recordTrajectoryQmdCallFinished(active, {
       kind,
       command,
       text,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      code: result.code,
-      killed: result.killed,
+      startedAt: qmdStartedAt,
+      result,
       connectivityIssue,
       parsedCandidates,
-    });
-    recordTrajectoryEvent(active, "qmd_call_finished", {
-      kind,
-      command,
-      durationMs: Date.now() - qmdStartedAt,
-      code: result.code,
-      killed: result.killed,
-      connectivityIssue,
-      stdout: summarizeTrajectoryValue(result.stdout),
-      stderr: summarizeTrajectoryValue(result.stderr),
-      parsedCandidateCount: parsedCandidates.length,
-      outputArtifact,
     });
 
     if (connectivityIssue && parsedCandidates.length === 0) {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { ActiveSession } from "./domain.ts";
+import type { ActiveSession, CommandResult, MemoryQueryCommand, MemoryQueryKind, QmdStructuredQuery } from "./domain.ts";
 import { compactLine, nowIso } from "./domain.ts";
 
 const EVENT_PREVIEW_BYTES = Number(process.env.INSIGHT_TRAJECTORY_EVENT_PREVIEW_BYTES) || 8_192;
@@ -118,6 +118,203 @@ export function recordTrajectoryEvent(
   } catch {
     // Trajectory is a debug side channel. It must never break the insight workflow.
   }
+}
+
+export function recordTrajectorySessionStarted(active: ActiveSession, payload: Record<string, unknown>): void {
+  recordTrajectoryEvent(active, "session_started", payload);
+}
+
+export function recordTrajectorySessionRestored(active: ActiveSession, payload: Record<string, unknown>): void {
+  recordTrajectoryEvent(active, "session_restored", payload);
+}
+
+export function recordTrajectorySessionCancelled(active: ActiveSession | undefined, payload: Record<string, unknown>): void {
+  recordTrajectoryEvent(active, "session_cancelled", payload);
+}
+
+export function recordTrajectoryContextSeen(
+  active: ActiveSession | undefined,
+  payload: {
+    compact: boolean;
+    beforeMessageCount: number;
+    pendingPromptText: string;
+  },
+): void {
+  recordTrajectoryEvent(active, "context_seen", {
+    compact: payload.compact,
+    beforeMessageCount: payload.beforeMessageCount,
+    pendingPromptHash: stableTrajectoryHash(payload.pendingPromptText),
+  });
+}
+
+export function recordTrajectoryContextBuilt(
+  active: ActiveSession | undefined,
+  payload: {
+    compact: boolean;
+    insertAt: number;
+    beforeMessages: unknown[];
+    hiddenMessage: unknown;
+    afterMessages: unknown[];
+  },
+): void {
+  const artifact = writeTrajectoryArtifact(active, "contexts", "context-injection", payload);
+  recordTrajectoryEvent(active, "context_built", {
+    compact: payload.compact,
+    beforeMessageCount: payload.beforeMessages.length,
+    afterMessageCount: payload.afterMessages.length,
+    insertAt: payload.insertAt,
+    contextHash: stableTrajectoryHash((payload.hiddenMessage as { content?: unknown }).content),
+    beforeMessages: summarizeTrajectoryValue(payload.beforeMessages),
+    hiddenMessage: summarizeTrajectoryValue(payload.hiddenMessage),
+    artifact,
+  });
+}
+
+export function recordTrajectoryToolPolicy(
+  active: ActiveSession | undefined,
+  payload: {
+    toolName: string;
+    toolCallId?: unknown;
+    input: unknown;
+    blockReason?: string;
+  },
+): void {
+  const inputArtifact = writeTrajectoryArtifact(
+    active,
+    "tool-calls",
+    `tool-call-${payload.toolName}-input`,
+    payload.input,
+  );
+  recordTrajectoryEvent(active, payload.blockReason ? "tool_call_blocked" : "tool_call_requested", {
+    toolName: payload.toolName,
+    toolCallId: payload.toolCallId,
+    activeStage: active?.session.stage,
+    input: summarizeTrajectoryValue(payload.input),
+    inputArtifact,
+    blockReason: payload.blockReason,
+  });
+}
+
+export function recordTrajectoryToolStarted(
+  active: ActiveSession | undefined,
+  payload: { toolName: string; toolCallId: string; params: unknown },
+): void {
+  const inputArtifact = writeTrajectoryArtifact(
+    active,
+    "tool-calls",
+    `tool-${payload.toolCallId || payload.toolName}-${payload.toolName}-input`,
+    payload.params,
+  );
+  recordTrajectoryEvent(active, "tool_started", {
+    toolName: payload.toolName,
+    toolCallId: payload.toolCallId,
+    input: summarizeTrajectoryValue(payload.params),
+    inputArtifact,
+  });
+}
+
+export function recordTrajectoryToolFinished(
+  active: ActiveSession | undefined,
+  payload: {
+    toolName: string;
+    toolCallId: string;
+    startedAt: number;
+    result?: unknown;
+    error?: unknown;
+  },
+): void {
+  if (payload.error !== undefined) {
+    recordTrajectoryEvent(active, "tool_finished", {
+      toolName: payload.toolName,
+      toolCallId: payload.toolCallId,
+      status: "error",
+      durationMs: Date.now() - payload.startedAt,
+      error: errorSummary(payload.error),
+    });
+    return;
+  }
+
+  const outputArtifact = writeTrajectoryArtifact(
+    active,
+    "tool-results",
+    `tool-${payload.toolCallId || payload.toolName}-${payload.toolName}-result`,
+    payload.result,
+  );
+  recordTrajectoryEvent(active, "tool_finished", {
+    toolName: payload.toolName,
+    toolCallId: payload.toolCallId,
+    status: "ok",
+    durationMs: Date.now() - payload.startedAt,
+    output: summarizeTrajectoryValue(payload.result),
+    outputArtifact,
+    details: summarizeTrajectoryValue((payload.result as { details?: unknown } | undefined)?.details),
+  });
+}
+
+export function recordTrajectoryMemoryQueryStarted(
+  active: ActiveSession,
+  payload: {
+    kind: MemoryQueryKind;
+    command: MemoryQueryCommand;
+    text: string;
+    qmd?: QmdStructuredQuery;
+    qmdQuery: string;
+    retrievalLimit: number;
+  },
+): void {
+  const queryArtifact = writeTrajectoryArtifact(active, "memory", "memory-query", payload);
+  recordTrajectoryEvent(active, "memory_query_started", {
+    kind: payload.kind,
+    command: payload.command,
+    text: summarizeTrajectoryValue(payload.text),
+    qmd: payload.qmd,
+    qmdQuery: summarizeTrajectoryValue(payload.qmdQuery),
+    queryArtifact,
+    retrievalLimit: payload.retrievalLimit,
+  });
+}
+
+export function recordTrajectoryQmdCallFinished(
+  active: ActiveSession,
+  payload: {
+    kind: MemoryQueryKind;
+    command: MemoryQueryCommand;
+    text: string;
+    startedAt: number;
+    result: CommandResult;
+    connectivityIssue?: string;
+    parsedCandidates: unknown[];
+  },
+): void {
+  const outputArtifact = writeTrajectoryArtifact(active, "memory", "qmd-output", {
+    kind: payload.kind,
+    command: payload.command,
+    text: payload.text,
+    stdout: payload.result.stdout,
+    stderr: payload.result.stderr,
+    code: payload.result.code,
+    killed: payload.result.killed,
+    connectivityIssue: payload.connectivityIssue,
+    parsedCandidates: payload.parsedCandidates,
+  });
+  recordTrajectoryEvent(active, "qmd_call_finished", {
+    kind: payload.kind,
+    command: payload.command,
+    durationMs: Date.now() - payload.startedAt,
+    code: payload.result.code,
+    killed: payload.result.killed,
+    connectivityIssue: payload.connectivityIssue,
+    stdout: summarizeTrajectoryValue(payload.result.stdout),
+    stderr: summarizeTrajectoryValue(payload.result.stderr),
+    parsedCandidateCount: payload.parsedCandidates.length,
+    outputArtifact,
+  });
+}
+
+function errorSummary(error: unknown): unknown {
+  return error instanceof Error
+    ? { name: error.name, message: error.message, stack: error.stack }
+    : String(error);
 }
 
 function safeName(value: string): string {

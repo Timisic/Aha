@@ -7,7 +7,7 @@ import { buildStagePrompt } from "./prompts.ts";
 import { restoreActiveSessionFromPiSession } from "./session.ts";
 import { createInsightRuntime, insightStatusText, prepareAgentPrompt } from "./runtime.ts";
 import { evaluateStageToolPolicy } from "./stage-policy.ts";
-import { recordTrajectoryEvent, stableTrajectoryHash, summarizeTrajectoryValue, writeTrajectoryArtifact } from "./trajectory.ts";
+import { recordTrajectoryContextBuilt, recordTrajectoryContextSeen, recordTrajectorySessionRestored, recordTrajectoryToolPolicy } from "./trajectory.ts";
 
 export function registerInsightExtension(pi: ExtensionAPI): void {
   const runtime = createInsightRuntime();
@@ -24,7 +24,7 @@ export function registerInsightExtension(pi: ExtensionAPI): void {
 
     runtime.activeSession = restored;
     ctx.ui.setStatus(ACTIVE_STATUS_KEY, insightStatusText(restored.session));
-    recordTrajectoryEvent(restored, "session_restored", {
+    recordTrajectorySessionRestored(restored, {
       source: "session_start",
       reason: (_event as { reason?: unknown }).reason,
       sessionDir: restored.sessionDir,
@@ -41,10 +41,10 @@ export function registerInsightExtension(pi: ExtensionAPI): void {
     const active = runtime.activeSession?.session.id === injection.sessionId
       ? runtime.activeSession
       : undefined;
-    recordTrajectoryEvent(active, "context_seen", {
+    recordTrajectoryContextSeen(active, {
       compact: Boolean(injection.compact),
       beforeMessageCount: event.messages.length,
-      pendingPromptHash: stableTrajectoryHash(injection.text),
+      pendingPromptText: injection.text,
     });
     const hiddenMessage = {
       role: "user" as const,
@@ -61,46 +61,24 @@ export function registerInsightExtension(pi: ExtensionAPI): void {
     const messages = injection.compact ? event.messages.slice(-1) : [...event.messages];
     const insertAt = Math.max(messages.length - 1, 0);
     messages.splice(insertAt, 0, hiddenMessage);
-    const artifact = writeTrajectoryArtifact(active, "contexts", "context-injection", {
+    recordTrajectoryContextBuilt(active, {
       compact: Boolean(injection.compact),
       insertAt,
       beforeMessages: event.messages,
       hiddenMessage,
       afterMessages: messages,
     });
-    recordTrajectoryEvent(active, "context_built", {
-      compact: Boolean(injection.compact),
-      beforeMessageCount: event.messages.length,
-      afterMessageCount: messages.length,
-      insertAt,
-      contextHash: stableTrajectoryHash(hiddenMessage.content),
-      beforeMessages: summarizeTrajectoryValue(event.messages),
-      hiddenMessage: summarizeTrajectoryValue(hiddenMessage),
-      artifact,
-    });
     return { messages };
   });
 
   pi.on("tool_call", (event) => {
     const policy = evaluateStageToolPolicy(event.toolName, event.input, runtime.activeSession);
-    const inputArtifact = writeTrajectoryArtifact(
-      runtime.activeSession,
-      "tool-calls",
-      `tool-call-${event.toolName}-input`,
-      event.input,
-    );
-    recordTrajectoryEvent(
-      runtime.activeSession,
-      policy ? "tool_call_blocked" : "tool_call_requested",
-      {
-        toolName: event.toolName,
-        toolCallId: (event as { toolCallId?: unknown }).toolCallId,
-        activeStage: runtime.activeSession?.session.stage,
-        input: summarizeTrajectoryValue(event.input),
-        inputArtifact,
-        blockReason: policy?.reason,
-      },
-    );
+    recordTrajectoryToolPolicy(runtime.activeSession, {
+      toolName: event.toolName,
+      toolCallId: (event as { toolCallId?: unknown }).toolCallId,
+      input: event.input,
+      blockReason: policy?.reason,
+    });
     return policy;
   });
 

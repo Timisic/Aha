@@ -9,7 +9,7 @@ import { buildReviewGrillPrompt, writeGrillBriefing } from "./prompts.ts";
 import { persistActiveSessionBinding, prepareAgentPrompt, saveActiveState, type InsightRuntime } from "./runtime.ts";
 import { evaluateInsightUpdatePolicy, shouldCreateReviewGrillBriefing } from "./stage-policy.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { recordTrajectoryEvent, summarizeTrajectoryValue, writeTrajectoryArtifact } from "./trajectory.ts";
+import { recordTrajectoryToolFinished, recordTrajectoryToolStarted } from "./trajectory.ts";
 
 async function withToolTrajectory<T>(
   runtime: InsightRuntime,
@@ -20,47 +20,27 @@ async function withToolTrajectory<T>(
 ): Promise<T> {
   const startedAt = Date.now();
   const activeAtStart = runtime.activeSession;
-  const inputArtifact = writeTrajectoryArtifact(
-    activeAtStart,
-    "tool-calls",
-    `tool-${toolCallId || toolName}-${toolName}-input`,
-    params,
-  );
-  recordTrajectoryEvent(activeAtStart, "tool_started", {
+  recordTrajectoryToolStarted(activeAtStart, {
     toolName,
     toolCallId,
-    input: summarizeTrajectoryValue(params),
-    inputArtifact,
+    params,
   });
 
   try {
     const result = await execute();
-    const activeAtFinish = runtime.activeSession ?? activeAtStart;
-    const outputArtifact = writeTrajectoryArtifact(
-      activeAtFinish,
-      "tool-results",
-      `tool-${toolCallId || toolName}-${toolName}-result`,
-      result,
-    );
-    recordTrajectoryEvent(activeAtFinish, "tool_finished", {
+    recordTrajectoryToolFinished(activeAtStart, {
       toolName,
       toolCallId,
-      status: "ok",
-      durationMs: Date.now() - startedAt,
-      output: summarizeTrajectoryValue(result),
-      outputArtifact,
-      details: summarizeTrajectoryValue((result as { details?: unknown } | undefined)?.details),
+      startedAt,
+      result,
     });
     return result;
   } catch (error) {
-    recordTrajectoryEvent(runtime.activeSession ?? activeAtStart, "tool_finished", {
+    recordTrajectoryToolFinished(activeAtStart, {
       toolName,
       toolCallId,
-      status: "error",
-      durationMs: Date.now() - startedAt,
-      error: error instanceof Error
-        ? { name: error.name, message: error.message, stack: error.stack }
-        : String(error),
+      startedAt,
+      error,
     });
     throw error;
   }

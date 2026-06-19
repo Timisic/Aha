@@ -137,6 +137,24 @@ writeFileSync(
     "const { appendFileSync } = require('node:fs');",
     "const queryIndex = process.argv.findIndex((arg) => arg === 'search' || arg === 'vsearch' || arg === 'query') + 1;",
     "const query = queryIndex > 0 ? process.argv[queryIndex] : '';",
+    "function emitResults() {",
+    "  process.stdout.write(JSON.stringify([",
+    "    {",
+    "      file: 'personal-review/feedback-visible-gap.md',",
+    "      title: '反馈是经验差距的显影装置',",
+    "      snippet: '反馈是一个显影装置，把经验差距、理解缺口、判断偏差和半成品边界暴露出来。',",
+    "      score: 0.82,",
+    "      query",
+    "    },",
+    "    {",
+    "      file: 'personal-review/feedback-loop-source.md',",
+    "      title: '反馈迭代的来源动力',",
+    "      snippet: '输出可以得到反馈，也可以得到很多 insight，但需要避免确认偏差。',",
+    "      score: 0.78,",
+    "      query",
+    "    }",
+    "  ]));",
+    "}",
     "if (process.env.QMD_ARGS_LOG) appendFileSync(process.env.QMD_ARGS_LOG, JSON.stringify({ args: process.argv.slice(2), query }) + '\\n');",
     "if ((process.env.QMD_FAKE_MODE || '') === 'large') {",
     "  process.stdout.write('x'.repeat(128 * 1024));",
@@ -147,22 +165,13 @@ writeFileSync(
     "  process.stdout.write('[]');",
     "  process.exit(0);",
     "}",
-    "process.stdout.write(JSON.stringify([",
-    "  {",
-    "    file: 'personal-review/feedback-visible-gap.md',",
-    "    title: '反馈是经验差距的显影装置',",
-    "    snippet: '反馈是一个显影装置，把经验差距、理解缺口、判断偏差和半成品边界暴露出来。',",
-    "    score: 0.82,",
-    "    query",
-    "  },",
-    "  {",
-    "    file: 'personal-review/feedback-loop-source.md',",
-    "    title: '反馈迭代的来源动力',",
-    "    snippet: '输出可以得到反馈，也可以得到很多 insight，但需要避免确认偏差。',",
-    "    score: 0.78,",
-    "    query",
-    "  }",
-    "]));",
+    "if ((process.env.QMD_FAKE_MODE || '') === 'delay') {",
+    "  const delayMs = Number(process.env.QMD_FAKE_DELAY_MS || '150');",
+    "  setTimeout(() => { emitResults(); process.exit(0); }, delayMs);",
+    "  setInterval(() => {}, 1000);",
+    "} else {",
+    "  emitResults();",
+    "}",
     "",
   ].join("\n"),
   "utf-8",
@@ -497,6 +506,40 @@ try {
     trajectoryEvents.some((event) => event.event === "session_restored" && event.data.source === "session_start"),
     "trajectory records enabled session restore",
   );
+
+  process.env.QMD_FAKE_MODE = "delay";
+  process.env.QMD_FAKE_DELAY_MS = "120";
+  const delayedSearch = trajectoryHarness.tools.get("insight_search_memory").execute(
+    "trajectory-delayed-search",
+    { queries: [{ text: "delayed trajectory memory", kind: "raw" }], limit: 4 },
+    undefined,
+    undefined,
+    trajectoryHarness.ctx,
+  );
+  await trajectoryHarness.commands.get("insight").handler(
+    "Insight: second trajectory session during delayed tool\n\nContext: active session changes before tool result",
+    trajectoryHarness.ctx,
+  );
+  const raceIndex = JSON.parse(readFileSync(indexPath, "utf-8"));
+  const raceSecondSessionDir = raceIndex[0].dir;
+  assert.notEqual(raceSecondSessionDir, trajectorySessionDir, "delayed tool test switches the active session");
+  await delayedSearch;
+  trajectoryEvents = readTrajectoryEvents(trajectorySessionDir);
+  const delayedToolFinished = trajectoryEvents.find(
+    (event) => event.event === "tool_finished" && event.data.toolCallId === "trajectory-delayed-search",
+  );
+  assert.ok(delayedToolFinished, "delayed tool finish stays with the session active at tool start");
+  assert.ok(
+    delayedToolFinished.data.outputArtifact.path.startsWith(join(trajectorySessionDir, "trajectory")),
+    "delayed tool result artifact is written under the original session trajectory directory",
+  );
+  const raceSecondEvents = readTrajectoryEvents(raceSecondSessionDir);
+  assert.ok(
+    !raceSecondEvents.some((event) => event.event === "tool_finished" && event.data.toolCallId === "trajectory-delayed-search"),
+    "delayed tool finish does not leak into the newly active session trajectory",
+  );
+  delete process.env.QMD_FAKE_MODE;
+  delete process.env.QMD_FAKE_DELAY_MS;
 
   process.env.QMD_FAKE_MODE = "connectivity";
   const connectivityHarness = createHarness(cwd);
