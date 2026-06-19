@@ -1,19 +1,25 @@
 {
-  "name": "pi-insight-package",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@timisic/aha-pi-insight",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Pi /insight extension package for Insight-to-Judgment workflows.",
+  "description": "Installable Aha /insight Pi extension for human-authored, agent-retrieved judgment workflows.",
   "keywords": [
-    "pi-package"
+    "aha",
+    "pi-package",
+    "pi-extension",
+    "insight",
+    "obsidian",
+    "qmd"
   ],
   "scripts": {
-    "build": "bun build extensions/insight.ts --target=node --outfile=/tmp/pi-insight-package-build.js",
+    "build": "mkdir -p dist && bun build extensions/insight.ts --target=node --outfile=dist/insight.js",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm test && npm run test:ultraqa && npm run build",
-    "test": "INSIGHT_EXTENSION_PATH=$PWD/extensions/insight.ts node tests/test-insight-extension.mjs",
+    "test": "INSIGHT_EXTENSION_PATH=$PWD/extensions/insight.ts node tests/test-insight-extension.mjs && INSIGHT_EXTENSION_PATH=$PWD/extensions/insight.ts node tests/test-doctor.mjs",
     "test:ultraqa": "INSIGHT_EXTENSION_PATH=$PWD/extensions/insight.ts node tests/ultraqa-insight-extension.mjs",
-    "smoke:offline": "pi --verbose --offline --no-tools --no-extensions -e . --print \"\""
+    "smoke:offline": "pi --verbose --offline --no-tools --no-extensions -e . --print \"\"",
+    "test:doctor": "INSIGHT_EXTENSION_PATH=$PWD/extensions/insight.ts node tests/test-doctor.mjs",
+    "demo:offline": "node ../scripts/insight/demo-offline.mjs"
   },
   "pi": {
     "extensions": [
@@ -21,12 +27,28 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
+    "@earendil-works/pi-coding-agent": ">=0.79.0 <0.80.0",
+    "@earendil-works/pi-tui": ">=0.79.0 <0.80.0",
+    "typebox": ">=1.1.0 <2"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",
     "typescript": "^5.9.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/Timisic/Aha.git",
+    "directory": "insight-package"
+  },
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0 <26",
+    "bun": ">=1.2.0 <2"
   }
 }
