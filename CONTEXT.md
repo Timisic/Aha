@@ -60,6 +60,22 @@ _Avoid_: final interpretation, prompt
 A memory query that combines an explicit retrieval intent, short lexical anchors, semantic paraphrases, and a hypothetical shape of the old memory that would satisfy the search. It should preserve the user's insight input while making the retrieval target precise.
 _Avoid_: raw prompt passthrough, keyword-only query, generic semantic search
 
+**Retrieval Orchestration**:
+The agent-owned step that generates structured memory queries, calls the retrieval backend, expands graph neighbors, reads candidate note text, and prepares candidates for relation judging. It belongs to the Reasoning Workflow, while a wrapper script may only launch, constrain, and capture it.
+_Avoid_: plugin-side retrieval logic, fixed keyword extraction, raw search passthrough
+
+**Memory Surface**:
+The user-facing place where a source note can trigger memory retrieval, display memory candidates with relation reasons, open old notes or quoted spans, collect review choices, launch additional search rounds, and save reviewed candidates for future evaluation. It is an operating surface, not the reasoning workflow itself.
+_Avoid_: agent brain, retrieval backend, automatic judge
+
+**Reasoning Workflow**:
+The agent-guided process that turns retrieved memory candidates into evidence-bound relations, review actions, grilling, and eventual judgment synthesis. It owns interpretation and pressure, while the Memory Surface owns display, selection, and handoff.
+_Avoid_: plugin UI, note browser, search result page
+
+**Memory Search Round**:
+One explicit retrieval pass triggered by the user from the current insight, source note, or a newly opened direction. Search rounds should remain visible as provenance, while their candidates accumulate into one memory candidate pool for deduplication, selection, and handoff export.
+_Avoid_: automatic background crawl, passive refresh
+
 **Review**:
 The user's own cognitive work while checking whether memory is truly related, thinking through relationships between old notes and a new insight, or reflecting during an agent exchange. Review can include reading, comparing, remembering, judging, and answering; it can happen before, during, and after grilling rather than as a strictly separate stage.
 _Avoid_: passive reading, agent analysis
@@ -69,20 +85,68 @@ The central interactive loop where the user reviews memory and the agent asks cl
 _Avoid_: separate review phase, separate interview phase
 
 **Memory Relation**:
-A tentative label the agent uses to present how an old note may relate to the current insight before the user completes Review. The core relation labels are supports, challenges, resembles, and bounds.
+A tentative label the agent uses to present how an old note may relate to the current insight before the user completes Review. The core relation labels are supports, challenges, resembles, bounds, and weak.
 _Avoid_: completed review, relevance score, background
+
+**Relation Judge**:
+The evidence-bound step that compares one current insight with one candidate old note and proposes a Memory Relation, quoted source evidence, and a short reason. It runs after retrieval and before final candidate presentation or ranking.
+_Avoid_: reranker, search score, final judgment
+
+**Relation Quote**:
+One to three short source-text spans from the candidate old note used to anchor a Relation Judge output. Strong relations require at least one quote; summaries may explain the quote but cannot replace it.
+_Avoid_: generated summary, retrieval snippet, invented evidence
 
 **Memory Candidate**:
 A retrieved old note presented for the user's review. Memory candidates may be merged from multiple searches, deduplicated, and shown in a compact table with title, relation, reason, and why to read it first, not as a completed interpretation.
 _Avoid_: reviewed note, final evidence, exhaustive result
 
 **Memory Candidate Pool**:
-The bounded ranked pool of retrieved candidates kept across memory searches. Displayed memory candidates are only the top slice shown to the user.
+The bounded pool of retrieved candidates accumulated across memory search rounds for deduplication, selection, and handoff export. Search round grouping may stay visible as provenance, but the pool is the shared review set.
 _Avoid_: visible table, final evidence
 
 **Memory Review**:
 The user's explicit acceptance, rejection, or uncertainty judgment about a memory candidate before it can shape grill or summary.
 _Avoid_: passive viewing, agent-selected evidence
+
+**Memory Review State**:
+The persisted state owned by the Memory Surface: source insight, search rounds, candidate pool, relation outputs, user review choices, and review benchmark seeds. It deliberately excludes the later grilling conversation.
+_Avoid_: grill transcript, full workflow state, chat history
+
+**Aha Review Note**:
+One Markdown note in the user's note vault, stored by default under `Aha/Reviews/`, created for a specific insight review when the user explicitly triggers the first memory search. It gathers the source insight link, search round summaries, selected memories, relation reasons, optional relation quotes, grill handoff material, and any review benchmark seeds saved during that insight review.
+_Avoid_: global benchmark file, per-seed file, final summary
+
+**Aha Review Filename**:
+The human-readable filename for an Aha Review Note, preferably `{YYYY-MM-DD} {source insight title}.md`, with title sanitization and a short suffix only when needed to avoid collisions on the same date or title.
+_Avoid_: opaque session id, global counter, title-less hash
+
+**Aha Review Frontmatter**:
+A minimal YAML header on an Aha Review Note used for stable extraction and filtering. It should identify the note as an Aha review, link the source insight, record creation time, and track coarse status without turning the note into a database.
+_Avoid_: full candidate JSON, hidden workflow state, verbose metadata
+
+**Aha Review Status**:
+The coarse lifecycle marker in Aha Review Frontmatter. The initial statuses are memory_review, handoff_ready, and grilled.
+_Avoid_: complete workflow stage machine, archived, summary_done
+
+**Selected Memory**:
+A memory candidate currently marked to be included in the Grill Handoff. Candidates may be selected by default after retrieval, but the user can remove low-value items before exporting the handoff.
+_Avoid_: automatically accepted evidence, final used memory, forced top-N
+
+**Candidate Open Action**:
+A Memory Surface action that opens a candidate old note or quoted span in a separate note leaf so the user's current insight note remains in place.
+_Avoid_: replacing the current insight note, raw filesystem reveal only
+
+**Grill Handoff**:
+A concise section of an Aha Review Note that passes the current insight link, Selected Memory links, and sufficiently detailed relation reasons from the Memory Surface into the Reasoning Workflow. It starts grilling by pointing Codex to readable notes and explaining why each selected memory matters, but is not itself a grill transcript.
+_Avoid_: final summary, complete session state, automatic rewrite, copied full note bodies
+
+**Codex Grill Launch**:
+An explicit user action from the Memory Surface that prepares the Grill Handoff Markdown for later use in Codex. It does not start an embedded grill UI or automatically run Codex.
+_Avoid_: plugin-owned grill conversation, automatic summary, hidden agent run, opening Codex as a side effect
+
+**Review Benchmark Seed**:
+A reviewed memory candidate and relation result that the user explicitly saves as material for a future benchmark case, usually first as a structured entry inside an Aha Review Note. It records a real use discovery after review; it is not an automatic gold label at retrieval time or a committed benchmark case.
+_Avoid_: auto-generated benchmark answer, unreviewed candidate, exhaustive relevance set, direct bench JSON write
 
 **Memory Candidate Recall Benchmark**:
 A small retrieval benchmark that evaluates whether the Memory Stage surfaces the old notes that should become review candidates for a realistic insight input. It scores candidate-note recall and ranking, not the quality of the final judgment, grilling, or summary draft.
@@ -135,6 +199,10 @@ _Avoid_: duplicate, same topic
 **Bounds**:
 A memory relation where an old note helps define where the current insight applies, stops applying, or needs qualification.
 _Avoid_: background, limitation only
+
+**Weak**:
+A memory relation where the old note may be related, but the quoted evidence is not strong enough to call it supports, challenges, resembles, or bounds. Weak candidates may still be shown or saved, but should not be treated as judgment evidence until the user reviews them.
+_Avoid_: irrelevant, needs_human, forced classification
 
 **New Insight**:
 A fresh direction or idea discovered during review or grilling that is important enough to open a new direction. It may trigger another memory retrieval when the user explicitly asks for connected history notes or when the direction requires more old material.
