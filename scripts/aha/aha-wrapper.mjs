@@ -15,6 +15,8 @@ const QUERY_PLAN_COMMANDS = ["qmd query", "qmd vsearch", "qmd search"];
 const MIN_TARGET_CANDIDATES = 15;
 const MAX_TARGET_CANDIDATES = 20;
 const DEFAULT_MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
+const DEFAULT_QMD_QUERY_TIMEOUT_MS = 20_000;
+const DEFAULT_QMD_FALLBACK_TIMEOUT_MS = 10_000;
 
 main().catch((error) => {
   emitJson(failedAhaResult({
@@ -394,15 +396,7 @@ async function qmdRecall(args, sourceText) {
 async function pipelineRecall(args, sourceText) {
   const plan = await generateQueryPlan(args, sourceText);
 
-  const queryResults = [];
-  const errors = [];
-  for (const query of plan.queries.slice(0, 5)) {
-    try {
-      queryResults.push(await runQmdPlanQuery(args, query));
-    } catch (error) {
-      errors.push(`${query.kind}/${query.command}: ${error.message}`);
-    }
-  }
+  const { queryResults, errors } = await runQmdPlanQueries(args, plan.queries.slice(0, 5));
   const graphExpansion = await obsidianGraphExpansion(args);
   if (graphExpansion.rows.length > 0) {
     queryResults.push({
@@ -951,10 +945,32 @@ function qmdQueryFromObject(qmd) {
 }
 
 async function runQmdPlanQuery(args, query) {
+  try {
+    return await runQmdPlanQueryCommand(args, query, {
+      timeoutMs: qmdQueryTimeoutMs(args),
+    });
+  } catch (error) {
+    const fallback = qmdPlanQueryFallback(query);
+    if (!fallback) throw error;
+    try {
+      const result = await runQmdPlanQueryCommand(args, fallback, {
+        timeoutMs: Math.min(qmdQueryTimeoutMs(args), DEFAULT_QMD_FALLBACK_TIMEOUT_MS),
+      });
+      return {
+        ...result,
+        warning: `${query.kind}/${query.command} failed (${error.message}); used ${fallback.command}.`,
+      };
+    } catch (fallbackError) {
+      throw new Error(`${error.message}; fallback ${fallback.command} failed: ${fallbackError.message}`);
+    }
+  }
+}
+
+async function runQmdPlanQueryCommand(args, query, options) {
   const command = String(query.command || "qmd query");
-  const subcommand = command === "qmd search"
+  const subcommand = command.startsWith("qmd search")
     ? "search"
-    : command === "qmd vsearch"
+    : command.startsWith("qmd vsearch")
       ? "vsearch"
       : "query";
   const text = query.query || query.text;
@@ -971,7 +987,7 @@ async function runQmdPlanQuery(args, query) {
     "--line-numbers",
     "--format",
     "json",
-  ], { cwd: args.workspace, timeoutMs: Math.min(Number(args.timeoutMs || 300_000), 120_000) });
+  ], { cwd: args.workspace, timeoutMs: options.timeoutMs });
 
   if (result.code !== 0) {
     throw new Error(firstLine(result.stderr || result.stdout) || `QMD exited ${result.code}`);
@@ -983,6 +999,43 @@ async function runQmdPlanQuery(args, query) {
   };
 }
 
+function qmdPlanQueryFallback(query) {
+  const command = String(query.command || "qmd query");
+  if (command === "qmd vsearch") return null;
+  const qmd = query.qmd ?? {};
+  const vecText = compactLine(qmd.vec || query.text || query.query, 900);
+  if (vecText) {
+    return {
+      ...query,
+      command: "qmd vsearch fallback",
+      text: vecText,
+      query: vecText,
+    };
+  }
+  return null;
+}
+
+function qmdQueryTimeoutMs(args) {
+  return Math.min(Number(args.timeoutMs || 300_000), Number(args.qmdQueryTimeoutMs || DEFAULT_QMD_QUERY_TIMEOUT_MS));
+}
+
+async function runQmdPlanQueries(args, queries) {
+  const settled = await Promise.all(queries.map(async (query) => {
+    try {
+      return { ok: true, result: await runQmdPlanQuery(args, query) };
+    } catch (error) {
+      return { ok: false, error: `${query.kind}/${query.command}: ${error.message}` };
+    }
+  }));
+  return {
+    queryResults: settled.filter((item) => item.ok).map((item) => item.result),
+    errors: [
+      ...settled.filter((item) => item.ok && item.result.warning).map((item) => item.result.warning),
+      ...settled.filter((item) => !item.ok).map((item) => item.error),
+    ],
+  };
+}
+
 async function rerankPipelineCandidates(args, queryResults) {
   const byPath = new Map();
   for (const queryResult of queryResults) {
@@ -990,6 +1043,7 @@ async function rerankPipelineCandidates(args, queryResults) {
       const notePath = notePathForObsidian(args, row);
       if (!(await isCandidatePathAllowed(args, notePath, row))) continue;
       if (isSourceCandidate(args, notePath, row)) continue;
+      if (isGeneratedReviewCandidate(args, notePath, row)) continue;
       const existing = byPath.get(notePath) ?? {
         notePath,
         noteTitle: typeof row.title === "string" && row.title.trim()
@@ -1342,6 +1396,17 @@ function isSourceCandidate(args, notePath, row) {
   });
 }
 
+function isGeneratedReviewCandidate(args, notePath, row) {
+  const rawPaths = [notePath, row.file, row.path, row.uri]
+    .filter((value) => typeof value === "string")
+    .map((value) => notePathForObsidian(args, { file: value.trim() }));
+  if (args.reviewPath && rawPaths.some((value) => sameNotePath(value, args.reviewPath))) return true;
+  return rawPaths.some((value) => {
+    const normalized = normalizeNoteIdentity(value);
+    return normalized === "aha/reviews" || normalized.startsWith("aha/reviews/");
+  });
+}
+
 function safeCaseId(value) {
   return String(value || "source").replace(/[^a-zA-Z0-9_.-]+/g, "-").slice(0, 80) || "source";
 }
@@ -1466,6 +1531,7 @@ function parseArgs(rawArgs) {
     obsidianCommand: "obsidian",
     qmdCommand: "qmd",
     reviewPath: "",
+    qmdQueryTimeoutMs: DEFAULT_QMD_QUERY_TIMEOUT_MS,
     sourceAbsolutePath: "",
     sourcePath: "",
     strategy: "pipeline",
@@ -1506,6 +1572,9 @@ function parseArgs(rawArgs) {
       case "--review-path":
         args.reviewPath = next();
         break;
+      case "--qmd-query-timeout-ms":
+        args.qmdQueryTimeoutMs = Number(next());
+        break;
       case "--source-absolute-path":
         args.sourceAbsolutePath = next();
         break;
@@ -1535,6 +1604,7 @@ function parseArgs(rawArgs) {
   args.workspace = path.resolve(args.workspace);
   if (args.vaultRoot) args.vaultRoot = path.resolve(args.vaultRoot);
   args.targetCandidates = clampTargetCandidates(args.targetCandidates);
+  args.qmdQueryTimeoutMs = clampPositiveInteger(args.qmdQueryTimeoutMs, DEFAULT_QMD_QUERY_TIMEOUT_MS);
   return args;
 }
 
@@ -1542,6 +1612,12 @@ function clampTargetCandidates(value) {
   const parsed = Number.parseInt(String(value), 10);
   if (!Number.isFinite(parsed)) return MAX_TARGET_CANDIDATES;
   return Math.min(MAX_TARGET_CANDIDATES, Math.max(MIN_TARGET_CANDIDATES, parsed));
+}
+
+function clampPositiveInteger(value, fallback) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
 }
 
 function emitJson(value, exitCode = 0) {

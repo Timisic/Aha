@@ -253,6 +253,175 @@ test("pipeline returns structured failure when mixed retrieval has no candidates
   }
 });
 
+test("pipeline filters generated Aha review notes from graph expansion", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-review-note-filter-"));
+  const vault = path.join(temp, "vault");
+  const source = path.join(vault, "source.md");
+  const reviewPath = "Aha/Reviews/2026-06-28 Source.md";
+  const codex = path.join(temp, "codex-helper.mjs");
+  const qmd = path.join(temp, "qmd-helper.mjs");
+  const obsidian = path.join(temp, "obsidian-helper.mjs");
+  await mkdir(path.join(vault, "Aha/Reviews"), { recursive: true });
+  await writeFile(source, "# Source\n\nA current insight with enough text for query planning.");
+  await writeFile(path.join(vault, reviewPath), [
+    "# Aha Review: Source",
+    "",
+    "Source: [[source]]",
+    "",
+    "_Aha will add selected memory candidates here after retrieval._",
+  ].join("\n"));
+  await writePipelineHelpers({
+    codex,
+    qmd,
+    obsidian,
+    relationJudge: "success",
+    noCandidates: true,
+    graphPaths: [reviewPath],
+  });
+
+  try {
+    const result = spawnSync(process.execPath, [
+      wrapper,
+      "--workspace",
+      repoRoot,
+      "--source-path",
+      "source.md",
+      "--source-absolute-path",
+      source,
+      "--review-path",
+      reviewPath,
+      "--vault-root",
+      vault,
+      "--codex-command",
+      codex,
+      "--qmd-command",
+      qmd,
+      "--obsidian-command",
+      obsidian,
+    ], { encoding: "utf8", timeout: 10000 });
+
+    assert.equal(result.status, 2, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.error.tool, "qmd");
+    assert.deepEqual(output.candidates, []);
+    assert.doesNotMatch(result.stdout, /Aha\/Reviews/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("pipeline bounds QMD plan query timeouts concurrently", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-qmd-timeout-bound-"));
+  const vault = path.join(temp, "vault");
+  const source = path.join(vault, "source.md");
+  const codex = path.join(temp, "codex-helper.mjs");
+  const qmd = path.join(temp, "qmd-helper.mjs");
+  const obsidian = path.join(temp, "obsidian-helper.mjs");
+  const qmdCallLog = path.join(temp, "qmd-call.log");
+  await mkdir(vault, { recursive: true });
+  await writeFile(source, "# Source\n\nA current insight with enough text for query planning.");
+  await writeSafeCandidate(vault);
+  await writePipelineHelpers({
+    codex,
+    qmd,
+    obsidian,
+    relationJudge: "success",
+    qmdHang: true,
+    graphPaths: ["Memory/Candidate.md"],
+  });
+
+  try {
+    const started = Date.now();
+    const result = spawnSync(process.execPath, [
+      wrapper,
+      "--workspace",
+      repoRoot,
+      "--source-path",
+      "source.md",
+      "--source-absolute-path",
+      source,
+      "--vault-root",
+      vault,
+      "--codex-command",
+      codex,
+      "--qmd-command",
+      qmd,
+      "--obsidian-command",
+      obsidian,
+      "--qmd-query-timeout-ms",
+      "800",
+    ], { encoding: "utf8", env: { ...process.env, QMD_CALL_LOG: qmdCallLog }, timeout: 10000 });
+    const elapsedMs = Date.now() - started;
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(elapsedMs < 6000, `expected bounded timeout handling, got ${elapsedMs}ms`);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.candidates.length, 1);
+    assert.equal(output.warnings.filter((warning) => warning.includes("timed out after 800ms")).length, 3);
+    const qmdCalls = (await readFile(qmdCallLog, "utf8")).trim().split("\n").map((line) => {
+      const [time, subcommand] = line.split(":");
+      return { time: Number(time), subcommand };
+    });
+    const planCalls = qmdCalls.filter((call) => call.subcommand !== "get");
+    assert.equal(planCalls.length, 5);
+    assert.ok(Math.max(...planCalls.slice(0, 3).map((call) => call.time)) - Math.min(...planCalls.slice(0, 3).map((call) => call.time)) < 250);
+    assert.ok(Math.max(...planCalls.slice(3).map((call) => call.time)) - Math.min(...planCalls.slice(3).map((call) => call.time)) < 250);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("pipeline falls back to vsearch when structured QMD query times out", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-qmd-vsearch-fallback-"));
+  const vault = path.join(temp, "vault");
+  const source = path.join(vault, "source.md");
+  const codex = path.join(temp, "codex-helper.mjs");
+  const qmd = path.join(temp, "qmd-helper.mjs");
+  const obsidian = path.join(temp, "obsidian-helper.mjs");
+  await mkdir(vault, { recursive: true });
+  await writeFile(source, "# Source\n\nA current insight with enough text for query planning.");
+  await writeSafeCandidate(vault);
+  await writePipelineHelpers({
+    codex,
+    qmd,
+    obsidian,
+    relationJudge: "success",
+    qmdHangQueryOnly: true,
+  });
+
+  try {
+    const result = spawnSync(process.execPath, [
+      wrapper,
+      "--workspace",
+      repoRoot,
+      "--source-path",
+      "source.md",
+      "--source-absolute-path",
+      source,
+      "--vault-root",
+      vault,
+      "--codex-command",
+      codex,
+      "--qmd-command",
+      qmd,
+      "--obsidian-command",
+      obsidian,
+      "--qmd-query-timeout-ms",
+      "500",
+    ], { encoding: "utf8", timeout: 10000 });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.candidates.length, 1);
+    assert.ok(output.warnings.some((warning) => warning.includes("used qmd vsearch fallback")));
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("pipeline fails structurally when admitted candidates have no readable excerpts", async () => {
   const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-unreadable-excerpts-"));
   const vault = path.join(temp, "vault");
@@ -543,7 +712,7 @@ async function writeSafeCandidate(vault) {
   await writeFile(candidate, "# Candidate\n\nSafe vault evidence.");
 }
 
-async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsidePath = "", outsideSnippet = "outside snippet", noCandidates = false }) {
+async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsidePath = "", outsideSnippet = "outside snippet", noCandidates = false, graphPaths = [], qmdHang = false, qmdHangQueryOnly = false }) {
   await writeFile(codex, [
     "#!/usr/bin/env node",
     "import { writeFileSync } from 'node:fs';",
@@ -581,19 +750,29 @@ async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsi
     "import { appendFileSync } from 'node:fs';",
     "const args = process.argv.slice(2);",
     "if (args.includes('--version')) { console.log('qmd-test 1.0'); process.exit(0); }",
+    "const indexFlag = args.indexOf('--index');",
+    "const subcommand = indexFlag === -1 ? args[0] : args[indexFlag + 2];",
     "const nIndex = args.indexOf('-n');",
     "if (process.env.QMD_N_LOG && nIndex !== -1) appendFileSync(process.env.QMD_N_LOG, `${args[nIndex + 1]}\\n`);",
+    "if (process.env.QMD_CALL_LOG) appendFileSync(process.env.QMD_CALL_LOG, `${Date.now()}:${subcommand}\\n`);",
     "if (args.includes('get')) { console.log('qmd://obsidian/Memory/Candidate.md?index=obsidian\\n---\\n# Candidate\\nSafe vault evidence.'); process.exit(0); }",
+    "function emitRows() {",
     noCandidates
-      ? "console.log('[]');"
+      ? "  console.log('[]');"
       : [
-          "console.log(JSON.stringify([",
+          "  console.log(JSON.stringify([",
           outsidePath
-            ? `  { score: 0.99, file: ${JSON.stringify(outsidePath)}, title: 'Secret', snippet: ${JSON.stringify(outsideSnippet)} },`
+            ? `    { score: 0.99, file: ${JSON.stringify(outsidePath)}, title: 'Secret', snippet: ${JSON.stringify(outsideSnippet)} },`
             : "",
-          "  { score: 0.91, file: 'qmd://obsidian/Memory/Candidate.md?index=obsidian', title: 'Candidate', snippet: '\"Safe vault evidence.\"' }",
-          "]));",
+          "    { score: 0.91, file: 'qmd://obsidian/Memory/Candidate.md?index=obsidian', title: 'Candidate', snippet: '\"Safe vault evidence.\"' }",
+          "  ]));",
         ].filter((line) => line !== "").join("\n"),
+    "}",
+    qmdHang
+      ? "setInterval(() => {}, 1000);"
+      : qmdHangQueryOnly
+      ? "if (subcommand === 'query') { setInterval(() => {}, 1000); } else { emitRows(); }"
+      : "emitRows();",
     "",
   ].filter((line) => line !== "").join("\n"));
 
@@ -601,7 +780,7 @@ async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsi
     "#!/usr/bin/env node",
     "const args = process.argv.slice(2);",
     "if (args[0] === 'files' && args[1] === 'total') { console.log('1'); process.exit(0); }",
-    "if (args[0] === 'links' || args[0] === 'backlinks') { console.log('[]'); process.exit(0); }",
+    `if (args[0] === 'links' || args[0] === 'backlinks') { console.log(${JSON.stringify(JSON.stringify(graphPaths.map((file) => ({ file }))))}); process.exit(0); }`,
     "console.log('ok');",
     "",
   ].join("\n"));

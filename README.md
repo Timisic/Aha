@@ -187,6 +187,8 @@ npm run verify
 - Relation Judge、QMD、wrapper 传输或超时失败不会伪装成成功轮次；wrapper 会保留结构化 `{ ok:false, error:{ message, tool, details } }`，插件会把它写成 failed search record。
 - Obsidian 桌面 App 的 PATH 可能没有 Node；插件会优先用设置里的 Node command，其次自动探测常见桌面安装路径，并用 Node 显式执行 wrapper，不再依赖 `#!/usr/bin/env node`。
 - 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径，避免把 vault 外文件内容带入 Codex judge prompt。
+- wrapper 会过滤当前 Aha Review Note 和 `Aha/Reviews/` 生成物，避免 Obsidian backlink 把 review shell 当成旧记忆候选。
+- Codex 生成的多条 QMD plan query 会并发执行；单条默认 20 秒超时。某条 QMD 慢或卡住时会作为 warning 保留，不再串行拖慢整轮搜索。
 - CLI 和插件侧外部进程都关闭 stdin、设置超时，并限制 stdout/stderr 缓冲大小。
 - 搜索开始时插件会立即把 running record 写入 Review Note 的 Search Results 区块；成功或失败退出后再追加对应记录，避免后台状态不可见。
 - `--target-candidates` 在 wrapper CLI 层也会限制到 15-20，和插件 UI slider 保持一致。
