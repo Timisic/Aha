@@ -1,0 +1,376 @@
+import * as path from "path";
+import {
+  FileSystemAdapter,
+  MarkdownView,
+  Notice,
+  Platform,
+  Plugin,
+  TFile,
+  normalizePath,
+} from "obsidian";
+import { appendFailureRecord, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource } from "./review-note";
+import { canRunExternalProcesses, runAhaWrapper, runReadinessCheck } from "./process";
+import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
+import { validateAhaWrapperResult } from "./schema";
+import { legacySourceIdentity, sourceIdentityForFile, sourceReviewIndexKey } from "./source-identity";
+
+interface AhaPluginData {
+  settings: AhaPluginSettings;
+  reviewIndex: Record<string, string>;
+}
+
+export default class AhaPlugin extends Plugin {
+  settings: AhaPluginSettings = { ...DEFAULT_SETTINGS };
+  reviewIndex: Record<string, string> = {};
+  private statusBar?: HTMLElement;
+  private activeRun?: { startedAt: number; sourcePath: string };
+  private timerId?: number;
+
+  async onload(): Promise<void> {
+    await this.loadSettings();
+    this.addSettingTab(new AhaSettingTab(this.app, this));
+    this.statusBar = this.addStatusBarItem();
+    this.statusBar.setText("Aha idle");
+
+    this.addCommand({
+      id: "aha-readiness-check",
+      name: "Aha: Check local readiness",
+      callback: () => {
+        void this.checkReadiness();
+      },
+    });
+
+    this.addCommand({
+      id: "aha-search-current-note",
+      name: "Aha: Search from current note",
+      checkCallback: (checking) => {
+        const file = this.currentMarkdownFile();
+        if (!file) return false;
+        if (!checking) void this.searchFromCurrentNote(file);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "aha-open-current-review-note",
+      name: "Aha: Open current review note",
+      checkCallback: (checking) => {
+        const file = this.currentMarkdownFile();
+        if (!file) return false;
+        if (!checking) void this.openReviewForSource(file);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "aha-open-candidate-under-cursor",
+      name: "Aha: Open candidate under cursor in new tab",
+      editorCheckCallback: (checking, editor) => {
+        const line = editor.getLine(editor.getCursor().line);
+        const target = parseFirstWikiLink(line);
+        if (!target) return false;
+        if (!checking) void this.openCandidateInNewTab(target);
+        return true;
+      },
+    });
+
+    this.registerMarkdownPostProcessor((element) => {
+      element.querySelectorAll<HTMLButtonElement>("button.aha-open-candidate").forEach((button) => {
+        this.registerDomEvent(button, "click", (event) => {
+          event.preventDefault();
+          const target = button.dataset.ahaPath;
+          if (target) void this.openCandidateInNewTab(target);
+        });
+      });
+    });
+
+    this.timerId = window.setInterval(() => this.updateStatusBar(), 1000);
+    this.registerInterval(this.timerId);
+  }
+
+  async loadSettings(): Promise<void> {
+    const data = (await this.loadData()) as Partial<AhaPluginData> | null;
+    this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
+    this.reviewIndex = data?.reviewIndex ?? {};
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData({ settings: this.settings, reviewIndex: this.reviewIndex });
+  }
+
+  private async checkReadiness(): Promise<void> {
+    if (!this.assertDesktop()) return;
+
+    try {
+      const result = await runReadinessCheck(this.settings);
+      const failed = result.checks.filter((check) => !check.ok);
+      const message = failed.length === 0
+        ? "Aha readiness passed."
+        : `Aha readiness failed: ${failed.map((check) => `${check.name}: ${check.message}`).join("; ")}`;
+      new Notice(message, failed.length === 0 ? 5000 : 10000);
+      this.statusBar?.setText(failed.length === 0 ? "Aha ready" : "Aha readiness failed");
+    } catch (error) {
+      this.reportError("Aha readiness failed", error);
+    }
+  }
+
+  private async searchFromCurrentNote(sourceFile: TFile): Promise<void> {
+    if (!this.assertDesktop()) return;
+
+    const reviewFile = await this.ensureReviewNote(sourceFile);
+    await this.openFile(reviewFile, false);
+
+    this.activeRun = { startedAt: Date.now(), sourcePath: sourceFile.path };
+    this.updateStatusBar();
+    new Notice("Aha search started.");
+
+    try {
+      const payload = await runAhaWrapper(this.settings, {
+        reviewPath: reviewFile.path,
+        sourceAbsolutePath: this.absolutePathForFile(sourceFile),
+        sourcePath: sourceFile.path,
+        vaultRoot: this.vaultRoot(),
+      });
+      const validation = validateAhaWrapperResult(payload);
+      if (!validation.ok || !validation.result) {
+        throw new Error(`Malformed Aha result: ${validation.errors.join("; ")}`);
+      }
+      if (!validation.result.ok) {
+        const failure = validation.result.error ?? { message: "Aha wrapper failed." };
+        await this.appendFailure(reviewFile, failure);
+        await this.openFile(reviewFile, false);
+        new Notice(`Aha failed: ${failure.message}`, 10000);
+        return;
+      }
+
+      const content = await this.app.vault.read(reviewFile);
+      const nextContent = appendSuccessfulSearchRound(content, {
+        generatedAt: new Date(),
+        result: validation.result,
+        sourcePath: sourceFile.path,
+        sourceTitle: sourceFile.basename,
+      });
+      await this.app.vault.modify(reviewFile, nextContent);
+      await this.openFile(reviewFile, false);
+      new Notice(`Aha search completed: ${validation.result.candidates?.length ?? 0} candidates.`);
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      await this.appendFailure(reviewFile, {
+        message: "Aha wrapper failed before returning a valid structured result.",
+        tool: "wrapper",
+        details,
+      });
+      await this.openFile(reviewFile, false);
+      this.reportError("Aha search failed", error);
+    } finally {
+      this.activeRun = undefined;
+      this.updateStatusBar();
+    }
+  }
+
+  private async ensureReviewNote(sourceFile: TFile): Promise<TFile> {
+    const sourceId = await this.sourceIdentityFor(sourceFile);
+    const existingPath = this.reviewIndex[sourceReviewIndexKey(sourceId, sourceFile.path)]
+      ?? this.reviewIndex[legacySourceIdentity(sourceFile.path)]
+      ?? this.reviewIndex[sourceFile.path];
+    const existing = existingPath ? await this.verifiedReviewNote(existingPath, sourceId, sourceFile.path) : null;
+    if (existing instanceof TFile) {
+      await this.rememberReviewNote(sourceId, sourceFile.path, existing.path);
+      return existing;
+    }
+
+    const scanned = await this.findReviewNoteForSource(sourceId, sourceFile.path);
+    if (scanned) {
+      await this.rememberReviewNote(sourceId, sourceFile.path, scanned.path);
+      return scanned;
+    }
+
+    const folder = reviewFolderPath(this.settings.reviewFolder);
+    await this.ensureFolder(folder);
+    const createdAt = new Date();
+    const basePath = normalizePath(`${folder}/${makeReviewFileName(sourceFile.basename, createdAt)}`);
+    const reviewPath = await this.uniqueReviewPath(basePath, sourceFile.path);
+    const content = makeReviewNoteContent({
+      createdAt,
+      sourceId,
+      sourcePath: sourceFile.path,
+      sourceTitle: sourceFile.basename,
+    });
+    const file = await this.app.vault.create(reviewPath, content);
+    await this.rememberReviewNote(sourceId, sourceFile.path, reviewPath);
+    return file;
+  }
+
+  private async appendFailure(reviewFile: TFile, failure: { message: string; tool?: string; details?: string }): Promise<void> {
+    const content = await this.app.vault.read(reviewFile);
+    await this.app.vault.modify(reviewFile, appendFailureRecord(content, failure, new Date()));
+  }
+
+  private async openReviewForSource(sourceFile: TFile): Promise<void> {
+    const sourceId = await this.sourceIdentityFor(sourceFile);
+    const reviewPath = this.reviewIndex[sourceReviewIndexKey(sourceId, sourceFile.path)]
+      ?? this.reviewIndex[legacySourceIdentity(sourceFile.path)]
+      ?? this.reviewIndex[sourceFile.path];
+    let file = reviewPath ? await this.verifiedReviewNote(reviewPath, sourceId, sourceFile.path) : null;
+    if (!(file instanceof TFile)) {
+      file = await this.findReviewNoteForSource(sourceId, sourceFile.path);
+    }
+    if (!(file instanceof TFile)) {
+      new Notice("No Aha Review Note exists for this source note yet.");
+      return;
+    }
+    await this.rememberReviewNote(sourceId, sourceFile.path, file.path);
+    await this.openFile(file, false);
+  }
+
+  private async openCandidateInNewTab(target: string): Promise<void> {
+    const file = this.resolveCandidate(target);
+    if (!file) {
+      new Notice(`Aha could not find candidate note: ${target}`, 8000);
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf("tab");
+    await leaf.openFile(file, { active: true });
+  }
+
+  private resolveCandidate(target: string): TFile | null {
+    const normalized = normalizePath(target.replace(/^\[\[|\]\]$/g, "").split("|")[0]);
+    const exact = this.app.vault.getAbstractFileByPath(normalized) ?? this.app.vault.getAbstractFileByPath(`${normalized}.md`);
+    if (exact instanceof TFile) return exact;
+
+    const title = path.basename(normalized, ".md");
+    const matches = this.app.vault.getMarkdownFiles().filter((file) => file.basename === title);
+    if (matches.length > 1) {
+      new Notice(`Aha candidate target is ambiguous: ${target}`, 8000);
+      return null;
+    }
+    if (matches.length === 1) return matches[0];
+
+    const linked = this.app.metadataCache.getFirstLinkpathDest(normalized, "");
+    return linked instanceof TFile ? linked : null;
+  }
+
+  private currentMarkdownFile(): TFile | null {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const file = view?.file ?? this.app.workspace.getActiveFile();
+    if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") return null;
+    return file;
+  }
+
+  private async openFile(file: TFile, newTab: boolean): Promise<void> {
+    const leaf = this.app.workspace.getLeaf(newTab ? "tab" : false);
+    await leaf.openFile(file, { active: true });
+  }
+
+  private async ensureFolder(folder: string): Promise<void> {
+    const parts = folder.split("/").filter(Boolean);
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(current)) {
+        await this.app.vault.createFolder(current);
+      }
+    }
+  }
+
+  private async uniqueReviewPath(basePath: string, sourcePath: string): Promise<string> {
+    if (!this.app.vault.getAbstractFileByPath(basePath)) return basePath;
+    const suffix = stableSuffix(sourcePath);
+    const withoutExtension = basePath.replace(/\.md$/i, "");
+    const suffixed = `${withoutExtension}-${suffix}.md`;
+    if (!this.app.vault.getAbstractFileByPath(suffixed)) return suffixed;
+
+    for (let index = 2; index < 100; index += 1) {
+      const candidate = `${withoutExtension}-${suffix}-${index}.md`;
+      if (!this.app.vault.getAbstractFileByPath(candidate)) return candidate;
+    }
+    throw new Error("Could not create a unique Aha Review Note path.");
+  }
+
+  private absolutePathForFile(file: TFile): string {
+    return path.join(this.vaultRoot(), file.path);
+  }
+
+  private vaultRoot(): string {
+    const adapter = this.app.vault.adapter;
+    if (adapter instanceof FileSystemAdapter) return adapter.getBasePath();
+    throw new Error("Aha requires a local filesystem-backed vault.");
+  }
+
+  private async rememberReviewNote(sourceId: string, sourcePath: string, reviewPath: string): Promise<void> {
+    this.reviewIndex[sourceReviewIndexKey(sourceId, sourcePath)] = reviewPath;
+    this.reviewIndex[legacySourceIdentity(sourcePath)] = reviewPath;
+    delete this.reviewIndex[sourceId];
+    delete this.reviewIndex[sourcePath];
+    await this.saveSettings();
+  }
+
+  private async findReviewNoteForSource(sourceId: string, sourcePath: string): Promise<TFile | null> {
+    const folder = reviewFolderPath(this.settings.reviewFolder);
+    const reviewFiles = this.app.vault.getMarkdownFiles()
+      .filter((file) => file.path.startsWith(`${folder}/`) || file.path === folder);
+    const matches: TFile[] = [];
+    for (const file of reviewFiles) {
+      try {
+        const content = await this.app.vault.cachedRead(file);
+        if (reviewNoteMatchesSource(content, sourceId, sourcePath)) matches.push(file);
+      } catch {
+        // Ignore unreadable notes and keep scanning the review folder.
+      }
+    }
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  private async verifiedReviewNote(reviewPath: string, sourceId: string, sourcePath: string): Promise<TFile | null> {
+    const file = this.app.vault.getAbstractFileByPath(reviewPath);
+    if (!(file instanceof TFile)) return null;
+    try {
+      const content = await this.app.vault.cachedRead(file);
+      if (reviewNoteMatchesSource(content, sourceId, sourcePath)) return file;
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  private async sourceIdentityFor(sourceFile: TFile): Promise<string> {
+    return sourceIdentityForFile(sourceFile, this.absolutePathForFile(sourceFile));
+  }
+
+  private assertDesktop(): boolean {
+    if (!Platform.isDesktopApp || !canRunExternalProcesses()) {
+      new Notice("Aha can only run external tools from Obsidian desktop.", 10000);
+      return false;
+    }
+    return true;
+  }
+
+  private updateStatusBar(): void {
+    if (!this.statusBar) return;
+    if (!this.activeRun) {
+      this.statusBar.setText("Aha idle");
+      return;
+    }
+    const elapsed = Math.floor((Date.now() - this.activeRun.startedAt) / 1000);
+    this.statusBar.setText(`Aha running ${elapsed}s`);
+  }
+
+  private reportError(prefix: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    new Notice(`${prefix}: ${message}`, 10000);
+    this.statusBar?.setText("Aha failed");
+  }
+}
+
+function parseFirstWikiLink(line: string): string | null {
+  const match = line.match(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/);
+  return match?.[1] ?? null;
+}
+
+function stableSuffix(value: string): string {
+  let hash = 0;
+  for (const char of value) {
+    hash = Math.imul(31, hash) + char.charCodeAt(0) | 0;
+  }
+  return Math.abs(hash).toString(36).slice(0, 6);
+}

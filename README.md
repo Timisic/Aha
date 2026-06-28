@@ -162,12 +162,35 @@ insights/
 - summary draft 保存；
 - 跨路径 list / resume；
 - QMD 超时后的进程组清理。
+- Obsidian 插件 MVP：从当前笔记触发 Aha search，生成/复用 Aha Review Note，通过 wrapper 调用 Codex/QMD/Obsidian CLI，并在 review note 中追加每一轮检索结果。
+- wrapper 默认 `pipeline`：Codex 生成 3-5 条 QMD query，wrapper 混合 QMD 与 Obsidian graph 检索、重排候选、读取 vault 内候选正文，再用 bounded Relation Judge 给出关系判断。
 
 暂时还没有：
 
 - 独立 Web UI；
 - 自动修改 Obsidian 原文；
 - 多 Agent 分发。
+
+## Obsidian 插件 MVP
+
+插件代码位于 `obsidian-plugin/`，wrapper 位于 `scripts/aha/`。这部分不迁移、不修改现有 `insight-package/`，只把 Obsidian 当作 Memory Surface：负责触发、生成 review note、打开候选笔记；检索编排与关系判断仍由 wrapper/Codex/QMD 侧负责。
+
+本地验证：
+
+```bash
+cd obsidian-plugin
+npm run verify
+```
+
+关键运行约束：
+
+- Relation Judge、QMD、wrapper 传输或超时失败不会伪装成成功轮次；wrapper 会保留结构化 `{ ok:false, error:{ message, tool, details } }`，插件会把它写成 failed search record。
+- 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径，避免把 vault 外文件内容带入 Codex judge prompt。
+- CLI 和插件侧外部进程都关闭 stdin、设置超时，并限制 stdout/stderr 缓冲大小。
+- `--target-candidates` 在 wrapper CLI 层也会限制到 15-20，和插件 UI slider 保持一致。
+- Aha Review Note 会在 frontmatter 写入 `source_id`；桌面本地文件系统可用时使用 inode 级身份，因此 source note 改名、编辑大小或 mtime 变化后仍可复用同一个 review note。若只能降级到 ctime 身份，插件会要求 `source_path` 同时匹配，避免同时间戳碰撞污染别的 review note。
+- Aha Review Note 的成功搜索轮次采用 marker-backed 追加语义；重新运行不会删除已有的人工记录、Selected Memories 或 Grill Handoff 内容。
+- wrapper 的 note identity 默认大小写不敏感，匹配当前 macOS/Obsidian vault 常用行为；测试里保留了大小写敏感选项，便于未来支持严格区分大小写的 vault。
 
 ## 评测
 

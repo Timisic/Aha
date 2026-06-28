@@ -1,0 +1,10 @@
+{
+  "id": "aha-memory-surface",
+  "name": "Aha Memory Surface",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Create Aha Review Notes from the current note and run the local Codex/QMD wrapper.",
+  "author": "Timisic",
+  "authorUrl": "https://github.com/Timisic",
+  "isDesktopOnly": true
+}

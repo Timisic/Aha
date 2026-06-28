@@ -10,7 +10,7 @@ The MVP should be fast enough to build, easy to verify, and narrow enough that t
 
 Build a command-palette-first Obsidian plugin MVP backed by a repo-local wrapper. The plugin resolves the current note, creates or updates an Aha Review Note, starts the wrapper in the background, shows coarse running time and success/failure, then opens the Review Note when done.
 
-The wrapper launches `codex exec` with the Aha skill and a structured output schema. Codex reads the source note, generates structured QMD queries, calls QMD, expands Obsidian backlinks/outlinks when available, reads candidate note text, runs Relation Judge one candidate at a time inside the same Codex run, and returns 15-20 candidates. The wrapper writes those candidates into the Aha Review Note with relation, quote-backed hit, sufficiently detailed reason, and a Grill Handoff Markdown section.
+The wrapper launches bounded `codex exec` calls with structured output schemas and `--output-last-message`. Codex owns the retrieval strategy by generating 3-5 structured QMD queries and by running the bounded Relation Judge. The wrapper owns the mechanical local integration: checking Codex/QMD/Obsidian CLI readiness, running QMD and Obsidian graph commands, filtering source/self/out-of-vault hits, merging and reranking candidates, reading only vault-contained candidate excerpts, and preserving structured failures. The wrapper writes the final 15-20 candidates into the Aha Review Note with relation, quote-backed hit, sufficiently detailed reason, and a Grill Handoff Markdown section.
 
 ## User Stories
 
@@ -41,7 +41,7 @@ The wrapper launches `codex exec` with the Aha skill and a structured output sch
 - The MVP returns 15-20 candidates by default.
 - Candidates are selected by default in the Review Note, but the first MVP does not need a complex checkbox UI beyond Markdown output.
 - Candidate links open in a separate leaf/tab.
-- The wrapper starts a single Codex run for the search round. Inside that run, Codex handles structured QMD query generation, QMD calls, backlink/outlink expansion, candidate reading, Relation Judge, and final ranking.
+- The wrapper starts one bounded pipeline per search round. Codex generates structured QMD queries and runs Relation Judge; the wrapper performs local QMD calls, backlink/outlink expansion, vault-contained candidate reading, candidate merge/rerank, schema validation, and failure preservation.
 - Relation Judge labels are supports, challenges, resembles, bounds, and weak.
 - Strong relations require quote-backed hits from old note text.
 - The plugin only needs coarse status: running time, success/failure, and Review Note path.
