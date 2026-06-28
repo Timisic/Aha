@@ -10,7 +10,7 @@ The user needs a lighter Memory Surface in Obsidian: starting from the current n
 
 Aha should move to an Obsidian plugin plus repo-local wrapper plus Codex/QMD architecture.
 
-From the user's perspective, the plugin adds a command that treats the current Obsidian note as the source insight, explicitly triggers Aha search, and creates an Aha Review Note in the vault. Codex acts as Retrieval Orchestration: it reads the source note, generates multiple structured QMD queries, calls QMD, expands Obsidian backlinks/outlinks, reads candidate note text, runs Relation Judge one candidate at a time, and returns 15-20 candidate old notes with relation, quote-backed hit, and sufficiently detailed reason.
+From the user's perspective, the plugin adds a command that treats the current Obsidian note as the source insight, explicitly triggers Aha search, and creates an Aha Review Note in the vault. Codex owns the intelligent retrieval strategy: it generates multiple structured QMD queries and judges the bounded candidate excerpts. The wrapper owns the mechanical local integration: it checks Codex/QMD/Obsidian CLI readiness, calls QMD, expands Obsidian backlinks/outlinks, reads only vault-contained candidate note text, merges and reranks candidates, and preserves structured failures. Together they return 15-20 candidate old notes with relation, quote-backed hit, and sufficiently detailed reason.
 
 The Aha Review Note becomes the durable human-readable artifact. It records the source insight link, search rounds, selected memories, relation reasons, optional quotes, a Grill Handoff section, and any explicitly saved Review Benchmark Seeds. Obsidian remains the user's note and review surface; Codex remains the reasoning workflow for retrieval, relation judging, grilling, and judgment synthesis.
 
@@ -65,9 +65,10 @@ The Aha Review Note becomes the durable human-readable artifact. It records the 
 - Aha Review Note filenames use date plus source insight title, with sanitized/truncated titles and a short suffix only for collisions.
 - Aha Review Notes use minimal frontmatter for type, source link, creation time, and coarse status.
 - Initial review statuses are memory_review, handoff_ready, and grilled.
-- The wrapper launches Codex in non-interactive mode with explicit sandbox, approval, schema, and output settings. It should not contain query-generation, reranking, or relation-judging intelligence.
-- Codex runs as the retrieval orchestrator. It generates structured QMD queries, calls QMD, expands backlinks/outlinks, reads final candidate notes, and produces evidence-bound relation outputs.
-- Relation Judge runs one candidate at a time inside a single Codex run per search round, not one Codex process per candidate.
+- The wrapper launches Codex in non-interactive mode with explicit sandbox, approval, schema, and output settings. It should not contain query-generation or relation-judging intelligence.
+- Codex runs as the strategy layer. It generates structured QMD queries and produces evidence-bound relation outputs from bounded candidate excerpts.
+- The wrapper runs the local retrieval pipeline mechanically: QMD calls, backlink/outlink expansion, source/self/out-of-vault filtering, candidate excerpt reads, merge/rerank, schema validation, and structured failure preservation.
+- Relation Judge reviews bounded candidate excerpts inside one Codex run per search round, not one Codex process per candidate.
 - Strong relations require source-text quotes. The explanation may summarize or connect, but the quote must be copied from the old note text.
 - The output contract centers on candidate note, relation, hit, and why. Hit should be quote-backed; why should be detailed enough for later Codex grilling.
 - The plugin opens candidate notes in a separate leaf/tab rather than replacing the current insight note.
