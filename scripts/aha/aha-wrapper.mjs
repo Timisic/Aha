@@ -11,12 +11,17 @@ import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "./lib/
 const JSON_BEGIN = "AHA_RESULT_JSON_BEGIN";
 const JSON_END = "AHA_RESULT_JSON_END";
 const QUERY_PLAN_KINDS = ["raw", "abstracted_judgment", "contextual", "explicit_cue", "bounds"];
-const QUERY_PLAN_COMMANDS = ["qmd query", "qmd vsearch", "qmd search"];
+const QUERY_PLAN_COMMANDS = ["qmd query", "qmd search"];
 const MIN_TARGET_CANDIDATES = 15;
 const MAX_TARGET_CANDIDATES = 20;
 const DEFAULT_MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
-const DEFAULT_QMD_QUERY_TIMEOUT_MS = 20_000;
-const DEFAULT_QMD_FALLBACK_TIMEOUT_MS = 10_000;
+const DEFAULT_QMD_QUERY_TIMEOUT_MS = 30_000;
+const DEFAULT_QMD_CANDIDATE_LIMIT = 20;
+const MAX_QMD_LEX_TERMS = 4;
+const MAX_QMD_LEX_CHARS = 32;
+const MAX_QMD_INTENT_CHARS = 180;
+const MAX_QMD_VEC_CHARS = 360;
+const MAX_QMD_HYDE_CHARS = 320;
 
 main().catch((error) => {
   emitJson(failedAhaResult({
@@ -396,7 +401,7 @@ async function qmdRecall(args, sourceText) {
 async function pipelineRecall(args, sourceText) {
   const plan = await generateQueryPlan(args, sourceText);
 
-  const { queryResults, errors } = await runQmdPlanQueries(args, plan.queries.slice(0, 5));
+  const { queryResults, warnings: queryWarnings, errors } = await runQmdPlanQueries(args, plan.queries.slice(0, 5));
   const graphExpansion = await obsidianGraphExpansion(args);
   if (graphExpansion.rows.length > 0) {
     queryResults.push({
@@ -436,6 +441,7 @@ async function pipelineRecall(args, sourceText) {
       : `Relation Judge unavailable; returning structured failure instead of treating weak candidates as success: ${relationJudge.error}`,
     ...graphExpansion.warnings,
     ...relationJudge.warnings,
+    ...queryWarnings,
     ...errors.map((error) => `Skipped failed query: ${error}`),
   ];
   const summary = plan.query_generated_by === "codex"
@@ -775,8 +781,13 @@ function buildQueryPlanPrompt(args, sourceText) {
     "",
     "command 选择：",
     "- 默认使用 qmd query，并填写 qmd.intent / qmd.lex / qmd.vec / qmd.hyde。",
-    "- qmd vsearch 只用于宽泛语义改写；query text 会使用 qmd.vec。",
+    "- raw、abstracted_judgment、contextual、bounds 都使用 qmd query。",
     "- qmd search 只用于非常明确的短实体、概念、原句线索；text 必须是实际搜索短语。",
+    "",
+    "QMD 字段长度约束：",
+    "- lex 最多 4 条，每条是短词或短短语，不要写整句。",
+    "- intent 不超过 180 字；vec 不超过 360 字；hyde 不超过 320 字。",
+    "- 字段里不要包含换行、项目符号、Markdown 引号或额外的 intent:/lex:/vec:/hyde: 前缀。",
     "",
     "输出必须是 JSON，只包含 queries 字段，并匹配 output schema。",
     `source path: ${args.sourcePath}`,
@@ -848,7 +859,6 @@ function normalizeQueryPlanItem(item, args, sourceText, index) {
 
 function queryTextForCommand(command, text, qmd) {
   if (command === "qmd search") return compactLine(text || qmd.lex.join(" "), 300);
-  if (command === "qmd vsearch") return compactLine(qmd.vec || text, 900);
   return qmdQueryFromObject(qmd);
 }
 
@@ -875,8 +885,8 @@ function buildRuleQueryPlan(args, sourceText) {
     },
     {
       kind: "contextual",
-      command: "qmd vsearch",
-      text: "保留具体语境的宽泛语义检索",
+      command: "qmd query",
+      text: "保留具体语境的结构化语义检索",
       qmd: {
         intent: "召回和当前语境、经历场景、关系模式或行动选择相似的旧笔记。",
         lex: unique([...base.lex, "相似经历", "关系模式", "行动选择"]).slice(0, 7),
@@ -903,11 +913,15 @@ function buildRuleQueryPlan(args, sourceText) {
 
 function normalizeQmdObject(value, args, sourceText) {
   const fallback = fallbackQmdObject(args, sourceText);
+  const lex = unique(Array.isArray(value?.lex) ? [...value.lex, ...fallback.lex] : fallback.lex)
+    .map((item) => sanitizeQmdLine(item, MAX_QMD_LEX_CHARS))
+    .filter((item) => item.length >= 2)
+    .slice(0, MAX_QMD_LEX_TERMS);
   return {
-    intent: compactLine(value?.intent || fallback.intent, 500),
-    lex: unique(Array.isArray(value?.lex) ? [...value.lex, ...fallback.lex] : fallback.lex).slice(0, 7),
-    vec: compactLine(value?.vec || fallback.vec, 900),
-    hyde: compactLine(value?.hyde || fallback.hyde, 900),
+    intent: sanitizeQmdLine(value?.intent || fallback.intent, MAX_QMD_INTENT_CHARS),
+    lex: lex.length > 0 ? lex : fallback.lex.slice(0, MAX_QMD_LEX_TERMS),
+    vec: sanitizeQmdLine(value?.vec || fallback.vec, MAX_QMD_VEC_CHARS),
+    hyde: sanitizeQmdLine(value?.hyde || fallback.hyde, MAX_QMD_HYDE_CHARS),
   };
 }
 
@@ -929,10 +943,18 @@ function fallbackQmdObject(args, sourceText) {
   const vec = lineSignals.slice(0, 6).join(" ") || heading;
   return {
     intent: "召回与当前 Aha insight/source note 相关的旧判断、反例、边界和相似结构。",
-    lex,
-    vec,
+    lex: lex.slice(0, MAX_QMD_LEX_TERMS),
+    vec: compactLine(vec, MAX_QMD_VEC_CHARS),
     hyde: `一篇旧笔记讨论与「${heading}」相关的经验、判断变化、产品边界或记忆检索线索。`,
   };
+}
+
+function sanitizeQmdLine(value, maxLength) {
+  return compactLine(value, maxLength)
+    .replace(/^(?:intent|lex|vec|hyde)\s*:\s*/i, "")
+    .replace(/["`]+/g, "'")
+    .replace(/^[*-]\s+/, "")
+    .trim();
 }
 
 function qmdQueryFromObject(qmd) {
@@ -945,23 +967,19 @@ function qmdQueryFromObject(qmd) {
 }
 
 async function runQmdPlanQuery(args, query) {
+  const timeoutMs = qmdQueryTimeoutMs(args);
   try {
-    return await runQmdPlanQueryCommand(args, query, {
-      timeoutMs: qmdQueryTimeoutMs(args),
-    });
+    return await runQmdPlanQueryCommand(args, query, { timeoutMs });
   } catch (error) {
-    const fallback = qmdPlanQueryFallback(query);
-    if (!fallback) throw error;
+    if (!isQmdRetryableTimeout(error, query)) throw error;
     try {
-      const result = await runQmdPlanQueryCommand(args, fallback, {
-        timeoutMs: Math.min(qmdQueryTimeoutMs(args), DEFAULT_QMD_FALLBACK_TIMEOUT_MS),
-      });
+      const result = await runQmdPlanQueryCommand(args, query, { timeoutMs });
       return {
         ...result,
-        warning: `${query.kind}/${query.command} failed (${error.message}); used ${fallback.command}.`,
+        warning: `${query.kind}/${query.command} timed out once (${error.message}); retry succeeded with qmd query.`,
       };
-    } catch (fallbackError) {
-      throw new Error(`${error.message}; fallback ${fallback.command} failed: ${fallbackError.message}`);
+    } catch (retryError) {
+      throw new Error(`${error.message}; retry failed: ${retryError.message}`);
     }
   }
 }
@@ -970,9 +988,7 @@ async function runQmdPlanQueryCommand(args, query, options) {
   const command = String(query.command || "qmd query");
   const subcommand = command.startsWith("qmd search")
     ? "search"
-    : command.startsWith("qmd vsearch")
-      ? "vsearch"
-      : "query";
+    : "query";
   const text = query.query || query.text;
   const result = await runCommand(args.qmdCommand, [
     "--index",
@@ -983,6 +999,8 @@ async function runQmdPlanQueryCommand(args, query, options) {
     "obsidian",
     "-n",
     String(Math.max(Number(args.targetCandidates || 20), 15)),
+    "-C",
+    String(qmdCandidateLimit(args)),
     "--full-path",
     "--line-numbers",
     "--format",
@@ -999,40 +1017,32 @@ async function runQmdPlanQueryCommand(args, query, options) {
   };
 }
 
-function qmdPlanQueryFallback(query) {
-  const command = String(query.command || "qmd query");
-  if (command === "qmd vsearch") return null;
-  const qmd = query.qmd ?? {};
-  const vecText = compactLine(qmd.vec || query.text || query.query, 900);
-  if (vecText) {
-    return {
-      ...query,
-      command: "qmd vsearch fallback",
-      text: vecText,
-      query: vecText,
-    };
-  }
-  return null;
-}
-
 function qmdQueryTimeoutMs(args) {
   return Math.min(Number(args.timeoutMs || 300_000), Number(args.qmdQueryTimeoutMs || DEFAULT_QMD_QUERY_TIMEOUT_MS));
 }
 
+function qmdCandidateLimit(args) {
+  return Math.max(Number(args.targetCandidates || DEFAULT_QMD_CANDIDATE_LIMIT), DEFAULT_QMD_CANDIDATE_LIMIT);
+}
+
+function isQmdRetryableTimeout(error, query) {
+  const command = String(query.command || "qmd query");
+  return command === "qmd query" && String(error?.message ?? error).includes("timed out after");
+}
+
 async function runQmdPlanQueries(args, queries) {
-  const settled = await Promise.all(queries.map(async (query) => {
+  const settled = [];
+  for (const query of queries) {
     try {
-      return { ok: true, result: await runQmdPlanQuery(args, query) };
+      settled.push({ ok: true, result: await runQmdPlanQuery(args, query) });
     } catch (error) {
-      return { ok: false, error: `${query.kind}/${query.command}: ${error.message}` };
+      settled.push({ ok: false, error: `${query.kind}/${query.command}: ${error.message}` });
     }
-  }));
+  }
   return {
     queryResults: settled.filter((item) => item.ok).map((item) => item.result),
-    errors: [
-      ...settled.filter((item) => item.ok && item.result.warning).map((item) => item.result.warning),
-      ...settled.filter((item) => !item.ok).map((item) => item.error),
-    ],
+    warnings: settled.filter((item) => item.ok && item.result.warning).map((item) => item.result.warning),
+    errors: settled.filter((item) => !item.ok).map((item) => item.error),
   };
 }
 
@@ -1481,6 +1491,9 @@ function runCommand(command, args, options = {}) {
       settled = true;
       clearTimeout(timer);
       child.kill("SIGTERM");
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }, 1_000).unref();
       reject(error);
     };
     const timer = setTimeout(() => {

@@ -41,7 +41,7 @@ Codex 生成 3-5 条 QMD query
 - Relation Judge、QMD、wrapper 传输或超时失败会返回结构化 `{ ok:false, error:{ message, tool, details } }`，不会伪装成成功搜索轮次。
 - Obsidian 桌面 App 的 PATH 往往比终端更窄；插件会用显式 Node command 或常见 Node 路径来执行 wrapper，不再直接依赖 wrapper shebang。
 - wrapper 会过滤当前 Aha Review Note 和 `Aha/Reviews/` 生成物；如果 QMD 全部失败，搜索应该失败并保留诊断，而不是把 review shell 当成成功候选。
-- QMD plan queries 并发执行，单条默认 20 秒超时。慢查询会出现在 warning 中，避免多条 120 秒 timeout 串行累积。
+- QMD plan queries 逐条执行，避免多个 `qmd query` 进程争用 QMD/SQLite runtime；单条默认 30 秒超时，并给 QMD 传 `-C 20` 限制内部 rerank 候选数。慢查询会出现在 warning 中，避免旧版多条 120 秒 timeout 累积；wrapper 不会自动降级到 `qmd vsearch`。
 - QMD / Obsidian / Codex 子进程都会关闭 stdin、设置超时，并限制 stdout/stderr 缓冲。
 - 搜索开始时，Review Note 的 `## Search Results` 会马上出现 `Running Search Round`。如果 wrapper 失败，失败记录也追加在同一个 Search Results marker 区块里。
 - `--target-candidates` 在 CLI 层限制到 15-20，和插件 UI slider 保持一致。
