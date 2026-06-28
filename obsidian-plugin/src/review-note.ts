@@ -75,6 +75,16 @@ export function appendSuccessfulSearchRound(content: string, input: RenderSearch
   return `${nextContent.trimEnd()}\n`;
 }
 
+export function appendRunningSearchRound(content: string, generatedAt: Date): string {
+  const block = [
+    `### Running Search Round - ${generatedAt.toISOString()}`,
+    "",
+    "- Status: running",
+    "- Message: Aha wrapper is running in the background. This review note will be updated with success or failure when the process exits.",
+  ].join("\n");
+  return `${appendToGeneratedBlock(content, "search-results", "Search Results", block).trimEnd()}\n`;
+}
+
 export function appendFailureRecord(content: string, failure: AhaWrapperFailure, generatedAt: Date): string {
   const message = failure.message.trim() || "Aha wrapper failed.";
   const details = failure.details?.trim();
@@ -89,7 +99,7 @@ export function appendFailureRecord(content: string, failure: AhaWrapperFailure,
     details ? `- Details: ${details}` : undefined,
   ].filter(Boolean);
 
-  return `${content.trimEnd()}\n${lines.join("\n")}\n`;
+  return `${appendToGeneratedBlock(content, "search-results", "Search Results", lines.join("\n")).trimEnd()}\n`;
 }
 
 export function renderSearchRound(input: RenderSearchRoundInput): string {

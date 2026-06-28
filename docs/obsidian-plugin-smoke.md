@@ -17,6 +17,7 @@ npm run verify
 
 - Aha workspace：当前仓库根目录。
 - Review note location：默认 `Aha/Reviews`。
+- Node command：可留空自动探测；如果 Obsidian 内运行时报 `env: node: No such file or directory`，填 `/opt/homebrew/bin/node`。
 - Codex command：本机 Codex CLI 命令或绝对路径。
 - QMD command：本机 QMD CLI 命令或绝对路径。
 - Obsidian CLI command：本机 Obsidian CLI 命令或绝对路径。
@@ -38,7 +39,9 @@ Codex 生成 3-5 条 QMD query
 重要失败语义：
 
 - Relation Judge、QMD、wrapper 传输或超时失败会返回结构化 `{ ok:false, error:{ message, tool, details } }`，不会伪装成成功搜索轮次。
+- Obsidian 桌面 App 的 PATH 往往比终端更窄；插件会用显式 Node command 或常见 Node 路径来执行 wrapper，不再直接依赖 wrapper shebang。
 - QMD / Obsidian / Codex 子进程都会关闭 stdin、设置超时，并限制 stdout/stderr 缓冲。
+- 搜索开始时，Review Note 的 `## Search Results` 会马上出现 `Running Search Round`。如果 wrapper 失败，失败记录也追加在同一个 Search Results marker 区块里。
 - `--target-candidates` 在 CLI 层限制到 15-20，和插件 UI slider 保持一致。
 - Aha Review Note frontmatter 写入 `source_id`；桌面本地文件系统可用时使用 inode 级身份，可跨 source note 改名、编辑大小或 mtime 变化复用 review note。若降级到 ctime 身份，则必须同时匹配 `source_path`，避免同时间戳碰撞污染别的 review note。
 - Search Results / Selected Memories / Grill Handoff 使用 `<!-- aha:* -->` marker 追加生成内容，避免用户改标题或添加手写内容时被整段覆盖。

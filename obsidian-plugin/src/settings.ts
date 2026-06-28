@@ -7,6 +7,7 @@ export interface AhaPluginSettings {
   codexReasoningEffort: string;
   codexSandbox: string;
   reviewFolder: string;
+  nodeCommand: string;
   codexCommand: string;
   qmdCommand: string;
   obsidianCommand: string;
@@ -21,6 +22,7 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   codexReasoningEffort: "low",
   codexSandbox: "danger-full-access",
   reviewFolder: "Aha/Reviews",
+  nodeCommand: "",
   codexCommand: "codex",
   qmdCommand: "qmd",
   obsidianCommand: "obsidian",
@@ -60,6 +62,17 @@ export class AhaSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.reviewFolder)
         .onChange(async (value) => {
           this.plugin.settings.reviewFolder = value.trim() || DEFAULT_SETTINGS.reviewFolder;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Node command")
+      .setDesc("Optional absolute path to Node.js. Leave empty to auto-detect common desktop install paths.")
+      .addText((text) => text
+        .setPlaceholder("auto")
+        .setValue(this.plugin.settings.nodeCommand)
+        .onChange(async (value) => {
+          this.plugin.settings.nodeCommand = value.trim();
           await this.plugin.saveSettings();
         }));
 

@@ -8,7 +8,7 @@ import {
   TFile,
   normalizePath,
 } from "obsidian";
-import { appendFailureRecord, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource } from "./review-note";
+import { appendFailureRecord, appendRunningSearchRound, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource } from "./review-note";
 import { canRunExternalProcesses, runAhaWrapper, runReadinessCheck } from "./process";
 import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
 import { validateAhaWrapperResult } from "./schema";
@@ -120,9 +120,13 @@ export default class AhaPlugin extends Plugin {
     const reviewFile = await this.ensureReviewNote(sourceFile);
     await this.openFile(reviewFile, false);
 
-    this.activeRun = { startedAt: Date.now(), sourcePath: sourceFile.path };
+    const startedAt = new Date();
+    await this.appendRunning(reviewFile, startedAt);
+    await this.openFile(reviewFile, false);
+
+    this.activeRun = { startedAt: startedAt.getTime(), sourcePath: sourceFile.path };
     this.updateStatusBar();
-    new Notice("Aha search started.");
+    new Notice(`Aha search started. Review note: ${reviewFile.path}`, 8000);
 
     try {
       const payload = await runAhaWrapper(this.settings, {
@@ -204,6 +208,11 @@ export default class AhaPlugin extends Plugin {
   private async appendFailure(reviewFile: TFile, failure: { message: string; tool?: string; details?: string }): Promise<void> {
     const content = await this.app.vault.read(reviewFile);
     await this.app.vault.modify(reviewFile, appendFailureRecord(content, failure, new Date()));
+  }
+
+  private async appendRunning(reviewFile: TFile, startedAt: Date): Promise<void> {
+    const content = await this.app.vault.read(reviewFile);
+    await this.app.vault.modify(reviewFile, appendRunningSearchRound(content, startedAt));
   }
 
   private async openReviewForSource(sourceFile: TFile): Promise<void> {

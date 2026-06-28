@@ -58,6 +58,32 @@ test("successful search round uses markers when headings are edited", async () =
   assert.equal((next.match(/<!-- aha:search-results:start -->/g) ?? []).length, 1);
 });
 
+test("running and failed rounds are visible inside search results", async () => {
+  const reviewNote = await loadReviewNoteModule();
+  const initial = reviewNote.makeReviewNoteContent({
+    createdAt: new Date("2026-06-28T00:00:00Z"),
+    sourceId: "src:visible-status",
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+  });
+
+  const running = reviewNote.appendRunningSearchRound(initial, new Date("2026-06-28T04:00:00Z"));
+  const failed = reviewNote.appendFailureRecord(running, {
+    message: "Aha wrapper failed before returning a valid structured result.",
+    tool: "wrapper",
+    details: "env: node: No such file or directory",
+  }, new Date("2026-06-28T04:01:00Z"));
+
+  const searchBlock = failed.slice(
+    failed.indexOf("<!-- aha:search-results:start -->"),
+    failed.indexOf("<!-- aha:search-results:end -->"),
+  );
+  assert.match(searchBlock, /### Running Search Round - 2026-06-28T04:00:00\.000Z/);
+  assert.match(searchBlock, /### Failed Search Round - 2026-06-28T04:01:00\.000Z/);
+  assert.match(searchBlock, /env: node: No such file or directory/);
+  assert.doesNotMatch(searchBlock, /No search round has completed yet/);
+});
+
 test("review note matching allows path drift only for filesystem-backed source_id", async () => {
   const reviewNote = await loadReviewNoteModule();
   const content = reviewNote.makeReviewNoteContent({
