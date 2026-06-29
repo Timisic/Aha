@@ -49,10 +49,10 @@ OpenAI/Codex 生成 3-5 条 QMD query
 - wrapper 会过滤当前 Aha Review Note 和 `Aha/Reviews/` 生成物；如果 QMD 全部失败，搜索应该失败并保留诊断，而不是把 review shell 当成成功候选。
 - QMD plan queries 逐条执行，避免多个 QMD 检索争用 QMD/SQLite runtime；单条默认 30 秒超时。SDK runner 默认不启用 QMD 内部 rerank，CLI fallback 会给 QMD 传 `-C 20` 限制内部候选数。慢查询会出现在 warning 中，避免旧版多条 120 秒 timeout 累积；wrapper 不会自动降级到 `qmd vsearch`。
 - QMD / Obsidian / Codex fallback 子进程都会关闭 stdin、设置超时，并限制 stdout/stderr 缓冲。
-- 搜索开始时，Review Note 的 `## 搜索结果` 会马上出现 `正在检索` 记录。成功后插件打开或刷新右侧 Aha Review Panel；如果 wrapper 失败，失败记录追加在同一个 Search Results marker 区块里。
+- 搜索开始时，Review Note 的 `## 搜索结果` 会马上出现 `正在检索` 记录。成功或失败后，同一个 marker 区块会被替换为最新结果，不保留旧搜索轮次作为审计日志。
 - `--target-candidates` 在 CLI 层限制到 15-20，和插件 UI slider 保持一致。
 - Aha Review Note frontmatter 写入 `source_id`；桌面本地文件系统可用时使用 inode 级身份，可跨 source note 改名、编辑大小或 mtime 变化复用 review note。若降级到 ctime 身份，则必须同时匹配 `source_path`，避免同时间戳碰撞污染别的 review note。
-- Search Results / Selected Memories / Grill Handoff 使用 `<!-- aha:* -->` marker 追加生成内容，避免用户改标题或添加手写内容时被整段覆盖。
+- Search Results / Selected Memories / Grill Handoff 使用 `<!-- aha:* -->` marker 管理生成内容；marker 内只保留最新轮次，marker 外的手写内容不会被覆盖。
 
 ## 成功 smoke
 
@@ -60,20 +60,20 @@ OpenAI/Codex 生成 3-5 条 QMD query
 2. 运行 `Aha: Search from current note`。
 3. 确认 `Aha/Reviews/` 下创建或复用了一个 Aha Review Note。
 4. 确认检索完成后右侧 Aha Review Panel 被打开或刷新，主编辑区不自动切到 Review Note。
-5. 确认 `## 搜索结果` 下追加了新的 `### 搜索轮次`，并包含候选、relation、hit、why 和 quote-backed strong relation。
-6. 确认 `## 纳入 Handoff 的记忆` 与 `## Grill Handoff` 下也追加了对应轮次内容。
+5. 确认 `## 搜索结果` 下显示最新 `### 搜索轮次`，并包含候选、relation、hit、why 和 quote-backed strong relation。
+6. 确认 `## 纳入 Handoff 的记忆` 与 `## Grill Handoff` 下也显示同一轮最新内容。
 7. 确认 review note frontmatter 有 `source_id`。
 8. 在 panel 中取消或勾选一个候选，确认 Review Note 的最新 Selected Memories checkbox 与 Grill Handoff 同步更新。
 9. 从 panel 点击候选旧笔记标题，确认候选笔记在新的 Obsidian tab 打开。
 10. 点击 `复制 handoff`，确认剪贴板包含当前勾选候选。
-11. 再运行一次搜索，确认旧的人工记录、Selected Memories 和 Grill Handoff 内容没有被删除。
+11. 再运行一次搜索，确认旧搜索轮次被替换，marker 外的人工记录没有被删除。
 
 ## 失败 smoke
 
 1. 临时把 QMD runner 改成 `CLI`，并把 QMD command 改成 `/missing/qmd`。
 2. 运行 `Aha: Search from current note`。
 3. 确认 Aha Review Note 仍保留。
-4. 确认 review note 追加了 visible failed search record，并写明失败 prerequisite。
+4. 确认 review note 显示最新 visible failed search record，并写明失败 prerequisite。
 5. 恢复 QMD runner 与 QMD command，重新运行 `Aha: Check local readiness`。
 
 ## OpenAI key 失败 smoke
