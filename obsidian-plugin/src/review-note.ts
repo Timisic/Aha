@@ -166,7 +166,7 @@ export function renderCandidateList(candidates: AhaCandidate[]): string[] {
   }
 
   return candidates.map((candidate, index) => {
-    const title = candidate.noteTitle?.trim() || stripMarkdownExtension(lastPathSegment(candidate.notePath));
+    const title = noteDisplayTitleFromPath(candidate.notePath);
     const selected = candidate.selected === false ? "[ ]" : "[x]";
     const link = obsidianLink(candidate.notePath, title);
     const quotes = candidate.quotes?.filter((quote) => quote.trim()).map((quote) => `   - quote: ${quote.trim()}`) ?? [];
@@ -191,7 +191,7 @@ export function renderGrillHandoff(sourcePath: string, sourceTitle: string, cand
     ...(selected.length === 0
       ? ["- _还没有纳入 handoff 的记忆。_"]
       : selected.map((candidate) => {
-          const title = candidate.noteTitle?.trim() || stripMarkdownExtension(lastPathSegment(candidate.notePath));
+          const title = noteDisplayTitleFromPath(candidate.notePath);
           return `- ${obsidianLink(candidate.notePath, title)} (${candidate.relation}): ${candidate.why.trim()}${candidate.hit ? ` hit: ${candidate.hit.trim()}` : ""}`;
         })),
   ];
@@ -268,6 +268,12 @@ export function obsidianLink(path: string, title?: string): string {
     return `[[${target}]]`;
   }
   return `[[${target}|${alias.replace(/\|/g, "\\|")}]]`;
+}
+
+export function noteDisplayTitleFromPath(path: string): string {
+  const target = path.replace(/^\[\[|\]\]$/g, "").split("|")[0].trim();
+  const base = target.match(/^([^#^]+)/)?.[1]?.trim() || target;
+  return stripMarkdownExtension(lastPathSegment(base)) || target;
 }
 
 export function reviewSourceIdFromContent(content: string): string | null {
