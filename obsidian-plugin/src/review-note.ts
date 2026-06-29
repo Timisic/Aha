@@ -87,9 +87,9 @@ export function makeReviewNoteContent(input: ReviewNoteInit): string {
 
 export function appendSuccessfulSearchRound(content: string, input: RenderSearchRoundInput): string {
   let nextContent = setFrontmatterStatus(content, "handoff_ready");
-  nextContent = appendToGeneratedBlock(nextContent, "search-results", "搜索结果", renderSearchRound(input));
-  nextContent = appendToGeneratedBlock(nextContent, "selected-memories", "纳入 Handoff 的记忆", renderSelectedMemoriesRound(input));
-  nextContent = appendToGeneratedBlock(nextContent, "grill-handoff", "Grill Handoff", renderGrillHandoffRound(input));
+  nextContent = replaceGeneratedBlock(nextContent, "search-results", "搜索结果", renderSearchRound(input));
+  nextContent = replaceGeneratedBlock(nextContent, "selected-memories", "纳入 Handoff 的记忆", renderSelectedMemoriesRound(input));
+  nextContent = replaceGeneratedBlock(nextContent, "grill-handoff", "Grill Handoff", renderGrillHandoffRound(input));
   return `${nextContent.trimEnd()}\n`;
 }
 
@@ -100,7 +100,7 @@ export function appendRunningSearchRound(content: string, generatedAt: Date): st
     "- 状态：running",
     "- 信息：Aha wrapper 正在后台运行，结束后会把成功结果或失败记录写回这里。",
   ].join("\n");
-  return `${appendToGeneratedBlock(content, "search-results", "搜索结果", block).trimEnd()}\n`;
+  return `${replaceGeneratedBlock(content, "search-results", "搜索结果", block).trimEnd()}\n`;
 }
 
 export function appendFailureRecord(content: string, failure: AhaWrapperFailure, generatedAt: Date): string {
@@ -117,7 +117,7 @@ export function appendFailureRecord(content: string, failure: AhaWrapperFailure,
     details ? `- 详情：${details}` : undefined,
   ].filter(Boolean);
 
-  return `${appendToGeneratedBlock(content, "search-results", "搜索结果", lines.join("\n")).trimEnd()}\n`;
+  return `${replaceGeneratedBlock(content, "search-results", "搜索结果", lines.join("\n")).trimEnd()}\n`;
 }
 
 export function renderSearchRound(input: RenderSearchRoundInput): string {
@@ -233,18 +233,8 @@ export function syncLatestSelectedMemoriesAndHandoff(
     handoff,
   ].join("\n");
 
-  let nextContent = replaceLatestRoundInGeneratedBlock(
-    content,
-    "selected-memories",
-    ["纳入 Handoff 的记忆", "Selected Memories"],
-    selectedRound,
-  ) ?? content;
-  nextContent = replaceLatestRoundInGeneratedBlock(
-    nextContent,
-    "grill-handoff",
-    ["Grill Handoff"],
-    handoffRound,
-  ) ?? appendToGeneratedBlock(nextContent, "grill-handoff", "Grill Handoff", handoffRound);
+  let nextContent = replaceGeneratedBlock(content, "selected-memories", "纳入 Handoff 的记忆", selectedRound);
+  nextContent = replaceGeneratedBlock(nextContent, "grill-handoff", "Grill Handoff", handoffRound);
 
   return {
     content: `${nextContent.trimEnd()}\n`,
@@ -307,7 +297,7 @@ function setFrontmatterStatus(content: string, status: string): string {
   return `---\n${frontmatter}\n---\n${content.slice(match[0].length)}`;
 }
 
-function appendToGeneratedBlock(content: string, blockName: string, heading: string, block: string): string {
+function replaceGeneratedBlock(content: string, blockName: string, heading: string, block: string): string {
   const withMarkers = contentHasGeneratedBlock(content, blockName) ? content : ensureGeneratedBlock(content, blockName, heading);
   const startMarker = `<!-- aha:${blockName}:start -->`;
   const endMarker = `<!-- aha:${blockName}:end -->`;
@@ -316,10 +306,8 @@ function appendToGeneratedBlock(content: string, blockName: string, heading: str
   if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) return appendToSection(withMarkers, heading, block);
   const bodyStart = startIndex + startMarker.length;
   const before = withMarkers.slice(0, bodyStart).trimEnd();
-  const existingBody = stripDefaultGeneratedPlaceholder(blockName, withMarkers.slice(bodyStart, endIndex)).trim();
   const after = withMarkers.slice(endIndex);
-  const body = existingBody ? `${existingBody}\n\n${block.trim()}` : block.trim();
-  return `${before}\n${body}\n${after}`;
+  return `${before}\n${block.trim()}\n${after}`;
 }
 
 function ensureGeneratedBlock(content: string, blockName: string, heading: string): string {
@@ -373,21 +361,6 @@ function escapeYaml(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function stripDefaultGeneratedPlaceholder(blockName: string, value: string): string {
-  const placeholders: Record<string, string[]> = {
-    "search-results": ["_还没有完成的搜索轮次。_", "_No search round has completed yet._"],
-    "selected-memories": [
-      "_检索完成后，Aha 会在这里列出默认纳入 handoff 的候选记忆。_",
-      "_Aha will add selected memory candidates here after retrieval._",
-    ],
-    "grill-handoff": [
-      "_检索完成后，Aha 会在这里准备可复制的 handoff。_",
-      "_Aha will prepare a compact handoff after retrieval._",
-    ],
-  };
-  return placeholders[blockName]?.includes(value.trim()) ? "" : value;
-}
-
 function frontmatterValue(frontmatter: string, key: string): string | null {
   const match = frontmatter.match(new RegExp(`^${escapeRegExp(key)}:\\s*(.+)$`, "m"));
   if (!match) return null;
@@ -431,16 +404,6 @@ function latestRoundSectionInGeneratedBlock(content: string, blockName: string, 
     start: body.start + latest.start,
     end: body.start + end,
   };
-}
-
-function replaceLatestRoundInGeneratedBlock(content: string, blockName: string, headings: string[], replacement: string): string | null {
-  const body = generatedBlockBody(content, blockName);
-  const section = latestRoundSectionInGeneratedBlock(content, blockName, headings);
-  if (!body || !section) return null;
-  const beforeBody = content.slice(body.start, section.start).trim();
-  const afterBody = content.slice(section.end, body.end).trim();
-  const bodyParts = [beforeBody, replacement.trim(), afterBody].filter(Boolean);
-  return `${content.slice(0, body.start).trimEnd()}\n${bodyParts.join("\n\n")}\n${content.slice(body.end)}`;
 }
 
 function generatedBlockBody(content: string, blockName: string): { start: number; end: number; value: string } | null {

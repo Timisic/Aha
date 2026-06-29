@@ -217,6 +217,9 @@ test("pipeline can use OpenAI structured output provider", async () => {
     assert.ok(requests.every((request) => request.headers.authorization === "Bearer test-key"));
     assert.ok(requests.every((request) => request.body.model === "gpt-test"));
     assert.ok(requests.every((request) => request.body.text?.format?.type === "json_schema"));
+    const relationJudgePrompt = String(requests[1].body.input ?? "");
+    assert.match(relationJudgePrompt, /Avoid formulaic openings/);
+    assert.match(relationJudgePrompt, /Do not reuse the same sentence frame/);
   } finally {
     await server.close();
     await rm(temp, { recursive: true, force: true });

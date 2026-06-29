@@ -10,32 +10,27 @@ const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const requireFromPlugin = createRequire(path.join(repoRoot, "obsidian-plugin/package.json"));
 const esbuild = requireFromPlugin("esbuild");
 
-test("successful search rounds append without deleting manual review content", async () => {
+test("successful search rounds replace generated blocks without deleting surrounding review content", async () => {
   const reviewNote = await loadReviewNoteModule();
   const initial = reviewNote.makeReviewNoteContent({
     createdAt: new Date("2026-06-28T00:00:00Z"),
     sourceId: "src:test",
     sourcePath: "Source/Insight.md",
     sourceTitle: "Insight",
-  }).replace(
-    "_检索完成后，Aha 会在这里列出默认纳入 handoff 的候选记忆。_",
-    "Manual selected memory note.",
-  ).replace(
-    "_检索完成后，Aha 会在这里准备可复制的 handoff。_",
-    "Manual handoff note.",
-  );
+  }) + "\nManual review note outside generated blocks.\n";
 
   const first = reviewNote.appendSuccessfulSearchRound(initial, searchRound("2026-06-28T01:00:00Z"));
   const second = reviewNote.appendSuccessfulSearchRound(first, searchRound("2026-06-28T02:00:00Z"));
 
-  assert.match(second, /Manual selected memory note\./);
-  assert.match(second, /Manual handoff note\./);
+  assert.match(second, /Manual review note outside generated blocks\./);
   assert.match(second, /# Aha 记忆审阅：Insight/);
   assert.match(second, /## 当前 insight/);
   assert.match(second, /## 搜索结果/);
-  assert.equal((second.match(/### 搜索轮次 - /g) ?? []).length, 2);
-  assert.equal((second.match(/### 纳入 Handoff 的记忆 - /g) ?? []).length, 2);
-  assert.equal((second.match(/### Grill Handoff - /g) ?? []).length, 2);
+  assert.equal((second.match(/### 搜索轮次 - /g) ?? []).length, 1);
+  assert.equal((second.match(/### 纳入 Handoff 的记忆 - /g) ?? []).length, 1);
+  assert.equal((second.match(/### Grill Handoff - /g) ?? []).length, 1);
+  assert.doesNotMatch(second, /2026-06-28T01:00:00Z/);
+  assert.match(second, /2026-06-28T02:00:00Z/);
   assert.equal(reviewNote.reviewSourceIdFromContent(second), "src:test");
   assert.equal(reviewNote.reviewSourcePathFromContent(second), "Source/Insight.md");
   assert.match(second, /<!-- aha:search-results:start -->/);
@@ -97,7 +92,7 @@ test("candidate aliases do not replace original note file titles", async () => {
   assert.equal(reviewNote.noteDisplayTitleFromPath("BOOK/Course/example-course-note.md"), "example-course-note");
 });
 
-test("running and failed rounds are visible inside search results", async () => {
+test("failed round replaces running status inside search results", async () => {
   const reviewNote = await loadReviewNoteModule();
   const initial = reviewNote.makeReviewNoteContent({
     createdAt: new Date("2026-06-28T00:00:00Z"),
@@ -117,7 +112,7 @@ test("running and failed rounds are visible inside search results", async () => 
     failed.indexOf("<!-- aha:search-results:start -->"),
     failed.indexOf("<!-- aha:search-results:end -->"),
   );
-  assert.match(searchBlock, /### 正在检索 - 2026-06-28T04:00:00\.000Z/);
+  assert.doesNotMatch(searchBlock, /### 正在检索 - 2026-06-28T04:00:00\.000Z/);
   assert.match(searchBlock, /### 检索失败 - 2026-06-28T04:01:00\.000Z/);
   assert.match(searchBlock, /env: node: No such file or directory/);
   assert.doesNotMatch(searchBlock, /还没有完成的搜索轮次/);
@@ -168,6 +163,51 @@ test("latest selected memories can sync checkbox state and handoff text", async 
   assert.match(synced.handoff, /纳入 handoff 的旧笔记：/);
   assert.doesNotMatch(synced.handoff, /Memory\/Candidate/);
   assert.match(synced.handoff, /Memory\/Second/);
+});
+
+test("selection sync prunes legacy selected-memory and handoff rounds", async () => {
+  const reviewNote = await loadReviewNoteModule();
+  const initial = reviewNote.makeReviewNoteContent({
+    createdAt: new Date("2026-06-28T00:00:00Z"),
+    sourceId: "src:legacy-prune",
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+  });
+  const current = reviewNote.appendSuccessfulSearchRound(initial, searchRound("2026-06-28T06:00:00Z"));
+  const legacySelectedRound = [
+    "### 纳入 Handoff 的记忆 - 2026-06-28T05:00:00Z",
+    "",
+    "1. [x] [[Memory/Old]]",
+    "   - relation: `weak`",
+    "   - hit: old",
+    "   - why: old round should be removed",
+    "",
+  ].join("\n");
+  const legacyHandoffRound = [
+    "### Grill Handoff - 2026-06-28T05:00:00Z",
+    "",
+    "当前 insight：[[Source/Insight]]",
+    "",
+    "纳入 handoff 的旧笔记：",
+    "- [[Memory/Old]] (weak): old round should be removed",
+    "",
+  ].join("\n");
+  const legacy = current
+    .replace("<!-- aha:selected-memories:start -->\n", `<!-- aha:selected-memories:start -->\n${legacySelectedRound}\n`)
+    .replace("<!-- aha:grill-handoff:start -->\n", `<!-- aha:grill-handoff:start -->\n${legacyHandoffRound}\n`);
+
+  const synced = reviewNote.syncLatestSelectedMemoriesAndHandoff(
+    legacy,
+    "Source/Insight.md",
+    "Insight",
+    new Map([[1, true]]),
+  );
+
+  assert.doesNotMatch(synced.content, /2026-06-28T05:00:00Z/);
+  assert.doesNotMatch(synced.content, /Memory\/Old/);
+  assert.equal((synced.content.match(/### 纳入 Handoff 的记忆 - /g) ?? []).length, 1);
+  assert.equal((synced.content.match(/### Grill Handoff - /g) ?? []).length, 1);
+  assert.match(synced.content, /2026-06-28T06:00:00Z/);
 });
 
 test("review note matching allows path drift only for filesystem-backed source_id", async () => {
