@@ -16,6 +16,24 @@ export interface RenderSearchRoundInput {
   sourceTitle: string;
 }
 
+export interface ReviewPanelCandidate extends AhaCandidate {
+  index: number;
+  selected: boolean;
+  quotes: string[];
+}
+
+export interface LatestSelectedMemoriesRound {
+  generatedAt: string;
+  candidates: ReviewPanelCandidate[];
+}
+
+export interface SyncReviewSelectionResult {
+  content: string;
+  generatedAt: string;
+  candidates: ReviewPanelCandidate[];
+  handoff: string;
+}
+
 export function reviewFolderPath(folder: string): string {
   return normalizePath(folder.trim().replace(/^\/+|\/+$/g, "") || "Aha/Reviews");
 }
@@ -40,28 +58,28 @@ export function makeReviewNoteContent(input: ReviewNoteInit): string {
     "status: memory_review",
     "---",
     "",
-    `# Aha Review: ${input.sourceTitle}`,
+    `# Aha 记忆审阅：${input.sourceTitle}`,
     "",
-    "## Insight",
+    "## 当前 insight",
     "",
-    `Source: ${sourceLink}`,
+    `来源：${sourceLink}`,
     "",
-    "## Search Results",
+    "## 搜索结果",
     "",
     "<!-- aha:search-results:start -->",
-    "_No search round has completed yet._",
+    "_还没有完成的搜索轮次。_",
     "<!-- aha:search-results:end -->",
     "",
-    "## Selected Memories",
+    "## 纳入 Handoff 的记忆",
     "",
     "<!-- aha:selected-memories:start -->",
-    "_Aha will add selected memory candidates here after retrieval._",
+    "_检索完成后，Aha 会在这里列出默认纳入 handoff 的候选记忆。_",
     "<!-- aha:selected-memories:end -->",
     "",
     "## Grill Handoff",
     "",
     "<!-- aha:grill-handoff:start -->",
-    "_Aha will prepare a compact handoff after retrieval._",
+    "_检索完成后，Aha 会在这里准备可复制的 handoff。_",
     "<!-- aha:grill-handoff:end -->",
     "",
   ].join("\n");
@@ -69,54 +87,54 @@ export function makeReviewNoteContent(input: ReviewNoteInit): string {
 
 export function appendSuccessfulSearchRound(content: string, input: RenderSearchRoundInput): string {
   let nextContent = setFrontmatterStatus(content, "handoff_ready");
-  nextContent = appendToGeneratedBlock(nextContent, "search-results", "Search Results", renderSearchRound(input));
-  nextContent = appendToGeneratedBlock(nextContent, "selected-memories", "Selected Memories", renderSelectedMemoriesRound(input));
+  nextContent = appendToGeneratedBlock(nextContent, "search-results", "搜索结果", renderSearchRound(input));
+  nextContent = appendToGeneratedBlock(nextContent, "selected-memories", "纳入 Handoff 的记忆", renderSelectedMemoriesRound(input));
   nextContent = appendToGeneratedBlock(nextContent, "grill-handoff", "Grill Handoff", renderGrillHandoffRound(input));
   return `${nextContent.trimEnd()}\n`;
 }
 
 export function appendRunningSearchRound(content: string, generatedAt: Date): string {
   const block = [
-    `### Running Search Round - ${generatedAt.toISOString()}`,
+    `### 正在检索 - ${generatedAt.toISOString()}`,
     "",
-    "- Status: running",
-    "- Message: Aha wrapper is running in the background. This review note will be updated with success or failure when the process exits.",
+    "- 状态：running",
+    "- 信息：Aha wrapper 正在后台运行，结束后会把成功结果或失败记录写回这里。",
   ].join("\n");
-  return `${appendToGeneratedBlock(content, "search-results", "Search Results", block).trimEnd()}\n`;
+  return `${appendToGeneratedBlock(content, "search-results", "搜索结果", block).trimEnd()}\n`;
 }
 
 export function appendFailureRecord(content: string, failure: AhaWrapperFailure, generatedAt: Date): string {
-  const message = failure.message.trim() || "Aha wrapper failed.";
+  const message = failure.message.trim() || "Aha wrapper 执行失败。";
   const details = failure.details?.trim();
   const tool = failure.tool?.trim();
   const lines = [
     "",
-    `### Failed Search Round - ${generatedAt.toISOString()}`,
+    `### 检索失败 - ${generatedAt.toISOString()}`,
     "",
-    `- Status: failed`,
-    tool ? `- Tool: ${tool}` : undefined,
-    `- Message: ${message}`,
-    details ? `- Details: ${details}` : undefined,
+    `- 状态：failed`,
+    tool ? `- 工具：${tool}` : undefined,
+    `- 信息：${message}`,
+    details ? `- 详情：${details}` : undefined,
   ].filter(Boolean);
 
-  return `${appendToGeneratedBlock(content, "search-results", "Search Results", lines.join("\n")).trimEnd()}\n`;
+  return `${appendToGeneratedBlock(content, "search-results", "搜索结果", lines.join("\n")).trimEnd()}\n`;
 }
 
 export function renderSearchRound(input: RenderSearchRoundInput): string {
   const candidates = input.result.candidates ?? [];
   const generatedAt = input.result.generatedAt ?? input.generatedAt.toISOString();
   const warnings = input.result.warnings ?? [];
-  const summary = input.result.summary?.trim() || "Aha completed one memory search round.";
+  const summary = input.result.summary?.trim() || "Aha 已完成一轮记忆检索。";
 
   return [
-    `### Search Round - ${generatedAt}`,
+    `### 搜索轮次 - ${generatedAt}`,
     "",
-    `- Status: success`,
-    `- Candidate count: ${candidates.length}`,
-    `- Summary: ${summary}`,
-    ...warnings.map((warning) => `- Warning: ${warning}`),
+    `- 状态：success`,
+    `- 候选数量：${candidates.length}`,
+    `- 摘要：${summary}`,
+    ...warnings.map((warning) => `- 警告：${warning}`),
     "",
-    "#### Candidates",
+    "#### 候选",
     "",
     ...renderCandidateList(candidates),
   ].join("\n");
@@ -126,7 +144,7 @@ export function renderSelectedMemoriesRound(input: RenderSearchRoundInput): stri
   const candidates = input.result.candidates ?? [];
   const generatedAt = input.result.generatedAt ?? input.generatedAt.toISOString();
   return [
-    `### Selected Memories - ${generatedAt}`,
+    `### 纳入 Handoff 的记忆 - ${generatedAt}`,
     "",
     ...renderCandidateList(candidates),
   ].join("\n");
@@ -144,20 +162,20 @@ export function renderGrillHandoffRound(input: RenderSearchRoundInput): string {
 
 export function renderCandidateList(candidates: AhaCandidate[]): string[] {
   if (candidates.length === 0) {
-    return ["_No candidates returned._"];
+    return ["_没有返回候选。_"];
   }
 
   return candidates.map((candidate, index) => {
     const title = candidate.noteTitle?.trim() || stripMarkdownExtension(lastPathSegment(candidate.notePath));
     const selected = candidate.selected === false ? "[ ]" : "[x]";
     const link = obsidianLink(candidate.notePath, title);
-    const quotes = candidate.quotes?.filter((quote) => quote.trim()).map((quote) => `  - Quote: ${quote.trim()}`) ?? [];
+    const quotes = candidate.quotes?.filter((quote) => quote.trim()).map((quote) => `   - quote: ${quote.trim()}`) ?? [];
 
     return [
-      `${index + 1}. ${selected} ${link} <button class="aha-open-candidate" data-aha-path="${escapeHtmlAttribute(candidate.notePath)}">Open</button>`,
-      `   - Relation: \`${candidate.relation}\``,
-      `   - Hit: ${candidate.hit.trim()}`,
-      `   - Why: ${candidate.why.trim()}`,
+      `${index + 1}. ${selected} ${link}`,
+      `   - relation: \`${candidate.relation}\``,
+      `   - hit: ${candidate.hit.trim()}`,
+      `   - why: ${candidate.why.trim()}`,
       ...quotes,
     ].join("\n");
   });
@@ -167,16 +185,73 @@ export function renderGrillHandoff(sourcePath: string, sourceTitle: string, cand
   const selected = candidates.filter((candidate) => candidate.selected !== false);
 
   return [
-    `Source insight: ${obsidianLink(sourcePath, sourceTitle)}`,
+    `当前 insight：${obsidianLink(sourcePath, sourceTitle)}`,
     "",
-    "Selected old notes:",
+    "纳入 handoff 的旧笔记：",
     ...(selected.length === 0
-      ? ["- _No selected memories yet._"]
+      ? ["- _还没有纳入 handoff 的记忆。_"]
       : selected.map((candidate) => {
           const title = candidate.noteTitle?.trim() || stripMarkdownExtension(lastPathSegment(candidate.notePath));
-          return `- ${obsidianLink(candidate.notePath, title)} (${candidate.relation}): ${candidate.why.trim()}${candidate.hit ? ` Hit: ${candidate.hit.trim()}` : ""}`;
+          return `- ${obsidianLink(candidate.notePath, title)} (${candidate.relation}): ${candidate.why.trim()}${candidate.hit ? ` hit: ${candidate.hit.trim()}` : ""}`;
         })),
   ];
+}
+
+export function latestSelectedMemoriesRound(content: string): LatestSelectedMemoriesRound | null {
+  const section = latestRoundSectionInGeneratedBlock(content, "selected-memories", ["纳入 Handoff 的记忆", "Selected Memories"]);
+  if (!section) return null;
+  return {
+    generatedAt: section.generatedAt,
+    candidates: parseCandidateList(section.text),
+  };
+}
+
+export function syncLatestSelectedMemoriesAndHandoff(
+  content: string,
+  sourcePath: string,
+  sourceTitle: string,
+  selectedByIndex: Map<number, boolean>,
+): SyncReviewSelectionResult {
+  const latest = latestSelectedMemoriesRound(content);
+  if (!latest) {
+    throw new Error("No selected memory round found in this review note.");
+  }
+
+  const candidates = latest.candidates.map((candidate) => ({
+    ...candidate,
+    selected: selectedByIndex.get(candidate.index) ?? candidate.selected,
+  }));
+  const selectedRound = [
+    `### 纳入 Handoff 的记忆 - ${latest.generatedAt}`,
+    "",
+    ...renderCandidateList(candidates),
+  ].join("\n");
+  const handoff = renderGrillHandoff(sourcePath, sourceTitle, candidates).join("\n");
+  const handoffRound = [
+    `### Grill Handoff - ${latest.generatedAt}`,
+    "",
+    handoff,
+  ].join("\n");
+
+  let nextContent = replaceLatestRoundInGeneratedBlock(
+    content,
+    "selected-memories",
+    ["纳入 Handoff 的记忆", "Selected Memories"],
+    selectedRound,
+  ) ?? content;
+  nextContent = replaceLatestRoundInGeneratedBlock(
+    nextContent,
+    "grill-handoff",
+    ["Grill Handoff"],
+    handoffRound,
+  ) ?? appendToGeneratedBlock(nextContent, "grill-handoff", "Grill Handoff", handoffRound);
+
+  return {
+    content: `${nextContent.trimEnd()}\n`,
+    generatedAt: latest.generatedAt,
+    candidates,
+    handoff,
+  };
 }
 
 export function sanitizeFileName(value: string): string {
@@ -293,12 +368,18 @@ function escapeYaml(value: string): string {
 }
 
 function stripDefaultGeneratedPlaceholder(blockName: string, value: string): string {
-  const placeholder = {
-    "search-results": "_No search round has completed yet._",
-    "selected-memories": "_Aha will add selected memory candidates here after retrieval._",
-    "grill-handoff": "_Aha will prepare a compact handoff after retrieval._",
-  }[blockName];
-  return placeholder && value.trim() === placeholder ? "" : value;
+  const placeholders: Record<string, string[]> = {
+    "search-results": ["_还没有完成的搜索轮次。_", "_No search round has completed yet._"],
+    "selected-memories": [
+      "_检索完成后，Aha 会在这里列出默认纳入 handoff 的候选记忆。_",
+      "_Aha will add selected memory candidates here after retrieval._",
+    ],
+    "grill-handoff": [
+      "_检索完成后，Aha 会在这里准备可复制的 handoff。_",
+      "_Aha will prepare a compact handoff after retrieval._",
+    ],
+  };
+  return placeholders[blockName]?.includes(value.trim()) ? "" : value;
 }
 
 function frontmatterValue(frontmatter: string, key: string): string | null {
@@ -315,10 +396,125 @@ function unquoteYamlScalar(value: string): string {
   return trimmed;
 }
 
-function escapeHtmlAttribute(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+interface GeneratedRoundSection {
+  generatedAt: string;
+  text: string;
+  start: number;
+  end: number;
+}
+
+function latestRoundSectionInGeneratedBlock(content: string, blockName: string, headings: string[]): GeneratedRoundSection | null {
+  const body = generatedBlockBody(content, blockName);
+  if (!body) return null;
+  const headingPattern = headings.map(escapeRegExp).join("|");
+  const pattern = new RegExp(`(^|\\n)### (${headingPattern}) - ([^\\n]+)`, "g");
+  let latest: { start: number; generatedAt: string } | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(body.value)) !== null) {
+    latest = {
+      start: match.index + (match[1] === "\n" ? 1 : 0),
+      generatedAt: match[3].trim(),
+    };
+  }
+  if (!latest) return null;
+  const nextHeading = body.value.slice(latest.start + 1).search(/\n### /);
+  const end = nextHeading === -1 ? body.value.length : latest.start + 1 + nextHeading;
+  return {
+    generatedAt: latest.generatedAt,
+    text: body.value.slice(latest.start, end).trim(),
+    start: body.start + latest.start,
+    end: body.start + end,
+  };
+}
+
+function replaceLatestRoundInGeneratedBlock(content: string, blockName: string, headings: string[], replacement: string): string | null {
+  const body = generatedBlockBody(content, blockName);
+  const section = latestRoundSectionInGeneratedBlock(content, blockName, headings);
+  if (!body || !section) return null;
+  const beforeBody = content.slice(body.start, section.start).trim();
+  const afterBody = content.slice(section.end, body.end).trim();
+  const bodyParts = [beforeBody, replacement.trim(), afterBody].filter(Boolean);
+  return `${content.slice(0, body.start).trimEnd()}\n${bodyParts.join("\n\n")}\n${content.slice(body.end)}`;
+}
+
+function generatedBlockBody(content: string, blockName: string): { start: number; end: number; value: string } | null {
+  const startMarker = `<!-- aha:${blockName}:start -->`;
+  const endMarker = `<!-- aha:${blockName}:end -->`;
+  const startIndex = content.indexOf(startMarker);
+  const endIndex = content.indexOf(endMarker);
+  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) return null;
+  const start = startIndex + startMarker.length;
+  return {
+    start,
+    end: endIndex,
+    value: content.slice(start, endIndex),
+  };
+}
+
+function parseCandidateList(section: string): ReviewPanelCandidate[] {
+  const candidates: ReviewPanelCandidate[] = [];
+  let current: ReviewPanelCandidate | null = null;
+
+  for (const line of section.split("\n")) {
+    const candidateMatch = line.match(/^(\d+)\.\s+\[([ xX])\]\s+(.+)$/);
+    if (candidateMatch) {
+      const parsedLink = parseObsidianMarkdownLink(candidateMatch[3]);
+      if (!parsedLink) {
+        current = null;
+        continue;
+      }
+      current = {
+        index: Number(candidateMatch[1]),
+        selected: candidateMatch[2].toLowerCase() === "x",
+        notePath: parsedLink.path,
+        noteTitle: parsedLink.title,
+        relation: "weak",
+        hit: "",
+        why: "",
+        quotes: [],
+      };
+      candidates.push(current);
+      continue;
+    }
+
+    if (!current) continue;
+    const field = line.match(/^\s*-\s*([^:：]+)\s*[:：]\s*(.*)$/);
+    if (!field) continue;
+    const key = field[1].trim().toLowerCase();
+    const value = stripWrappingBackticks(field[2].trim());
+    if (key === "relation" || key === "关系") {
+      current.relation = (value || "weak") as AhaCandidate["relation"];
+    } else if (key === "hit" || key === "命中") {
+      current.hit = value;
+    } else if (key === "why" || key === "理由") {
+      current.why = value;
+    } else if (key === "quote" || key === "引用") {
+      current.quotes.push(value);
+    }
+  }
+
+  return candidates;
+}
+
+function parseObsidianMarkdownLink(value: string): { path: string; title?: string } | null {
+  const match = value.match(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/);
+  if (!match) return null;
+  const target = match[1].replace(/\\\|/g, "|").trim();
+  const alias = match[2]?.replace(/\\\|/g, "|").trim();
+  return {
+    path: ensureMarkdownExtension(target),
+    title: alias || stripMarkdownExtension(lastPathSegment(target)),
+  };
+}
+
+function ensureMarkdownExtension(target: string): string {
+  const match = target.match(/^([^#^]+)(.*)$/);
+  if (!match) return target;
+  const base = match[1];
+  const suffix = match[2] ?? "";
+  return /\.md$/i.test(base) ? `${base}${suffix}` : `${base}.md${suffix}`;
+}
+
+function stripWrappingBackticks(value: string): string {
+  return value.replace(/^`([^`]+)`$/, "$1").trim();
 }

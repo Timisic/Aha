@@ -8,7 +8,8 @@ import {
   TFile,
   normalizePath,
 } from "obsidian";
-import { appendFailureRecord, appendRunningSearchRound, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource } from "./review-note";
+import { appendFailureRecord, appendRunningSearchRound, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource, reviewSourcePathFromContent } from "./review-note";
+import { AHA_REVIEW_PANEL_VIEW_TYPE, AhaReviewPanelView, type AhaReviewPanelContext } from "./review-panel";
 import { canRunExternalProcesses, runAhaWrapper, runReadinessCheck } from "./process";
 import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
 import { validateAhaWrapperResult } from "./schema";
@@ -31,6 +32,7 @@ export default class AhaPlugin extends Plugin {
     this.addSettingTab(new AhaSettingTab(this.app, this));
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText("Aha idle");
+    this.registerView(AHA_REVIEW_PANEL_VIEW_TYPE, (leaf) => new AhaReviewPanelView(leaf, this));
 
     this.addCommand({
       id: "aha-readiness-check",
@@ -47,6 +49,17 @@ export default class AhaPlugin extends Plugin {
         const file = this.currentMarkdownFile();
         if (!file) return false;
         if (!checking) void this.searchFromCurrentNote(file);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "aha-open-review-panel",
+      name: "Aha: Open Aha Review Panel",
+      checkCallback: (checking) => {
+        const file = this.currentMarkdownFile();
+        if (!file) return false;
+        if (!checking) void this.openReviewPanelForCurrentFile(file);
         return true;
       },
     });
@@ -72,16 +85,6 @@ export default class AhaPlugin extends Plugin {
         if (!checking) void this.openCandidateInNewTab(target);
         return true;
       },
-    });
-
-    this.registerMarkdownPostProcessor((element) => {
-      element.querySelectorAll<HTMLButtonElement>("button.aha-open-candidate").forEach((button) => {
-        this.registerDomEvent(button, "click", (event) => {
-          event.preventDefault();
-          const target = button.dataset.ahaPath;
-          if (target) void this.openCandidateInNewTab(target);
-        });
-      });
     });
 
     this.timerId = window.setInterval(() => this.updateStatusBar(), 1000);
@@ -118,11 +121,9 @@ export default class AhaPlugin extends Plugin {
     if (!this.assertDesktop()) return;
 
     const reviewFile = await this.ensureReviewNote(sourceFile);
-    await this.openFile(reviewFile, false);
 
     const startedAt = new Date();
     await this.appendRunning(reviewFile, startedAt);
-    await this.openFile(reviewFile, false);
 
     this.activeRun = { startedAt: startedAt.getTime(), sourcePath: sourceFile.path };
     this.updateStatusBar();
@@ -142,7 +143,6 @@ export default class AhaPlugin extends Plugin {
       if (!validation.result.ok) {
         const failure = validation.result.error ?? { message: "Aha wrapper failed." };
         await this.appendFailure(reviewFile, failure);
-        await this.openFile(reviewFile, false);
         new Notice(`Aha failed: ${failure.message}`, 10000);
         return;
       }
@@ -155,7 +155,11 @@ export default class AhaPlugin extends Plugin {
         sourceTitle: sourceFile.basename,
       });
       await this.app.vault.modify(reviewFile, nextContent);
-      await this.openFile(reviewFile, false);
+      await this.openReviewPanel({
+        reviewFile,
+        sourcePath: sourceFile.path,
+        sourceTitle: sourceFile.basename,
+      });
       new Notice(`Aha search completed: ${validation.result.candidates?.length ?? 0} candidates.`);
     } catch (error) {
       const details = error instanceof Error ? error.message : String(error);
@@ -164,7 +168,6 @@ export default class AhaPlugin extends Plugin {
         tool: "wrapper",
         details,
       });
-      await this.openFile(reviewFile, false);
       this.reportError("Aha search failed", error);
     } finally {
       this.activeRun = undefined;
@@ -216,6 +219,60 @@ export default class AhaPlugin extends Plugin {
   }
 
   private async openReviewForSource(sourceFile: TFile): Promise<void> {
+    const file = await this.findExistingReviewNoteForSource(sourceFile);
+    if (!(file instanceof TFile)) {
+      new Notice("No Aha Review Note exists for this source note yet.");
+      return;
+    }
+    await this.openFile(file, false);
+  }
+
+  private async openReviewPanelForCurrentFile(file: TFile): Promise<void> {
+    const context = await this.reviewPanelContextForFile(file);
+    if (!context) {
+      new Notice("No Aha Review Note exists for this note yet.");
+      return;
+    }
+    await this.openReviewPanel(context);
+  }
+
+  private async reviewPanelContextForFile(file: TFile): Promise<AhaReviewPanelContext | null> {
+    const reviewContent = await this.app.vault.cachedRead(file);
+    const reviewSourcePath = reviewSourcePathFromContent(reviewContent);
+    if (reviewSourcePath) {
+      return {
+        reviewFile: file,
+        sourcePath: reviewSourcePath,
+        sourceTitle: this.sourceTitleForPath(reviewSourcePath),
+      };
+    }
+
+    const reviewFile = await this.findExistingReviewNoteForSource(file);
+    return reviewFile instanceof TFile
+      ? {
+          reviewFile,
+          sourcePath: file.path,
+          sourceTitle: file.basename,
+        }
+      : null;
+  }
+
+  private async openReviewPanel(context: AhaReviewPanelContext): Promise<void> {
+    const leaf = this.app.workspace.getLeavesOfType(AHA_REVIEW_PANEL_VIEW_TYPE)[0]
+      ?? this.app.workspace.getRightLeaf(false);
+    if (!leaf) {
+      new Notice("Aha could not open the review panel.", 8000);
+      return;
+    }
+    await leaf.setViewState({ type: AHA_REVIEW_PANEL_VIEW_TYPE, active: true });
+    await leaf.loadIfDeferred();
+    await this.app.workspace.revealLeaf(leaf);
+    if (leaf.view instanceof AhaReviewPanelView) {
+      await leaf.view.setContext(context);
+    }
+  }
+
+  private async findExistingReviewNoteForSource(sourceFile: TFile): Promise<TFile | null> {
     const sourceId = await this.sourceIdentityFor(sourceFile);
     const reviewPath = this.reviewIndex[sourceReviewIndexKey(sourceId, sourceFile.path)]
       ?? this.reviewIndex[legacySourceIdentity(sourceFile.path)]
@@ -225,14 +282,13 @@ export default class AhaPlugin extends Plugin {
       file = await this.findReviewNoteForSource(sourceId, sourceFile.path);
     }
     if (!(file instanceof TFile)) {
-      new Notice("No Aha Review Note exists for this source note yet.");
-      return;
+      return null;
     }
     await this.rememberReviewNote(sourceId, sourceFile.path, file.path);
-    await this.openFile(file, false);
+    return file;
   }
 
-  private async openCandidateInNewTab(target: string): Promise<void> {
+  async openCandidateInNewTab(target: string): Promise<void> {
     const file = this.resolveCandidate(target);
     if (!file) {
       new Notice(`Aha could not find candidate note: ${target}`, 8000);
@@ -344,6 +400,12 @@ export default class AhaPlugin extends Plugin {
 
   private async sourceIdentityFor(sourceFile: TFile): Promise<string> {
     return sourceIdentityForFile(sourceFile, this.absolutePathForFile(sourceFile));
+  }
+
+  private sourceTitleForPath(sourcePath: string): string {
+    const file = this.app.vault.getAbstractFileByPath(sourcePath);
+    if (file instanceof TFile) return file.basename;
+    return path.basename(sourcePath, ".md");
   }
 
   private assertDesktop(): boolean {
