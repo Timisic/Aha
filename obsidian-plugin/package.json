@@ -1,0 +1,20 @@
+{
+  "name": "aha-obsidian-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Obsidian memory surface for Aha insight review.",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "test": "node --test ../scripts/aha/tests/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "esbuild": "^0.28.1",
+    "obsidian": "^1.13.1",
+    "typescript": "^5.9.0"
+  }
+}
