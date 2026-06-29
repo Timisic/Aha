@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "summary": "Fixture search round for plugin and wrapper smoke tests.",
+  "warnings": ["Fixture mode does not run Codex or QMD."],
+  "candidates": [
+    {
+      "notePath": "Aha/Fixtures/Feedback Loop.md",
+      "noteTitle": "Feedback Loop",
+      "relation": "supports",
+      "hit": "\"Feedback makes the experience gap visible.\"",
+      "quotes": ["Feedback makes the experience gap visible."],
+      "why": "The old note gives a concrete prior framing for why the current insight should be reviewed against lived evidence instead of treated as a standalone idea.",
+      "selected": true
+    },
+    {
+      "notePath": "Aha/Fixtures/Boundary Case.md",
+      "noteTitle": "Boundary Case",
+      "relation": "bounds",
+      "hit": "\"A tool stops helping when it hides the user's own judgment.\"",
+      "quotes": ["A tool stops helping when it hides the user's own judgment."],
+      "why": "The old note marks the product boundary that Aha should preserve: memory retrieval can prepare review material, but the user still owns the final judgment.",
+      "selected": true
+    },
+    {
+      "notePath": "Aha/Fixtures/Loose Association.md",
+      "noteTitle": "Loose Association",
+      "relation": "weak",
+      "hit": "Mentions note recall and review, but without a direct judgment link.",
+      "quotes": [],
+      "why": "This is kept as an exploratory lead because it shares the retrieval-review vocabulary but does not yet provide strong evidence for the current insight.",
+      "selected": false
+    }
+  ]
+}

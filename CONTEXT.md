@@ -109,12 +109,16 @@ The user's explicit acceptance, rejection, or uncertainty judgment about a memor
 _Avoid_: passive viewing, agent-selected evidence
 
 **Memory Review State**:
-The persisted state owned by the Memory Surface: source insight, search rounds, candidate pool, relation outputs, user review choices, and review benchmark seeds. It deliberately excludes the later grilling conversation.
+The persisted state owned by the Memory Surface: source insight, search rounds, candidate pool, relation outputs, user review choices, and review benchmark seeds. For the Obsidian plugin path, user review choices should be stored in the Aha Review Note's visible Markdown checkboxes rather than hidden plugin data. It deliberately excludes the later grilling conversation.
 _Avoid_: grill transcript, full workflow state, chat history
 
 **Aha Review Note**:
 One Markdown note in the user's note vault, stored by default under `Aha/Reviews/`, created for a specific insight review when the user explicitly triggers the first memory search. It gathers the source insight link, search round summaries, selected memories, relation reasons, optional relation quotes, grill handoff material, and any review benchmark seeds saved during that insight review.
 _Avoid_: global benchmark file, per-seed file, final summary
+
+**Aha Review Panel**:
+A low-friction Memory Surface view for actively reviewing one Aha Review Note. It presents memory candidates, relation evidence, and user review choices so the user can decide which candidates become Selected Memories and then export the Grill Handoff. The Aha Review Note remains the persistent Markdown backing artifact.
+_Avoid_: agent chat UI, embedded grill, final judgment editor, replacement for the review note, instructional copy, marketing copy
 
 **Aha Review Filename**:
 The human-readable filename for an Aha Review Note, preferably `{YYYY-MM-DD} {source insight title}.md`, with title sanitization and a short suffix only when needed to avoid collisions on the same date or title.
@@ -129,8 +133,12 @@ The coarse lifecycle marker in Aha Review Frontmatter. The initial statuses are 
 _Avoid_: complete workflow stage machine, archived, summary_done
 
 **Selected Memory**:
-A memory candidate currently marked to be included in the Grill Handoff. Candidates may be selected by default after retrieval, but the user can remove low-value items before exporting the handoff.
+A memory candidate currently marked to be included in the Grill Handoff. Candidates are selected by default after retrieval, and the user removes low-value items before exporting the handoff; in the Obsidian plugin path, the Aha Review Note checkbox state is the source of truth.
 _Avoid_: automatically accepted evidence, final used memory, forced top-N
+
+**Handoff Export**:
+An explicit Memory Surface action that first syncs the current panel selection into the Aha Review Note checkboxes, rebuilds or updates the Review Note's Grill Handoff from Selected Memories, and copies that handoff so the user can paste it into Codex for grilling. Exporting a handoff does not mean the selected memories have become benchmark seeds or final judgment evidence.
+_Avoid_: automatic Codex launch, benchmark save, final summary, hidden agent run
 
 **Candidate Open Action**:
 A Memory Surface action that opens a candidate old note or quoted span in a separate note leaf so the user's current insight note remains in place.

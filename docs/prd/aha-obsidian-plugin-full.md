@@ -8,9 +8,9 @@ The user needs a lighter Memory Surface in Obsidian: starting from the current n
 
 ## Solution
 
-Aha should move to an Obsidian plugin plus repo-local wrapper plus Codex/QMD architecture.
+Aha should move to an Obsidian plugin plus repo-local wrapper plus LLM/QMD architecture.
 
-From the user's perspective, the plugin adds a command that treats the current Obsidian note as the source insight, explicitly triggers Aha search, and creates an Aha Review Note in the vault. Codex acts as Retrieval Orchestration: it reads the source note, generates multiple structured QMD queries, calls QMD, expands Obsidian backlinks/outlinks, reads candidate note text, runs Relation Judge one candidate at a time, and returns 15-20 candidate old notes with relation, quote-backed hit, and sufficiently detailed reason.
+From the user's perspective, the plugin adds a command that treats the current Obsidian note as the source insight, explicitly triggers Aha search, and creates an Aha Review Note in the vault. The configured LLM owns the intelligent retrieval strategy: it generates multiple structured QMD queries and judges the bounded candidate excerpts. The wrapper owns the mechanical local integration: it checks OpenAI key / Codex fallback / QMD SDK or CLI / Obsidian CLI readiness, calls QMD, expands Obsidian backlinks/outlinks, reads only vault-contained candidate note text, merges and reranks candidates, and preserves structured failures. Together they return 15-20 candidate old notes with relation, quote-backed hit, and sufficiently detailed reason.
 
 The Aha Review Note becomes the durable human-readable artifact. It records the source insight link, search rounds, selected memories, relation reasons, optional quotes, a Grill Handoff section, and any explicitly saved Review Benchmark Seeds. Obsidian remains the user's note and review surface; Codex remains the reasoning workflow for retrieval, relation judging, grilling, and judgment synthesis.
 
@@ -49,7 +49,7 @@ The Aha Review Note becomes the durable human-readable artifact. It records the 
 31. As a note author, I want detailed logs available for debugging, so that speed and runtime failures can be improved later.
 32. As a developer, I want the plugin shell to stay thin, so that Obsidian remains a Memory Surface rather than a second agent runtime.
 33. As a developer, I want wrapper scripts to launch, constrain, capture, and write back Codex results, so that runtime integration is testable outside Obsidian.
-34. As a developer, I want Codex to own query generation and QMD/backlink orchestration, so that the intelligent retrieval strategy remains in the Aha skill.
+34. As a developer, I want the configured LLM to own query generation and Relation Judge while the wrapper owns QMD/backlink mechanics, so that the intelligent retrieval strategy remains in the Aha skill.
 35. As a developer, I want the existing Pi Extension preserved during the transition, so that proven behavior remains available as reference.
 36. As a developer, I want official Obsidian plugin conventions followed, so that the plugin remains maintainable and installable.
 37. As a developer, I want desktop-only gating for external process calls, so that unsupported mobile behavior fails clearly.
@@ -57,7 +57,7 @@ The Aha Review Note becomes the durable human-readable artifact. It records the 
 
 ## Implementation Decisions
 
-- The new product shape is Memory Surface plus Reasoning Workflow: Obsidian owns note-facing review and artifact storage; Codex owns retrieval orchestration, relation judging, grilling, and synthesis.
+- The new product shape is Memory Surface plus Reasoning Workflow: Obsidian owns note-facing review and artifact storage; the configured LLM owns retrieval planning and relation judging; Codex can still own later grilling and synthesis.
 - The existing Pi Extension stays intact during the first Obsidian plugin branch. It remains a historical and runtime reference until the new path works.
 - The plugin is command-palette first. The core command searches from the current note; a helper command can open the current review note. Side panels are later work.
 - The plugin creates one Aha Review Note per insight review when the user explicitly triggers the first memory search.
@@ -65,9 +65,10 @@ The Aha Review Note becomes the durable human-readable artifact. It records the 
 - Aha Review Note filenames use date plus source insight title, with sanitized/truncated titles and a short suffix only for collisions.
 - Aha Review Notes use minimal frontmatter for type, source link, creation time, and coarse status.
 - Initial review statuses are memory_review, handoff_ready, and grilled.
-- The wrapper launches Codex in non-interactive mode with explicit sandbox, approval, schema, and output settings. It should not contain query-generation, reranking, or relation-judging intelligence.
-- Codex runs as the retrieval orchestrator. It generates structured QMD queries, calls QMD, expands backlinks/outlinks, reads final candidate notes, and produces evidence-bound relation outputs.
-- Relation Judge runs one candidate at a time inside a single Codex run per search round, not one Codex process per candidate.
+- The wrapper launches OpenAI-compatible API calls by default and can fall back to Codex CLI in non-interactive mode with explicit sandbox, approval, schema, and output settings. It should not contain query-generation or relation-judging intelligence.
+- The configured LLM runs as the strategy layer. It generates structured QMD queries and produces evidence-bound relation outputs from bounded candidate excerpts.
+- The wrapper runs the local retrieval pipeline mechanically: QMD SDK/CLI calls, backlink/outlink expansion, source/self/out-of-vault filtering, candidate excerpt reads, merge/rerank, schema validation, and structured failure preservation.
+- Relation Judge reviews bounded candidate excerpts inside one LLM call per search round, not one model call per candidate.
 - Strong relations require source-text quotes. The explanation may summarize or connect, but the quote must be copied from the old note text.
 - The output contract centers on candidate note, relation, hit, and why. Hit should be quote-backed; why should be detailed enough for later Codex grilling.
 - The plugin opens candidate notes in a separate leaf/tab rather than replacing the current insight note.
@@ -80,10 +81,10 @@ The Aha Review Note becomes the durable human-readable artifact. It records the 
 ## Testing Decisions
 
 - The highest-value seam is the end-to-end review artifact: given a current source note, the system should create or update an Aha Review Note with candidates, relations, quotes/reasons, and handoff material.
-- Wrapper behavior should be tested outside Obsidian with a fixture source note and mocked or recorded Codex output where possible.
+- Wrapper behavior should be tested outside Obsidian with a fixture source note and mocked or recorded LLM output where possible.
 - Plugin behavior should be tested at the command boundary: current note resolution, review note creation/opening, background process status, failure recording, and candidate note opening in a separate leaf.
 - Relation output should be schema-validated before writing to the review note.
-- Failure tests should cover missing Codex CLI, missing QMD, failed QMD health, unreadable source note, malformed Codex output, and review note collision.
+- Failure tests should cover missing OpenAI key, missing Codex CLI fallback, missing QMD SDK/CLI, failed QMD health, unreadable source note, malformed LLM output, and review note collision.
 - Existing benchmark and pipeline scripts are prior art for QMD query generation, backlink expansion, candidate scoring, path identity, and report metadata.
 - Existing extension tests are prior art for command-level workflow contracts, source-note non-mutation, and failure handling.
 - Tests should assert user-visible behavior and artifact shape, not internal implementation steps.
