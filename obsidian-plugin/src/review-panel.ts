@@ -94,7 +94,7 @@ export class AhaReviewPanelView extends ItemView {
     const table = root.createEl("table", { cls: "aha-review-panel-table" });
     const thead = table.createEl("thead");
     const headerRow = thead.createEl("tr");
-    for (const heading of ["纳入", "旧笔记", "关系", "理由"]) {
+    for (const heading of ["纳入", "旧笔记", "理由"]) {
       headerRow.createEl("th", { text: heading });
     }
 
@@ -102,8 +102,7 @@ export class AhaReviewPanelView extends ItemView {
     for (const candidate of this.candidates) {
       const row = tbody.createEl("tr");
       this.renderSelectionCell(row, candidate);
-      this.renderNoteCell(row, candidate);
-      row.createEl("td", { text: candidate.relation, cls: "aha-review-panel-relation" });
+      this.renderMemoryCell(row, candidate);
       this.renderReasonCell(row, candidate);
     }
 
@@ -133,22 +132,24 @@ export class AhaReviewPanelView extends ItemView {
     });
   }
 
-  private renderNoteCell(row: HTMLTableRowElement, candidate: ReviewPanelCandidate): void {
-    const cell = row.createEl("td", { cls: "aha-review-panel-note" });
+  private renderMemoryCell(row: HTMLTableRowElement, candidate: ReviewPanelCandidate): void {
+    const cell = row.createEl("td", { cls: "aha-review-panel-memory" });
     const link = cell.createEl("a", {
       text: candidate.noteTitle?.trim() || candidate.notePath,
       href: "#",
       title: candidate.notePath,
+      cls: "aha-review-panel-note-link",
     });
     link.addEventListener("click", (event) => {
       event.preventDefault();
       void this.host.openCandidateInNewTab(candidate.notePath);
     });
+    cell.createDiv({ text: candidate.relation, cls: "aha-review-panel-relation" });
   }
 
   private renderReasonCell(row: HTMLTableRowElement, candidate: ReviewPanelCandidate): void {
     const cell = row.createEl("td", { cls: "aha-review-panel-reason" });
-    cell.createDiv({ text: candidate.why || candidate.hit });
+    cell.createDiv({ text: candidate.why || candidate.hit, cls: "aha-review-panel-reason-text" });
     if (!candidate.hit && candidate.quotes.length === 0) return;
 
     const details = cell.createEl("details", { cls: "aha-review-panel-hit" });
