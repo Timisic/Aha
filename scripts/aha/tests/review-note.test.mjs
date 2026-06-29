@@ -18,10 +18,10 @@ test("successful search rounds append without deleting manual review content", a
     sourcePath: "Source/Insight.md",
     sourceTitle: "Insight",
   }).replace(
-    "_Aha will add selected memory candidates here after retrieval._",
+    "_检索完成后，Aha 会在这里列出默认纳入 handoff 的候选记忆。_",
     "Manual selected memory note.",
   ).replace(
-    "_Aha will prepare a compact handoff after retrieval._",
+    "_检索完成后，Aha 会在这里准备可复制的 handoff。_",
     "Manual handoff note.",
   );
 
@@ -30,16 +30,23 @@ test("successful search rounds append without deleting manual review content", a
 
   assert.match(second, /Manual selected memory note\./);
   assert.match(second, /Manual handoff note\./);
-  assert.equal((second.match(/### Search Round - /g) ?? []).length, 2);
-  assert.equal((second.match(/### Selected Memories - /g) ?? []).length, 2);
+  assert.match(second, /# Aha 记忆审阅：Insight/);
+  assert.match(second, /## 当前 insight/);
+  assert.match(second, /## 搜索结果/);
+  assert.equal((second.match(/### 搜索轮次 - /g) ?? []).length, 2);
+  assert.equal((second.match(/### 纳入 Handoff 的记忆 - /g) ?? []).length, 2);
   assert.equal((second.match(/### Grill Handoff - /g) ?? []).length, 2);
   assert.equal(reviewNote.reviewSourceIdFromContent(second), "src:test");
   assert.equal(reviewNote.reviewSourcePathFromContent(second), "Source/Insight.md");
   assert.match(second, /<!-- aha:search-results:start -->/);
   assert.match(second, /<!-- aha:search-results:end -->/);
-  assert.doesNotMatch(second, /No search round has completed yet/);
-  assert.doesNotMatch(second, /Aha will add selected memory candidates here/);
-  assert.doesNotMatch(second, /Aha will prepare a compact handoff/);
+  assert.match(second, /   - relation: `supports`/);
+  assert.match(second, /   - hit: "Evidence quote\."/);
+  assert.match(second, /   - why: 这条候选包含能支撑当前 insight 的具体旧判断。/);
+  assert.doesNotMatch(second, /还没有完成的搜索轮次/);
+  assert.doesNotMatch(second, /检索完成后，Aha 会在这里列出默认纳入 handoff 的候选记忆/);
+  assert.doesNotMatch(second, /检索完成后，Aha 会在这里准备可复制的 handoff/);
+  assert.doesNotMatch(second, /aha-open-candidate|<button|Open<\/button>/);
 });
 
 test("successful search round uses markers when headings are edited", async () => {
@@ -49,12 +56,12 @@ test("successful search round uses markers when headings are edited", async () =
     sourceId: "src:renamed-heading",
     sourcePath: "Source/Insight.md",
     sourceTitle: "Insight",
-  }).replace("## Search Results", "## My Search Results");
+  }).replace("## 搜索结果", "## My Search Results");
 
   const next = reviewNote.appendSuccessfulSearchRound(initial, searchRound("2026-06-28T03:00:00Z"));
 
   assert.match(next, /## My Search Results/);
-  assert.match(next, /### Search Round - 2026-06-28T03:00:00Z/);
+  assert.match(next, /### 搜索轮次 - 2026-06-28T03:00:00Z/);
   assert.equal((next.match(/<!-- aha:search-results:start -->/g) ?? []).length, 1);
 });
 
@@ -78,10 +85,57 @@ test("running and failed rounds are visible inside search results", async () => 
     failed.indexOf("<!-- aha:search-results:start -->"),
     failed.indexOf("<!-- aha:search-results:end -->"),
   );
-  assert.match(searchBlock, /### Running Search Round - 2026-06-28T04:00:00\.000Z/);
-  assert.match(searchBlock, /### Failed Search Round - 2026-06-28T04:01:00\.000Z/);
+  assert.match(searchBlock, /### 正在检索 - 2026-06-28T04:00:00\.000Z/);
+  assert.match(searchBlock, /### 检索失败 - 2026-06-28T04:01:00\.000Z/);
   assert.match(searchBlock, /env: node: No such file or directory/);
-  assert.doesNotMatch(searchBlock, /No search round has completed yet/);
+  assert.doesNotMatch(searchBlock, /还没有完成的搜索轮次/);
+});
+
+test("latest selected memories can sync checkbox state and handoff text", async () => {
+  const reviewNote = await loadReviewNoteModule();
+  const initial = reviewNote.makeReviewNoteContent({
+    createdAt: new Date("2026-06-28T00:00:00Z"),
+    sourceId: "src:panel-sync",
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+  });
+  const appended = reviewNote.appendSuccessfulSearchRound(initial, {
+    ...searchRound("2026-06-28T05:00:00Z"),
+    result: {
+      ...searchRound("2026-06-28T05:00:00Z").result,
+      candidates: [
+        searchRound("2026-06-28T05:00:00Z").result.candidates[0],
+        {
+          notePath: "Memory/Second.md",
+          noteTitle: "Second",
+          relation: "challenges",
+          hit: "\"Another quote.\"",
+          why: "这条候选提供了一个需要保留的反例边界。",
+          quotes: ["Another quote."],
+          selected: true,
+        },
+      ],
+    },
+  });
+
+  const latest = reviewNote.latestSelectedMemoriesRound(appended);
+  assert.equal(latest.generatedAt, "2026-06-28T05:00:00Z");
+  assert.equal(latest.candidates.length, 2);
+  assert.equal(latest.candidates[0].notePath, "Memory/Candidate.md");
+  assert.equal(latest.candidates[0].selected, true);
+
+  const synced = reviewNote.syncLatestSelectedMemoriesAndHandoff(
+    appended,
+    "Source/Insight.md",
+    "Insight",
+    new Map([[1, false], [2, true]]),
+  );
+
+  assert.match(synced.content, /1\. \[ \] \[\[Memory\/Candidate\]\]/);
+  assert.match(synced.content, /2\. \[x\] \[\[Memory\/Second\]\]/);
+  assert.match(synced.handoff, /纳入 handoff 的旧笔记：/);
+  assert.doesNotMatch(synced.handoff, /Memory\/Candidate/);
+  assert.match(synced.handoff, /Memory\/Second/);
 });
 
 test("review note matching allows path drift only for filesystem-backed source_id", async () => {
@@ -258,7 +312,7 @@ function searchRound(generatedAt) {
       ok: true,
       generatedAt,
       sourcePath: "Source/Insight.md",
-      summary: "Aha completed a test search round.",
+      summary: "Aha 完成了一轮测试检索。",
       warnings: [],
       candidates: [
         {
@@ -266,7 +320,7 @@ function searchRound(generatedAt) {
           noteTitle: "Candidate",
           relation: "supports",
           hit: "\"Evidence quote.\"",
-          why: "This candidate has a concrete quote-backed reason for the current insight.",
+          why: "这条候选包含能支撑当前 insight 的具体旧判断。",
           quotes: ["Evidence quote."],
           selected: true,
         },

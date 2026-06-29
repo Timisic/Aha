@@ -1,0 +1,77 @@
+.aha-review-panel {
+  padding: 8px 10px 12px;
+}
+
+.aha-review-panel h2 {
+  margin: 0;
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+}
+
+.aha-review-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.aha-review-panel-count,
+.aha-review-panel-empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.aha-review-panel-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--font-ui-small);
+}
+
+.aha-review-panel-table th,
+.aha-review-panel-table td {
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  vertical-align: top;
+}
+
+.aha-review-panel-table th {
+  color: var(--text-muted);
+  font-weight: var(--font-medium);
+  text-align: left;
+}
+
+.aha-review-panel-select {
+  width: 36px;
+}
+
+.aha-review-panel-relation {
+  width: 76px;
+  color: var(--text-muted);
+}
+
+.aha-review-panel-note {
+  width: 30%;
+  word-break: break-word;
+}
+
+.aha-review-panel-reason {
+  word-break: break-word;
+}
+
+.aha-review-panel-hit {
+  margin-top: 4px;
+  color: var(--text-muted);
+}
+
+.aha-review-panel-hit summary {
+  cursor: pointer;
+}
+
+.aha-review-panel-footer {
+  position: sticky;
+  bottom: 0;
+  padding-top: 10px;
+  background: var(--background-primary);
+}
