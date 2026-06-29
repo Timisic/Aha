@@ -1,6 +1,7 @@
 import { ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import {
   latestSelectedMemoriesRound,
+  noteDisplayTitleFromPath,
   syncLatestSelectedMemoriesAndHandoff,
   type ReviewPanelCandidate,
   type SyncReviewSelectionResult,
@@ -91,16 +92,15 @@ export class AhaReviewPanelView extends ItemView {
     this.countEl = header.createDiv({ cls: "aha-review-panel-count" });
     this.updateCount();
 
-    const table = root.createEl("table", { cls: "aha-review-panel-table" });
-    const thead = table.createEl("thead");
-    const headerRow = thead.createEl("tr");
+    const table = root.createDiv({ cls: "aha-review-panel-table", attr: { role: "table" } });
+    const headerRow = table.createDiv({ cls: "aha-review-panel-row aha-review-panel-head", attr: { role: "row" } });
     for (const heading of ["纳入", "旧笔记", "理由"]) {
-      headerRow.createEl("th", { text: heading });
+      headerRow.createDiv({ text: heading, cls: "aha-review-panel-cell aha-review-panel-heading", attr: { role: "columnheader" } });
     }
 
-    const tbody = table.createEl("tbody");
+    const body = table.createDiv({ cls: "aha-review-panel-body", attr: { role: "rowgroup" } });
     for (const candidate of this.candidates) {
-      const row = tbody.createEl("tr");
+      const row = body.createDiv({ cls: "aha-review-panel-row", attr: { role: "row" } });
       this.renderSelectionCell(row, candidate);
       this.renderMemoryCell(row, candidate);
       this.renderReasonCell(row, candidate);
@@ -109,7 +109,7 @@ export class AhaReviewPanelView extends ItemView {
     const footer = root.createDiv({ cls: "aha-review-panel-footer" });
     this.copyButton = footer.createEl("button", {
       text: "复制 handoff",
-      cls: "mod-cta",
+      cls: "aha-review-panel-copy",
       title: "复制当前勾选候选组成的 Grill Handoff",
     });
     this.copyButton.addEventListener("click", () => {
@@ -117,12 +117,13 @@ export class AhaReviewPanelView extends ItemView {
     });
   }
 
-  private renderSelectionCell(row: HTMLTableRowElement, candidate: ReviewPanelCandidate): void {
-    const cell = row.createEl("td", { cls: "aha-review-panel-select" });
+  private renderSelectionCell(row: HTMLElement, candidate: ReviewPanelCandidate): void {
+    const cell = row.createDiv({ cls: "aha-review-panel-cell aha-review-panel-select", attr: { role: "cell" } });
+    const displayTitle = this.displayTitleFor(candidate);
     const checkbox = cell.createEl("input", {
       type: "checkbox",
       title: "纳入 handoff",
-      attr: { "aria-label": `纳入 ${candidate.noteTitle ?? candidate.notePath}` },
+      attr: { "aria-label": `纳入 ${displayTitle}` },
     });
     checkbox.checked = candidate.selected;
     checkbox.addEventListener("change", () => {
@@ -132,10 +133,11 @@ export class AhaReviewPanelView extends ItemView {
     });
   }
 
-  private renderMemoryCell(row: HTMLTableRowElement, candidate: ReviewPanelCandidate): void {
-    const cell = row.createEl("td", { cls: "aha-review-panel-memory" });
+  private renderMemoryCell(row: HTMLElement, candidate: ReviewPanelCandidate): void {
+    const cell = row.createDiv({ cls: "aha-review-panel-cell aha-review-panel-memory", attr: { role: "cell" } });
+    const displayTitle = this.displayTitleFor(candidate);
     const link = cell.createEl("a", {
-      text: candidate.noteTitle?.trim() || candidate.notePath,
+      text: displayTitle,
       href: "#",
       title: candidate.notePath,
       cls: "aha-review-panel-note-link",
@@ -147,8 +149,8 @@ export class AhaReviewPanelView extends ItemView {
     cell.createDiv({ text: candidate.relation, cls: "aha-review-panel-relation" });
   }
 
-  private renderReasonCell(row: HTMLTableRowElement, candidate: ReviewPanelCandidate): void {
-    const cell = row.createEl("td", { cls: "aha-review-panel-reason" });
+  private renderReasonCell(row: HTMLElement, candidate: ReviewPanelCandidate): void {
+    const cell = row.createDiv({ cls: "aha-review-panel-cell aha-review-panel-reason", attr: { role: "cell" } });
     cell.createDiv({ text: candidate.why || candidate.hit, cls: "aha-review-panel-reason-text" });
     if (!candidate.hit && candidate.quotes.length === 0) return;
 
@@ -206,4 +208,15 @@ export class AhaReviewPanelView extends ItemView {
     const selected = this.candidates.filter((candidate) => candidate.selected).length;
     this.countEl.setText(`${selected} / ${this.candidates.length} 纳入`);
   }
+
+  private displayTitleFor(candidate: ReviewPanelCandidate): string {
+    const filePath = candidateFilePathForLookup(candidate.notePath);
+    const file = this.app.vault.getAbstractFileByPath(filePath);
+    return file instanceof TFile ? file.basename : noteDisplayTitleFromPath(candidate.notePath);
+  }
+}
+
+function candidateFilePathForLookup(notePath: string): string {
+  const base = notePath.replace(/^\[\[|\]\]$/g, "").split("|")[0].match(/^([^#^]+)/)?.[1]?.trim() || notePath.trim();
+  return /\.md$/i.test(base) ? base : `${base}.md`;
 }

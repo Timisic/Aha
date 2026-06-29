@@ -25,32 +25,44 @@
 
 .aha-review-panel-table {
   width: 100%;
-  border-collapse: collapse;
   display: block;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
   font-size: var(--font-ui-small);
 }
 
-.aha-review-panel-table thead,
-.aha-review-panel-table tbody {
+.aha-review-panel-body {
   display: block;
 }
 
-.aha-review-panel-table tr {
+.aha-review-panel-row {
   display: grid;
   grid-template-columns: 44px minmax(112px, 168px) minmax(0, 1fr);
   column-gap: 10px;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
   border-bottom: 1px solid var(--background-modifier-border);
+  box-shadow: none !important;
 }
 
-.aha-review-panel-table th,
-.aha-review-panel-table td {
+.aha-review-panel-cell {
   min-width: 0;
   padding: 8px 0;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
   border-bottom: 0;
+  box-shadow: none !important;
   vertical-align: top;
 }
 
-.aha-review-panel-table th {
+.aha-review-panel-heading {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
   color: var(--text-muted);
   font-weight: var(--font-medium);
   text-align: left;
@@ -101,24 +113,32 @@
 }
 
 .aha-review-panel-footer {
-  position: sticky;
-  bottom: 0;
-  padding-top: 10px;
-  background: var(--background-primary);
+  margin-top: 10px;
+  background: transparent;
+}
+
+.aha-review-panel-copy {
+  background: var(--interactive-normal) !important;
+  box-shadow: none !important;
+  color: var(--text-normal) !important;
+}
+
+.aha-review-panel-copy:hover {
+  background: var(--interactive-hover) !important;
 }
 
 @container (max-width: 560px) {
-  .aha-review-panel-table thead {
+  .aha-review-panel-head {
     display: none;
   }
 
-  .aha-review-panel-table tr {
+  .aha-review-panel-row {
     grid-template-columns: 34px minmax(0, 1fr);
     gap: 4px 8px;
     padding: 10px 0;
   }
 
-  .aha-review-panel-table td {
+  .aha-review-panel-cell {
     display: block;
     padding: 0;
     border-bottom: 0;

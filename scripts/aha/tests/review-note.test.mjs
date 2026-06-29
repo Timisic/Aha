@@ -65,6 +65,38 @@ test("successful search round uses markers when headings are edited", async () =
   assert.equal((next.match(/<!-- aha:search-results:start -->/g) ?? []).length, 1);
 });
 
+test("candidate aliases do not replace original note file titles", async () => {
+  const reviewNote = await loadReviewNoteModule();
+  const initial = reviewNote.makeReviewNoteContent({
+    createdAt: new Date("2026-06-28T00:00:00Z"),
+    sourceId: "src:note-title",
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+  });
+
+  const next = reviewNote.appendSuccessfulSearchRound(initial, {
+    ...searchRound("2026-06-28T03:30:00Z"),
+    result: {
+      ...searchRound("2026-06-28T03:30:00Z").result,
+      candidates: [
+        {
+          notePath: "BOOK/Course/example-course-note.md",
+          noteTitle: "V 2",
+          relation: "supports",
+          hit: "\"具体旧判断。\"",
+          why: "这条候选用于确认 panel 和 handoff 不应该擅自改写旧笔记标题。",
+          quotes: ["具体旧判断。"],
+          selected: true,
+        },
+      ],
+    },
+  });
+
+  assert.match(next, /\[\[BOOK\/Course\/example-course-note\]\]/);
+  assert.doesNotMatch(next, /\|V 2\]\]/);
+  assert.equal(reviewNote.noteDisplayTitleFromPath("BOOK/Course/example-course-note.md"), "example-course-note");
+});
+
 test("running and failed rounds are visible inside search results", async () => {
   const reviewNote = await loadReviewNoteModule();
   const initial = reviewNote.makeReviewNoteContent({
