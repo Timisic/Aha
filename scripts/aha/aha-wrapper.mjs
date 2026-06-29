@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-import { access, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { spawn } from "node:child_process";
-import { tmpdir } from "node:os";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { connect as tlsConnect } from "node:tls";
+import { spawn, spawnSync } from "node:child_process";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { validateAhaResult } from "./lib/aha-result-schema.mjs";
 import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "./lib/note-identity.mjs";
 
@@ -17,6 +21,25 @@ const MAX_TARGET_CANDIDATES = 20;
 const DEFAULT_MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
 const DEFAULT_QMD_QUERY_TIMEOUT_MS = 30_000;
 const DEFAULT_QMD_CANDIDATE_LIMIT = 20;
+const DEFAULT_LLM_PROVIDER = "openai";
+const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_LLM_MODEL = "gpt-5.5";
+const DEFAULT_LLM_API_KEY_ENV = "OPENAI_API_KEY";
+const DEFAULT_QMD_RUNNER = "sdk";
+const DEFAULT_QMD_INDEX = "obsidian";
+const VALID_LLM_PROVIDERS = new Set(["codex-cli", "openai"]);
+const VALID_QMD_RUNNERS = new Set(["cli", "sdk"]);
+const COMMON_COMMAND_DIRS = [
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin",
+  "~/.local/bin",
+  "~/.npm-global/bin",
+  "~/.bun/bin",
+];
 const MAX_QMD_LEX_TERMS = 4;
 const MAX_QMD_LEX_CHARS = 32;
 const MAX_QMD_INTENT_CHARS = 180;
@@ -104,31 +127,32 @@ async function main() {
   if (args.strategy !== "codex-orchestrated") {
     const recall = await qmdRecall(args, sourceText);
     const prompt = await buildRelationJudgePrompt(args, sourceText, recall.rows);
-    let codexOutput;
+    let llmOutput;
     try {
-      codexOutput = await runCodex(args, prompt);
+      llmOutput = await runLlm(args, prompt);
     } catch (error) {
-      emitJson(relationJudgeFailureFromRows(args, recall.rows, `Codex relation judging failed: ${error.message}`), 2);
+      emitJson(relationJudgeFailureFromRows(args, recall.rows, `${llmDisplayName(args)} relation judging failed: ${error.message}`, llmToolName(args)), 2);
       return;
     }
-    if (codexOutput.code !== 0) {
+    if (llmOutput.code !== 0) {
       emitJson(relationJudgeFailureFromRows(
         args,
         recall.rows,
-        `Codex relation judging exited ${codexOutput.code}: ${firstLine(codexOutput.stderr || codexOutput.stdout) || "no diagnostic"}`,
+        `${llmDisplayName(args)} relation judging exited ${llmOutput.code}: ${firstLine(llmOutput.stderr || llmOutput.stdout) || "no diagnostic"}`,
+        llmToolName(args),
       ), 2);
       return;
     }
     let parsed;
     try {
-      parsed = normalizeStructuredResult(extractCodexJson(codexOutput.stdout));
+      parsed = normalizeStructuredResult(extractCodexJson(llmOutput.stdout));
     } catch (error) {
-      emitJson(relationJudgeFailureFromRows(args, recall.rows, `Codex relation judging returned non-JSON output: ${error.message}`), 2);
+      emitJson(relationJudgeFailureFromRows(args, recall.rows, `${llmDisplayName(args)} relation judging returned non-JSON output: ${error.message}`, llmToolName(args)), 2);
       return;
     }
     const validation = validateAhaResult(parsed);
     if (!validation.ok) {
-      emitJson(relationJudgeFailureFromRows(args, recall.rows, `Codex relation judging returned malformed output: ${validation.errors.join("; ")}`), 2);
+      emitJson(relationJudgeFailureFromRows(args, recall.rows, `${llmDisplayName(args)} relation judging returned malformed output: ${validation.errors.join("; ")}`, llmToolName(args)), 2);
       return;
     }
     emitJson({
@@ -137,7 +161,7 @@ async function main() {
       sourcePath: parsed.sourcePath ?? args.sourcePath,
       warnings: [
         ...(parsed.warnings ?? []),
-        "Retrieval used bounded wrapper-side QMD recall; Codex judged the returned candidate excerpts.",
+        `Retrieval used bounded wrapper-side QMD recall; ${llmDisplayName(args)} judged the returned candidate excerpts.`,
       ],
     });
     return;
@@ -184,8 +208,16 @@ async function readiness(args) {
   const checks = [];
   checks.push(await checkWorkspace(args.workspace));
   checks.push(await checkReadableSourceNote(args));
-  checks.push(await checkCommand("Codex CLI", args.codexCommand, ["--version"]));
-  checks.push(await checkCommand("QMD CLI", args.qmdCommand, ["--version"]));
+  if (args.llmProvider === "openai") {
+    checks.push(checkOpenAiApiKey(args));
+  } else {
+    checks.push(await checkCommand("Codex CLI", args.codexCommand, ["--version"]));
+  }
+  if (args.qmdRunner === "sdk") {
+    checks.push(await checkQmdSdk(args));
+  } else {
+    checks.push(await checkCommand("QMD CLI", args.qmdCommand, ["--version"]));
+  }
   checks.push(await checkCommand("Obsidian CLI", args.obsidianCommand, ["files", "total"]));
   return {
     ok: checks.every((check) => check.ok),
@@ -228,6 +260,25 @@ async function checkCommand(name, command, args) {
       : { name, ok: false, message: firstLine(result.stderr || result.stdout) || `Exited ${result.code}` };
   } catch (error) {
     return { name, ok: false, message: error.message };
+  }
+}
+
+function checkOpenAiApiKey(args) {
+  const envName = String(args.llmApiKeyEnv || "").trim();
+  if (!envName) return { name: "OpenAI API key", ok: false, message: "API key environment variable is not configured." };
+  return process.env[envName]
+    ? { name: "OpenAI API key", ok: true, message: `${envName} is set.` }
+    : { name: "OpenAI API key", ok: false, message: `${envName} is not set.` };
+}
+
+async function checkQmdSdk(args) {
+  try {
+    const sdk = await loadQmdSdk(args);
+    return typeof sdk.module?.createStore === "function"
+      ? { name: "QMD SDK", ok: true, message: sdk.source }
+      : { name: "QMD SDK", ok: false, message: `${sdk.source} does not export createStore.` };
+  } catch (error) {
+    return { name: "QMD SDK", ok: false, message: error.message };
   }
 }
 
@@ -340,6 +391,378 @@ async function runCodex(args, prompt, options = {}) {
   }
 }
 
+async function runLlm(args, prompt, options = {}) {
+  if (args.llmProvider === "openai") {
+    return runOpenAi(args, prompt, options);
+  }
+  return runCodex(args, prompt, options);
+}
+
+async function runOpenAi(args, prompt, options = {}) {
+  const apiKey = process.env[args.llmApiKeyEnv];
+  if (!apiKey) {
+    throw new Error(`${args.llmApiKeyEnv} is not set.`);
+  }
+
+  const schemaPath = options.schemaPath ?? path.join(args.workspace, "scripts/aha/aha-result.schema.json");
+  const schema = await readJsonIfExists(schemaPath);
+  const requestBody = {
+    model: args.llmModel,
+    input: prompt,
+  };
+  if (schema) {
+    requestBody.text = {
+      format: {
+        type: "json_schema",
+        name: schemaNameForPath(schemaPath),
+        schema,
+        strict: true,
+      },
+    };
+  }
+
+  const timeoutMs = Number(options.timeoutMs ?? args.timeoutMs);
+  const response = await postJson(openAiResponsesUrl(args.llmBaseUrl), requestBody, {
+    "Authorization": `Bearer ${apiKey}`,
+  }, timeoutMs);
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new Error(`OpenAI API exited ${response.statusCode}: ${compactLine(response.body, 500) || response.statusMessage}`);
+  }
+  const payload = JSON.parse(response.body);
+  return {
+    code: 0,
+    stdout: extractOpenAiOutputText(payload),
+    stderr: "",
+  };
+}
+
+function openAiResponsesUrl(baseUrl) {
+  const trimmed = String(baseUrl || DEFAULT_LLM_BASE_URL).trim().replace(/\/+$/, "");
+  return `${trimmed}/responses`;
+}
+
+async function postJson(url, payload, headers, timeoutMs) {
+  const target = new URL(url);
+  const body = JSON.stringify(payload);
+  try {
+    const proxyUrl = proxyUrlFor(target);
+    if (proxyUrl && target.protocol === "https:") {
+      const socket = await openHttpsProxyTunnel(target, proxyUrl, timeoutMs);
+      return await postJsonWithRequest(httpsRequest, target, body, headers, timeoutMs, {
+        createConnection: () => socket,
+        agent: false,
+      }).catch((error) => {
+        socket.destroy();
+        throw error;
+      });
+    }
+    const requestFn = target.protocol === "http:" ? httpRequest : httpsRequest;
+    return await postJsonWithRequest(requestFn, target, body, headers, timeoutMs);
+  } catch (error) {
+    if (target.protocol !== "https:") throw error;
+    return postJsonWithCurl(target, body, headers, timeoutMs, error);
+  }
+}
+
+function postJsonWithRequest(requestFn, target, body, headers, timeoutMs, extraOptions = {}) {
+  return new Promise((resolve, reject) => {
+    const request = requestFn({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || (target.protocol === "https:" ? 443 : 80),
+      path: `${target.pathname}${target.search}`,
+      method: "POST",
+      headers: {
+        ...headers,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+        "Connection": "close",
+      },
+      timeout: timeoutMs,
+      ...extraOptions,
+    }, (response) => {
+      let responseBody = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+      response.on("end", () => {
+        resolve({
+          statusCode: response.statusCode ?? 0,
+          statusMessage: response.statusMessage ?? "",
+          body: responseBody,
+        });
+      });
+    });
+    request.on("timeout", () => {
+      request.destroy(new Error(`OpenAI API timed out after ${timeoutMs}ms.`));
+    });
+    request.on("error", reject);
+    request.end(body);
+  });
+}
+
+function proxyUrlFor(target) {
+  if (isNoProxyHost(target.hostname, process.env.NO_PROXY || process.env.no_proxy || "")) return null;
+  const rawProxy = target.protocol === "https:"
+    ? process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy
+    : process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy;
+  const raw = rawProxy || systemProxyUrlFor(target);
+  if (!raw) return null;
+  try {
+    const proxy = new URL(raw);
+    return proxy.protocol === "http:" ? proxy : null;
+  } catch {
+    return null;
+  }
+}
+
+function isNoProxyHost(hostname, noProxy) {
+  const host = String(hostname || "").toLowerCase();
+  return String(noProxy || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+    .some((item) => {
+      if (item === "*") return true;
+      const pattern = item.split(":")[0];
+      if (!pattern) return false;
+      if (pattern.startsWith("*.")) return host.endsWith(pattern.slice(1));
+      if (pattern.startsWith(".")) return host.endsWith(pattern);
+      return host === pattern || host.endsWith(`.${pattern}`);
+    });
+}
+
+function systemProxyUrlFor(target) {
+  if (process.platform !== "darwin") return "";
+  const result = spawnSync("scutil", ["--proxy"], {
+    encoding: "utf8",
+    timeout: 2_000,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (result.status !== 0 || !result.stdout) return "";
+  const proxyConfig = parseMacProxyConfig(result.stdout);
+  const exceptions = proxyConfig.ExceptionsList || [];
+  if (Array.isArray(exceptions) && exceptions.some((item) => isNoProxyHost(target.hostname, item))) return "";
+  const prefix = target.protocol === "https:" ? "HTTPS" : "HTTP";
+  if (proxyConfig[`${prefix}Enable`] !== "1") return "";
+  const host = proxyConfig[`${prefix}Proxy`];
+  const port = proxyConfig[`${prefix}Port`];
+  if (!host || !port) return "";
+  return `http://${host}:${port}`;
+}
+
+function parseMacProxyConfig(output) {
+  const config = {};
+  let inExceptions = false;
+  const exceptions = [];
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("ExceptionsList")) {
+      inExceptions = true;
+      continue;
+    }
+    if (inExceptions && trimmed === "}") {
+      inExceptions = false;
+      continue;
+    }
+    if (inExceptions) {
+      const match = trimmed.match(/^\d+\s*:\s*(.+)$/);
+      if (match) exceptions.push(match[1].trim());
+      continue;
+    }
+    const match = trimmed.match(/^([A-Za-z0-9]+)\s*:\s*(.+)$/);
+    if (match) config[match[1]] = match[2].trim();
+  }
+  if (exceptions.length > 0) config.ExceptionsList = exceptions;
+  return config;
+}
+
+function openHttpsProxyTunnel(target, proxy, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const targetPort = target.port || "443";
+    const finish = (error, socket) => {
+      if (settled) {
+        if (socket) socket.destroy();
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(socket);
+    };
+    const headers = {
+      Host: `${target.hostname}:${targetPort}`,
+    };
+    if (proxy.username || proxy.password) {
+      headers["Proxy-Authorization"] = `Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString("base64")}`;
+    }
+    const request = httpRequest({
+      host: proxy.hostname,
+      port: proxy.port || 80,
+      method: "CONNECT",
+      path: `${target.hostname}:${targetPort}`,
+      headers,
+    });
+    const timer = setTimeout(() => {
+      request.destroy(new Error(`OpenAI proxy tunnel timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+    request.on("connect", (response, socket) => {
+      if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
+        finish(new Error(`OpenAI proxy tunnel exited ${response.statusCode ?? 0}: ${response.statusMessage || "CONNECT failed"}`));
+        socket.destroy();
+        return;
+      }
+      const secureSocket = tlsConnect({
+        socket,
+        servername: target.hostname,
+      });
+      secureSocket.once("secureConnect", () => finish(null, secureSocket));
+      secureSocket.once("error", (error) => finish(error));
+    });
+    request.on("error", (error) => finish(error));
+    request.end();
+  });
+}
+
+async function postJsonWithCurl(target, body, headers, timeoutMs, nodeError) {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "aha-openai-curl-"));
+  const bodyPath = path.join(tempDir, "body.json");
+  const statusMarker = "\nAHA_CURL_HTTP_STATUS:";
+  try {
+    await writeFile(bodyPath, body, { mode: 0o600 });
+    const config = [
+      `url = "${target.href.replace(/"/g, "%22")}"`,
+      'request = "POST"',
+      ...Object.entries(headers).map(([name, value]) => `header = "${name}: ${String(value).replace(/"/g, '\\"')}"`),
+      'header = "Content-Type: application/json"',
+      'header = "Connection: close"',
+      "",
+    ].join("\n");
+    const result = await runCurl([
+      "-q",
+      "-sS",
+      "--no-progress-meter",
+      "--max-time",
+      String(Math.max(1, Math.ceil(timeoutMs / 1000))),
+      "--config",
+      "-",
+      "--data-binary",
+      `@${bodyPath}`,
+      "--write-out",
+      `${statusMarker}%{http_code}`,
+    ], config, timeoutMs + 5_000);
+    const statusIndex = result.stdout.lastIndexOf(statusMarker);
+    if (result.code !== 0 || statusIndex === -1) {
+      const detail = firstLine(result.stderr || result.stdout) || `curl exited ${result.code ?? "unknown"}`;
+      throw new Error(`OpenAI API request failed with Node HTTPS (${nodeError.message}); curl fallback failed: ${detail}`);
+    }
+    return {
+      statusCode: Number(result.stdout.slice(statusIndex + statusMarker.length).trim()) || 0,
+      statusMessage: "",
+      body: result.stdout.slice(0, statusIndex),
+    };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function runCurl(args, stdin, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("curl", args, {
+      env: process.env,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill("SIGTERM");
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      fail(new Error(`curl timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString();
+      stdoutBytes += Buffer.byteLength(text);
+      if (stdoutBytes > DEFAULT_MAX_OUTPUT_BYTES) {
+        fail(new Error(`curl stdout exceeded ${DEFAULT_MAX_OUTPUT_BYTES} bytes.`));
+        return;
+      }
+      stdout += text;
+    });
+    child.stderr.on("data", (chunk) => {
+      const text = chunk.toString();
+      stderrBytes += Buffer.byteLength(text);
+      if (stderrBytes > DEFAULT_MAX_OUTPUT_BYTES) {
+        fail(new Error(`curl stderr exceeded ${DEFAULT_MAX_OUTPUT_BYTES} bytes.`));
+        return;
+      }
+      stderr += text;
+    });
+    child.on("error", (error) => fail(error));
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+    child.stdin.end(stdin);
+  });
+}
+
+function extractOpenAiOutputText(payload) {
+  if (typeof payload?.output_text === "string") return payload.output_text.trim();
+  const outputParts = Array.isArray(payload?.output) ? payload.output : [];
+  const contentText = outputParts
+    .flatMap((item) => Array.isArray(item?.content) ? item.content : [])
+    .map((content) => {
+      if (typeof content?.text === "string") return content.text;
+      if (typeof content?.value === "string") return content.value;
+      if (typeof content === "string") return content;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (contentText) return contentText;
+  const choiceText = payload?.choices?.[0]?.message?.content;
+  if (typeof choiceText === "string") return choiceText.trim();
+  throw new Error("OpenAI API response did not include output text.");
+}
+
+function schemaNameForPath(schemaPath) {
+  return path.basename(schemaPath, path.extname(schemaPath)).replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 64) || "aha_schema";
+}
+
+async function readJsonIfExists(filePath) {
+  if (!(await exists(filePath))) return null;
+  return JSON.parse(await readFile(filePath, "utf8"));
+}
+
+function llmDisplayName(args) {
+  return args.llmProvider === "openai" ? "OpenAI" : "Codex";
+}
+
+function llmToolName(args) {
+  return args.llmProvider === "openai" ? "openai" : "codex";
+}
+
+function queryPlannerDisplayName(value) {
+  if (value === "openai") return "OpenAI";
+  if (value === "codex") return "Codex";
+  return value || "Unknown";
+}
+
 async function qmdFallback(args, sourceText, reason) {
   try {
     const recall = await qmdRecall(args, sourceText);
@@ -375,31 +798,31 @@ async function codexOrchestrationFailure(args, sourceText, reason) {
 }
 
 async function qmdRecall(args, sourceText) {
-  const query = fallbackQmdQuery(args, sourceText);
-  const result = await runCommand(args.qmdCommand, [
-    "--index",
-    "obsidian",
-    "query",
+  const qmd = fallbackQmdObject(args, sourceText);
+  const query = qmdQueryFromObject(qmd);
+  const result = await runQmdPlanQuery(args, {
+    kind: "fallback",
+    command: "qmd query",
+    text: query,
     query,
-    "-c",
-    "obsidian",
-    "-n",
-    String(args.targetCandidates || 20),
-    "--full-path",
-    "--line-numbers",
-    "--format",
-    "json",
-  ], { cwd: args.workspace, timeoutMs: Math.min(Number(args.timeoutMs || 300_000), 300_000) });
-
-  if (result.code !== 0) {
-    throw new Error(firstLine(result.stderr || result.stdout) || `QMD exited ${result.code}`);
-  }
-
-  return { query, rows: extractJsonArray(result.stdout) };
+    qmd,
+  });
+  return { query, rows: result.rows };
 }
 
 async function pipelineRecall(args, sourceText) {
-  const plan = await generateQueryPlan(args, sourceText);
+  let plan;
+  try {
+    plan = await generateQueryPlan(args, sourceText);
+  } catch (error) {
+    return failedAhaResult({
+      sourcePath: args.sourcePath,
+      summary: "Aha query planning failed before retrieval.",
+      message: "Aha query planning failed.",
+      tool: llmToolName(args),
+      details: error.message,
+    });
+  }
 
   const { queryResults, warnings: queryWarnings, errors } = await runQmdPlanQueries(args, plan.queries.slice(0, 5));
   const graphExpansion = await obsidianGraphExpansion(args);
@@ -444,9 +867,8 @@ async function pipelineRecall(args, sourceText) {
     ...queryWarnings,
     ...errors.map((error) => `Skipped failed query: ${error}`),
   ];
-  const summary = plan.query_generated_by === "codex"
-    ? `Codex generated ${plan.queries.length} QMD queries; mixed retrieval returned ${candidates.length} reranked candidates; Relation Judge reviewed ${relationJudge.reviewedCount} candidate excerpts.`
-    : `Rule fallback generated ${plan.queries.length} QMD queries; mixed retrieval returned ${candidates.length} reranked candidates; Relation Judge reviewed ${relationJudge.reviewedCount} candidate excerpts.`;
+  const plannerName = queryPlannerDisplayName(plan.query_generated_by);
+  const summary = `${plannerName} generated ${plan.queries.length} QMD queries; mixed retrieval returned ${candidates.length} reranked candidates; Relation Judge reviewed ${relationJudge.reviewedCount} candidate excerpts.`;
 
   if (!relationJudge.ok) {
     return failedAhaResult({
@@ -589,7 +1011,7 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
 
   const prompt = buildPipelineRelationJudgePrompt(args, sourceText, candidateInputs);
   try {
-    const codexOutput = await runCodex(args, prompt, {
+    const llmOutput = await runLlm(args, prompt, {
       schemaPath: path.join(args.workspace, "scripts/aha/aha-result.schema.json"),
       outputFileName: "relation-judge.json",
       timeoutMs: Math.min(Number(args.timeoutMs || 300_000), 120_000),
@@ -598,10 +1020,10 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
       ignoreRules: true,
       skipGitRepoCheck: true,
     });
-    if (codexOutput.code !== 0) {
-      throw new Error(firstLine(codexOutput.stderr || codexOutput.stdout) || `Codex exited ${codexOutput.code}`);
+    if (llmOutput.code !== 0) {
+      throw new Error(firstLine(llmOutput.stderr || llmOutput.stdout) || `${llmDisplayName(args)} exited ${llmOutput.code}`);
     }
-    const parsed = normalizeStructuredResult(extractCodexJson(codexOutput.stdout));
+    const parsed = normalizeStructuredResult(extractCodexJson(llmOutput.stdout));
     const validation = validateAhaResult(parsed);
     if (!validation.ok) {
       throw new Error(validation.errors.join("; "));
@@ -621,6 +1043,7 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
       ok: false,
       reviewedCount: candidateInputs.length,
       warnings: excerptWarnings,
+      tool: llmToolName(args),
       error: error.message,
       candidates,
     };
@@ -733,35 +1156,49 @@ function evidenceFingerprint(value) {
 
 async function generateQueryPlan(args, sourceText) {
   const schemaPath = path.join(args.workspace, "scripts/aha/aha-query-plan.schema.json");
+  const prompt = buildQueryPlanPrompt(args, sourceText);
   try {
-    const codexOutput = await runCodex(args, buildQueryPlanPrompt(args, sourceText), {
-      schemaPath,
-      outputFileName: "query-plan.json",
-      timeoutMs: Math.min(Number(args.timeoutMs || 300_000), 60_000),
-      sandbox: "read-only",
-      isolateCwd: true,
-      ignoreRules: true,
-      skipGitRepoCheck: true,
-    });
-    if (codexOutput.code !== 0) {
-      throw new Error(firstLine(codexOutput.stderr || codexOutput.stdout) || `Codex exited ${codexOutput.code}`);
-    }
-    const plan = normalizeQueryPlan(extractCodexJson(codexOutput.stdout), args, sourceText);
+    const plan = await runQueryPlanLlm(args, prompt, schemaPath, sourceText);
     return {
       ...plan,
-      query_generated_by: "codex",
+      query_generated_by: llmToolName(args),
       query_generation_fallback: false,
       query_generation_error: null,
     };
-  } catch (error) {
-    const plan = buildRuleQueryPlan(args, sourceText);
-    return {
-      ...plan,
-      query_generated_by: "rules",
-      query_generation_fallback: true,
-      query_generation_error: error.message,
-    };
+  } catch (primaryError) {
+    if (args.llmProvider !== "openai") {
+      throw new Error(`${llmDisplayName(args)} query plan failed: ${primaryError.message}`);
+    }
+
+    try {
+      const codexArgs = { ...args, llmProvider: "codex-cli" };
+      const plan = await runQueryPlanLlm(codexArgs, prompt, schemaPath, sourceText);
+      return {
+        ...plan,
+        query_generated_by: "codex",
+        query_generation_fallback: true,
+        query_generation_error: `OpenAI query plan failed: ${primaryError.message}; Codex CLI fallback used.`,
+      };
+    } catch (fallbackError) {
+      throw new Error(`OpenAI query plan failed: ${primaryError.message}; Codex CLI fallback failed: ${fallbackError.message}`);
+    }
   }
+}
+
+async function runQueryPlanLlm(args, prompt, schemaPath, sourceText) {
+  const llmOutput = await runLlm(args, prompt, {
+    schemaPath,
+    outputFileName: "query-plan.json",
+    timeoutMs: Math.min(Number(args.timeoutMs || 300_000), 60_000),
+    sandbox: "read-only",
+    isolateCwd: true,
+    ignoreRules: true,
+    skipGitRepoCheck: true,
+  });
+  if (llmOutput.code !== 0) {
+    throw new Error(firstLine(llmOutput.stderr || llmOutput.stdout) || `${llmDisplayName(args)} exited ${llmOutput.code}`);
+  }
+  return normalizeQueryPlan(extractCodexJson(llmOutput.stdout), args, sourceText);
 }
 
 function buildQueryPlanPrompt(args, sourceText) {
@@ -835,7 +1272,7 @@ function normalizeQueryPlan(value, args, sourceText) {
     if (queries.length >= 5) break;
   }
   if (queries.length < 3) {
-    throw new Error("Codex query plan returned fewer than 3 usable queries.");
+    throw new Error(`${llmDisplayName(args)} query plan returned fewer than 3 usable queries.`);
   }
   return { queries };
 }
@@ -860,55 +1297,6 @@ function normalizeQueryPlanItem(item, args, sourceText, index) {
 function queryTextForCommand(command, text, qmd) {
   if (command === "qmd search") return compactLine(text || qmd.lex.join(" "), 300);
   return qmdQueryFromObject(qmd);
-}
-
-function buildRuleQueryPlan(args, sourceText) {
-  const base = normalizeQmdObject({}, args, sourceText);
-  const raw = compactLine(base.vec, 900);
-  const plan = [
-    {
-      kind: "raw",
-      command: "qmd query",
-      text: "贴近 source note 原始判断的语义检索",
-      qmd: base,
-    },
-    {
-      kind: "abstracted_judgment",
-      command: "qmd query",
-      text: "抽象判断结构、反例和边界",
-      qmd: {
-        intent: "召回能支持、挑战或限定当前 insight 判断结构的旧笔记。",
-        lex: unique([...base.lex, "旧判断", "反例", "边界条件", "相似结构"]).slice(0, 7),
-        vec: raw,
-        hyde: "一篇相关旧笔记会记录类似判断如何形成、哪里被现实修正、哪些边界条件让原判断不再成立，以及这种变化如何影响后续选择。",
-      },
-    },
-    {
-      kind: "contextual",
-      command: "qmd query",
-      text: "保留具体语境的结构化语义检索",
-      qmd: {
-        intent: "召回和当前语境、经历场景、关系模式或行动选择相似的旧笔记。",
-        lex: unique([...base.lex, "相似经历", "关系模式", "行动选择"]).slice(0, 7),
-        vec: raw,
-        hyde: "一篇相关旧笔记会包含相似场景中的真实经历、情绪线索、关系互动或行动取舍，能帮助用户比较这一次 insight 和过去经验之间的结构关系。",
-      },
-    },
-    {
-      kind: "explicit_cue",
-      command: "qmd search",
-      text: base.lex.slice(0, 4).join(" "),
-      qmd: {
-        intent: "召回 source note 中明确短语、概念或实体对应的旧笔记。",
-        lex: base.lex,
-        vec: raw,
-        hyde: base.hyde,
-      },
-    },
-  ];
-  return {
-    queries: plan.map((item, index) => normalizeQueryPlanItem(item, args, sourceText, index)),
-  };
 }
 
 function normalizeQmdObject(value, args, sourceText) {
@@ -968,6 +1356,9 @@ function qmdQueryFromObject(qmd) {
 
 async function runQmdPlanQuery(args, query) {
   const timeoutMs = qmdQueryTimeoutMs(args);
+  if (args.qmdRunner === "sdk") {
+    return withTimeout(runQmdPlanQuerySdk(args, query), timeoutMs, `QMD SDK timed out after ${timeoutMs}ms.`);
+  }
   try {
     return await runQmdPlanQueryCommand(args, query, { timeoutMs });
   } catch (error) {
@@ -990,13 +1381,13 @@ async function runQmdPlanQueryCommand(args, query, options) {
     ? "search"
     : "query";
   const text = query.query || query.text;
-  const result = await runCommand(args.qmdCommand, [
+  const commandArgs = [
     "--index",
-    "obsidian",
+    args.qmdIndex,
     subcommand,
     text,
     "-c",
-    "obsidian",
+    args.qmdIndex,
     "-n",
     String(Math.max(Number(args.targetCandidates || 20), 15)),
     "-C",
@@ -1005,7 +1396,12 @@ async function runQmdPlanQueryCommand(args, query, options) {
     "--line-numbers",
     "--format",
     "json",
-  ], { cwd: args.workspace, timeoutMs: options.timeoutMs });
+  ];
+  if (subcommand === "query" && !args.qmdRerank) {
+    commandArgs.push("--no-rerank");
+  }
+
+  const result = await runCommand(args.qmdCommand, commandArgs, { cwd: args.workspace, timeoutMs: options.timeoutMs });
 
   if (result.code !== 0) {
     throw new Error(firstLine(result.stderr || result.stdout) || `QMD exited ${result.code}`);
@@ -1015,6 +1411,178 @@ async function runQmdPlanQueryCommand(args, query, options) {
     query,
     rows: extractJsonArray(result.stdout),
   };
+}
+
+async function runQmdPlanQuerySdk(args, query) {
+  const sdk = await loadQmdSdk(args);
+  const store = await sdk.module.createStore({ dbPath: qmdDbPath(args) });
+  try {
+    const command = String(query.command || "qmd query");
+    const limit = Math.max(Number(args.targetCandidates || 20), 15);
+    const rows = command.startsWith("qmd search")
+      ? await store.searchLex(String(query.query || query.text || ""), { collection: args.qmdIndex, limit })
+      : await store.search(qmdSdkSearchOptions(args, query, limit));
+    return {
+      query,
+      rows: normalizeQmdSdkRows(args, rows),
+    };
+  } finally {
+    if (typeof store?.close === "function") {
+      await store.close();
+    }
+  }
+}
+
+function qmdSdkSearchOptions(args, query, limit) {
+  const expanded = qmdSdkExpandedQueries(query);
+  const base = {
+    collections: [args.qmdIndex],
+    limit,
+    candidateLimit: qmdCandidateLimit(args),
+    rerank: Boolean(args.qmdRerank),
+    explain: false,
+  };
+  if (query?.qmd?.intent) base.intent = query.qmd.intent;
+  if (expanded.length > 0) {
+    return {
+      ...base,
+      queries: expanded,
+    };
+  }
+  return {
+    ...base,
+    query: String(query.query || query.text || ""),
+  };
+}
+
+function qmdSdkExpandedQueries(query) {
+  const qmd = query?.qmd;
+  if (!qmd || typeof qmd !== "object") return [];
+  return [
+    ...(Array.isArray(qmd.lex) ? qmd.lex.map((item) => ({ type: "lex", query: item })) : []),
+    qmd.vec ? { type: "vec", query: qmd.vec } : null,
+    qmd.hyde ? { type: "hyde", query: qmd.hyde } : null,
+  ].filter((item) => item?.query);
+}
+
+function normalizeQmdSdkRows(args, rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => normalizeQmdSdkRow(args, row)).filter(Boolean);
+}
+
+function normalizeQmdSdkRow(args, row) {
+  if (!row || typeof row !== "object") return null;
+  const rawFile = row.file ?? row.uri ?? row.path ?? row.filepath ?? row.displayPath;
+  const snippet = firstString(row.snippet, row.bestChunk, row.body, row.context, row.title);
+  return {
+    ...row,
+    file: normalizeQmdSdkFile(args, rawFile, row),
+    title: firstString(row.title, path.basename(String(rawFile || "unknown.md"), ".md")),
+    snippet,
+    score: Number.isFinite(Number(row.score)) ? Number(row.score) : 0,
+  };
+}
+
+function normalizeQmdSdkFile(args, rawFile, row) {
+  const value = String(rawFile ?? "").trim();
+  if (!value) return `${row.title || "unknown"}.md`;
+  if (/^qmd:\/\//i.test(value) || path.isAbsolute(value)) return value;
+  const normalized = value.replace(/^\/+/, "");
+  const collectionPrefix = `${args.qmdIndex}/`;
+  return normalized.startsWith(collectionPrefix)
+    ? normalized.slice(collectionPrefix.length)
+    : normalized;
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+async function loadQmdSdk(args) {
+  const candidates = await qmdSdkCandidates(args);
+  const errors = [];
+  for (const candidate of candidates) {
+    try {
+      const module = await importModuleSpecifier(candidate.specifier);
+      return { module, source: candidate.label };
+    } catch (error) {
+      errors.push(`${candidate.label}: ${error.message}`);
+    }
+  }
+  throw new Error(errors.length > 0 ? errors.join("; ") : "No QMD SDK module candidate could be resolved.");
+}
+
+async function qmdSdkCandidates(args) {
+  const candidates = [];
+  if (args.qmdSdkModule) {
+    candidates.push({ label: args.qmdSdkModule, specifier: args.qmdSdkModule });
+  }
+  candidates.push({ label: "@tobilu/qmd", specifier: "@tobilu/qmd" });
+  const inferred = await inferQmdSdkModuleFromCommand(args.qmdCommand);
+  if (inferred) {
+    candidates.push({ label: inferred, specifier: inferred });
+  }
+  return uniqueBy(candidates, (candidate) => candidate.specifier);
+}
+
+async function inferQmdSdkModuleFromCommand(command) {
+  const commandPath = await resolveCommandPath(command);
+  if (!commandPath) return "";
+  const packageRoot = path.resolve(path.dirname(commandPath), "..");
+  const sdkModule = path.join(packageRoot, "dist", "index.js");
+  return await exists(sdkModule) ? sdkModule : "";
+}
+
+async function resolveCommandPath(command) {
+  const raw = String(command || "").trim();
+  if (!raw) return "";
+  const candidates = raw.includes("/") || path.isAbsolute(raw)
+    ? [raw]
+    : unique([...(process.env.PATH || "").split(path.delimiter), ...COMMON_COMMAND_DIRS]).map((dir) => path.join(dir, raw));
+  for (const candidate of candidates) {
+    try {
+      return await realpath(candidate);
+    } catch {
+      // Try the next PATH entry.
+    }
+  }
+  return "";
+}
+
+async function importModuleSpecifier(specifier) {
+  if (/^file:\/\//i.test(specifier) || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(specifier)) {
+    return import(specifier);
+  }
+  if (path.isAbsolute(specifier) || specifier.startsWith(".")) {
+    return import(pathToFileURL(path.resolve(specifier)).href);
+  }
+  return import(specifier);
+}
+
+function qmdDbPath(args) {
+  return expandHome(args.qmdDbPath || path.join(process.env.XDG_CACHE_HOME || path.join(homedir(), ".cache"), "qmd", `${args.qmdIndex}.sqlite`));
+}
+
+function expandHome(value) {
+  const raw = String(value || "");
+  return raw === "~" || raw.startsWith("~/")
+    ? path.join(homedir(), raw.slice(2))
+    : raw;
+}
+
+function uniqueBy(values, keyFn) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const key = keyFn(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
 }
 
 function qmdQueryTimeoutMs(args) {
@@ -1304,7 +1872,7 @@ function weakFallbackFromRows(args, rows, reason) {
   };
 }
 
-function relationJudgeFailureFromRows(args, rows, reason) {
+function relationJudgeFailureFromRows(args, rows, reason, tool = "codex") {
   const fallback = weakFallbackFromRows(args, rows, reason);
   return {
     ...fallback,
@@ -1316,7 +1884,7 @@ function relationJudgeFailureFromRows(args, rows, reason) {
     ],
     error: {
       message: "Aha Relation Judge failed.",
-      tool: "codex",
+      tool,
       details: reason,
     },
   };
@@ -1533,6 +2101,16 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 function parseArgs(rawArgs) {
   const args = {
     checkReadiness: false,
@@ -1541,10 +2119,19 @@ function parseArgs(rawArgs) {
     codexReasoningEffort: "low",
     codexSandbox: "danger-full-access",
     fixture: "",
+    llmApiKeyEnv: DEFAULT_LLM_API_KEY_ENV,
+    llmBaseUrl: DEFAULT_LLM_BASE_URL,
+    llmModel: DEFAULT_LLM_MODEL,
+    llmProvider: DEFAULT_LLM_PROVIDER,
     obsidianCommand: "obsidian",
     qmdCommand: "qmd",
+    qmdDbPath: "",
+    qmdIndex: DEFAULT_QMD_INDEX,
     reviewPath: "",
+    qmdRerank: false,
     qmdQueryTimeoutMs: DEFAULT_QMD_QUERY_TIMEOUT_MS,
+    qmdRunner: DEFAULT_QMD_RUNNER,
+    qmdSdkModule: "",
     sourceAbsolutePath: "",
     sourcePath: "",
     strategy: "pipeline",
@@ -1576,17 +2163,44 @@ function parseArgs(rawArgs) {
       case "--fixture":
         args.fixture = next();
         break;
+      case "--llm-api-key-env":
+        args.llmApiKeyEnv = next();
+        break;
+      case "--llm-base-url":
+        args.llmBaseUrl = next();
+        break;
+      case "--llm-model":
+        args.llmModel = next();
+        break;
+      case "--llm-provider":
+        args.llmProvider = next();
+        break;
       case "--obsidian-command":
         args.obsidianCommand = next();
         break;
       case "--qmd-command":
         args.qmdCommand = next();
         break;
+      case "--qmd-db-path":
+        args.qmdDbPath = next();
+        break;
+      case "--qmd-index":
+        args.qmdIndex = next();
+        break;
       case "--review-path":
         args.reviewPath = next();
         break;
+      case "--qmd-rerank":
+        args.qmdRerank = true;
+        break;
       case "--qmd-query-timeout-ms":
         args.qmdQueryTimeoutMs = Number(next());
+        break;
+      case "--qmd-runner":
+        args.qmdRunner = next();
+        break;
+      case "--qmd-sdk-module":
+        args.qmdSdkModule = next();
         break;
       case "--source-absolute-path":
         args.sourceAbsolutePath = next();
@@ -1616,6 +2230,12 @@ function parseArgs(rawArgs) {
 
   args.workspace = path.resolve(args.workspace);
   if (args.vaultRoot) args.vaultRoot = path.resolve(args.vaultRoot);
+  args.llmProvider = VALID_LLM_PROVIDERS.has(args.llmProvider) ? args.llmProvider : DEFAULT_LLM_PROVIDER;
+  args.llmBaseUrl = String(args.llmBaseUrl || DEFAULT_LLM_BASE_URL).trim() || DEFAULT_LLM_BASE_URL;
+  args.llmModel = String(args.llmModel || DEFAULT_LLM_MODEL).trim() || DEFAULT_LLM_MODEL;
+  args.llmApiKeyEnv = String(args.llmApiKeyEnv || DEFAULT_LLM_API_KEY_ENV).trim() || DEFAULT_LLM_API_KEY_ENV;
+  args.qmdRunner = VALID_QMD_RUNNERS.has(args.qmdRunner) ? args.qmdRunner : DEFAULT_QMD_RUNNER;
+  args.qmdIndex = String(args.qmdIndex || DEFAULT_QMD_INDEX).trim() || DEFAULT_QMD_INDEX;
   args.targetCandidates = clampTargetCandidates(args.targetCandidates);
   args.qmdQueryTimeoutMs = clampPositiveInteger(args.qmdQueryTimeoutMs, DEFAULT_QMD_QUERY_TIMEOUT_MS);
   return args;

@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-The user wants to start implementing the new Obsidian plugin path without turning the first branch into a full rewrite. The first version must prove the smallest useful loop: from the current Obsidian note, explicitly run Aha search, let Codex orchestrate QMD/backlink retrieval and Relation Judge, then write a readable Aha Review Note that the user can inspect and later bring into Codex for grilling.
+The user wants to start implementing the new Obsidian plugin path without turning the first branch into a full rewrite. The first version must prove the smallest useful loop: from the current Obsidian note, explicitly run Aha search, let the configured LLM plan QMD recall and run Relation Judge, then write a readable Aha Review Note that the user can inspect and later bring into Codex for grilling.
 
 The MVP should be fast enough to build, easy to verify, and narrow enough that the user can confirm issues and environment readiness before formal development proceeds.
 
@@ -10,7 +10,7 @@ The MVP should be fast enough to build, easy to verify, and narrow enough that t
 
 Build a command-palette-first Obsidian plugin MVP backed by a repo-local wrapper. The plugin resolves the current note, creates or updates an Aha Review Note, starts the wrapper in the background, shows coarse running time and success/failure, then opens the Review Note when done.
 
-The wrapper launches bounded `codex exec` calls with structured output schemas and `--output-last-message`. Codex owns the retrieval strategy by generating 3-5 structured QMD queries and by running the bounded Relation Judge. The wrapper owns the mechanical local integration: checking Codex/QMD/Obsidian CLI readiness, running QMD and Obsidian graph commands, filtering source/self/out-of-vault hits, merging and reranking candidates, reading only vault-contained candidate excerpts, and preserving structured failures. The wrapper writes the final 15-20 candidates into the Aha Review Note with relation, quote-backed hit, sufficiently detailed reason, and a Grill Handoff Markdown section.
+The wrapper launches bounded OpenAI-compatible API calls by default (`provider=openai`, `baseUrl=https://api.openai.com/v1`, `model=gpt-5.5`) and keeps `codex exec` with structured output schemas plus `--output-last-message` as a fallback provider. The LLM owns query planning and bounded Relation Judge by generating 3-5 structured QMD queries and reviewing candidate excerpts. The wrapper owns the mechanical local integration: checking OpenAI key / Codex fallback / QMD SDK or CLI / Obsidian CLI readiness, running QMD SDK retrieval by default, expanding Obsidian graph links, filtering source/self/out-of-vault hits, merging and reranking candidates, reading only vault-contained candidate excerpts, and preserving structured failures. The wrapper writes the final 15-20 candidates into the Aha Review Note with relation, quote-backed hit, sufficiently detailed reason, and a Grill Handoff Markdown section.
 
 ## User Stories
 
@@ -28,8 +28,8 @@ The wrapper launches bounded `codex exec` calls with structured output schemas a
 12. As a note author, I want the Review Note to include a Grill Handoff section, so that I can later continue in Codex using a compact Markdown context.
 13. As a note author, I want the handoff to contain source insight link, selected old-note links, and detailed reasons, so that Codex can read the linked notes and understand why they matter.
 14. As a developer, I want the plugin to stay thin, so that Obsidian does not become the reasoning runtime.
-15. As a developer, I want the wrapper to be runnable outside Obsidian, so that I can debug Codex/QMD integration from the terminal.
-16. As a developer, I want Codex to own QMD query generation and backlink expansion, so that the existing Aha skill remains the retrieval strategy.
+15. As a developer, I want the wrapper to be runnable outside Obsidian, so that I can debug LLM/QMD integration from the terminal.
+16. As a developer, I want the configured LLM to own QMD query generation and Relation Judge while the wrapper owns local QMD/backlink mechanics, so that the existing Aha skill remains the retrieval strategy.
 17. As a developer, I want the first branch to preserve the Pi Extension code, so that the MVP does not become a migration or cleanup task.
 18. As a developer, I want official Obsidian plugin conventions followed, so that the plugin can grow without fighting the platform.
 
@@ -41,7 +41,9 @@ The wrapper launches bounded `codex exec` calls with structured output schemas a
 - The MVP returns 15-20 candidates by default.
 - Candidates are selected by default in the Review Note, but the first MVP does not need a complex checkbox UI beyond Markdown output.
 - Candidate links open in a separate leaf/tab.
-- The wrapper starts one bounded pipeline per search round. Codex generates structured QMD queries and runs Relation Judge; the wrapper performs local QMD calls, backlink/outlink expansion, vault-contained candidate reading, candidate merge/rerank, schema validation, and failure preservation.
+- The wrapper starts one bounded pipeline per search round. The configured LLM generates structured QMD queries and runs Relation Judge; the wrapper performs local QMD SDK/CLI calls, backlink/outlink expansion, vault-contained candidate reading, candidate merge/rerank, schema validation, and failure preservation.
+- The plugin default LLM provider is OpenAI API; the API key can be stored in the local Obsidian plugin setting for this vault, and falls back to the configured local environment variable when the direct key field is empty.
+- The plugin default QMD runner is SDK with QMD internal rerank off. Aha's own mixed retrieval scoring, candidate excerpt reads, and Relation Judge remain the ranking path.
 - Relation Judge labels are supports, challenges, resembles, bounds, and weak.
 - Strong relations require quote-backed hits from old note text.
 - The plugin only needs coarse status: running time, success/failure, and Review Note path.
@@ -52,10 +54,10 @@ The wrapper launches bounded `codex exec` calls with structured output schemas a
 ## Testing Decisions
 
 - Primary acceptance is an end-to-end manual smoke from a real Obsidian note: run the command, wait for completion, inspect the generated Review Note, and open at least one candidate in a separate leaf/tab.
-- Wrapper smoke should verify that Codex CLI, QMD, and Obsidian CLI are discoverable and that a structured result can be written.
+- Wrapper smoke should verify that the selected LLM provider, QMD SDK/CLI runner, and Obsidian CLI are discoverable and that a structured result can be written.
 - Plugin smoke should verify current note detection, Review Note creation/opening, command registration, and failure recording.
-- Schema validation should reject malformed Codex output before it is written as final candidate results.
-- Failure cases should cover missing CLI tools and Codex/QMD run failure.
+- Schema validation should reject malformed LLM output before it is written as final candidate results.
+- Failure cases should cover missing OpenAI key, missing CLI fallback tools, QMD SDK/CLI run failure, and LLM judge failure.
 - Tests should prioritize artifact shape and visible behavior rather than implementation details.
 
 ## Out of Scope
@@ -70,4 +72,4 @@ The wrapper launches bounded `codex exec` calls with structured output schemas a
 
 ## Further Notes
 
-MVP success means the new architecture is real: Obsidian can act as the Memory Surface, Codex can orchestrate retrieval and relation judging, and the user's vault receives a durable Aha Review Note that is good enough to inspect and carry into later grilling.
+MVP success means the new architecture is real: Obsidian can act as the Memory Surface, the configured LLM can plan retrieval and judge relations, QMD can provide local recall through the SDK fast path, and the user's vault receives a durable Aha Review Note that is good enough to inspect and carry into later grilling.

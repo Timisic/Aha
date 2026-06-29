@@ -63,20 +63,7 @@ export async function runReadinessCheck(settings: AhaPluginSettings): Promise<Re
 
   const payload = await runWrapperJson(settings, [
     "--check-readiness",
-    "--workspace",
-    settings.ahaWorkspace,
-    "--codex-command",
-    settings.codexCommand,
-    "--codex-model",
-    settings.codexModel,
-    "--codex-sandbox",
-    settings.codexSandbox,
-    "--codex-reasoning-effort",
-    settings.codexReasoningEffort,
-    "--qmd-command",
-    settings.qmdCommand,
-    "--obsidian-command",
-    settings.obsidianCommand,
+    ...wrapperRuntimeArgs(settings),
   ]);
 
   const wrapperResult = payload as ReadinessResult;
@@ -88,8 +75,7 @@ export async function runReadinessCheck(settings: AhaPluginSettings): Promise<Re
 
 export async function runAhaWrapper(settings: AhaPluginSettings, input: WrapperRunInput): Promise<unknown> {
   const args = [
-    "--workspace",
-    settings.ahaWorkspace,
+    ...wrapperRuntimeArgs(settings),
     "--source-path",
     input.sourcePath,
     "--source-absolute-path",
@@ -98,18 +84,6 @@ export async function runAhaWrapper(settings: AhaPluginSettings, input: WrapperR
     input.reviewPath,
     "--vault-root",
     input.vaultRoot,
-    "--codex-command",
-    settings.codexCommand,
-    "--codex-model",
-    settings.codexModel,
-    "--codex-sandbox",
-    settings.codexSandbox,
-    "--codex-reasoning-effort",
-    settings.codexReasoningEffort,
-    "--qmd-command",
-    settings.qmdCommand,
-    "--obsidian-command",
-    settings.obsidianCommand,
     "--target-candidates",
     String(settings.targetCandidates),
   ];
@@ -119,6 +93,45 @@ export async function runAhaWrapper(settings: AhaPluginSettings, input: WrapperR
   }
 
   return runWrapperJson(settings, args);
+}
+
+function wrapperRuntimeArgs(settings: AhaPluginSettings): string[] {
+  const args = [
+    "--workspace",
+    settings.ahaWorkspace,
+    "--llm-provider",
+    settings.llmProvider,
+    "--llm-base-url",
+    settings.llmBaseUrl,
+    "--llm-model",
+    settings.llmModel,
+    "--llm-api-key-env",
+    settings.llmApiKeyEnv,
+    "--codex-command",
+    settings.codexCommand,
+    "--codex-model",
+    settings.codexModel,
+    "--codex-sandbox",
+    settings.codexSandbox,
+    "--codex-reasoning-effort",
+    settings.codexReasoningEffort,
+    "--qmd-runner",
+    settings.qmdRunner,
+    "--qmd-command",
+    settings.qmdCommand,
+    "--qmd-index",
+    settings.qmdIndex,
+    "--obsidian-command",
+    settings.obsidianCommand,
+  ];
+
+  if (settings.qmdSdkModule.trim()) {
+    args.push("--qmd-sdk-module", settings.qmdSdkModule.trim());
+  }
+  if (settings.qmdRerank) {
+    args.push("--qmd-rerank");
+  }
+  return args;
 }
 
 async function runWrapperJson(settings: AhaPluginSettings, args: string[]): Promise<unknown> {
@@ -137,7 +150,7 @@ async function runWrapperJson(settings: AhaPluginSettings, args: string[]): Prom
     throw new Error(`Node CLI is not runnable (${nodeCommand}): ${nodeCheck.message}`);
   }
 
-  const output = await execFileJson(nodeCommand, [wrapperPath, ...args], settings.ahaWorkspace, WRAPPER_TIMEOUT_MS);
+  const output = await execFileJson(nodeCommand, [wrapperPath, ...args], settings.ahaWorkspace, WRAPPER_TIMEOUT_MS, settings);
   try {
     return JSON.parse(output);
   } catch (error) {
@@ -159,12 +172,12 @@ export async function resolveNodeCommand(settings: AhaPluginSettings): Promise<s
   return "node";
 }
 
-function execFileJson(command: string, args: string[], cwd: string, timeoutMs: number): Promise<string> {
-  return execFileText(command, args, cwd, timeoutMs).then((result) => {
-    const trimmedStdout = result.stdout.trim();
-    if (result.code === 0) return trimmedStdout;
-    if (looksLikeJson(trimmedStdout)) return trimmedStdout;
-    throw new Error(firstLine(result.stderr) || firstLine(result.stdout) || `Aha wrapper exited with code ${result.code ?? "unknown"}.`);
+function execFileJson(command: string, args: string[], cwd: string, timeoutMs: number, settings?: AhaPluginSettings): Promise<string> {
+  return execFileText(command, args, cwd, timeoutMs, settings).then((result) => {
+    const jsonStdout = extractJsonPayload(result.stdout);
+    if (result.code === 0) return jsonStdout;
+    if (looksLikeJson(jsonStdout)) return jsonStdout;
+    throw new Error(firstLine(result.stderr) || firstLine(stripAnsiControls(result.stdout)) || `Aha wrapper exited with code ${result.code ?? "unknown"}.`);
   });
 }
 
@@ -176,13 +189,13 @@ function checkLocalCommand(name: string, command: string, args: string[], cwd: s
     .catch((error: Error) => ({ name, ok: false, message: error.message }));
 }
 
-function execFileText(command: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function execFileText(command: string, args: string[], cwd: string, timeoutMs: number, settings?: AhaPluginSettings): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const childProcess = getNodeRequire()("child_process") as typeof import("child_process");
 
   return new Promise((resolve, reject) => {
     const child = childProcess.spawn(command, args, {
       cwd,
-      env: { ...process.env, PATH: desktopToolPath(process.env.PATH) },
+      env: wrapperChildEnv(settings),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -237,6 +250,19 @@ function execFileText(command: string, args: string[], cwd: string, timeoutMs: n
   });
 }
 
+function wrapperChildEnv(settings?: AhaPluginSettings): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PATH: desktopToolPath(process.env.PATH),
+  };
+  const directKey = (settings?.llmApiKey ?? "").trim();
+  const keyEnvName = (settings?.llmApiKeyEnv ?? "").trim();
+  if (settings?.llmProvider === "openai" && directKey && keyEnvName) {
+    env[keyEnvName] = directKey;
+  }
+  return env;
+}
+
 function desktopToolPath(currentPath: string | undefined): string {
   const entries = [
     ...(currentPath ?? "").split(path.delimiter),
@@ -262,6 +288,19 @@ async function pathExists(filePath: string): Promise<boolean> {
 
 function looksLikeJson(value: string): boolean {
   return value.startsWith("{") && value.endsWith("}");
+}
+
+function extractJsonPayload(value: string): string {
+  const clean = stripAnsiControls(value).trim();
+  if (looksLikeJson(clean)) return clean;
+  const start = clean.indexOf("{");
+  const end = clean.lastIndexOf("}");
+  if (start !== -1 && end > start) return clean.slice(start, end + 1).trim();
+  return clean;
+}
+
+function stripAnsiControls(value: string): string {
+  return value.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
 }
 
 function firstLine(value: string): string {
