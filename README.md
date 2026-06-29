@@ -162,8 +162,8 @@ insights/
 - summary draft 保存；
 - 跨路径 list / resume；
 - QMD 超时后的进程组清理。
-- Obsidian 插件 MVP：从当前笔记触发 Aha search，生成/复用 Aha Review Note，通过 wrapper 调用 Codex/QMD/Obsidian CLI，并在 review note 中追加每一轮检索结果。
-- wrapper 默认 `pipeline`：Codex 生成 3-5 条 QMD query，wrapper 混合 QMD 与 Obsidian graph 检索、重排候选、读取 vault 内候选正文，再用 bounded Relation Judge 给出关系判断。
+- Obsidian 插件 MVP：从当前笔记触发 Aha search，生成/复用 Aha Review Note，通过 wrapper 调用 OpenAI-compatible LLM、QMD SDK/CLI fallback 与 Obsidian CLI，并在 review note 中追加每一轮检索结果。
+- wrapper 默认 `pipeline`：LLM 生成 3-5 条结构化 QMD query，wrapper 混合 QMD 与 Obsidian graph 检索、评分重排候选、读取 vault 内候选正文，再用 bounded Relation Judge 给出关系判断。
 
 暂时还没有：
 
@@ -173,7 +173,7 @@ insights/
 
 ## Obsidian 插件 MVP
 
-插件代码位于 `obsidian-plugin/`，wrapper 位于 `scripts/aha/`。这部分不迁移、不修改现有 `insight-package/`，只把 Obsidian 当作 Memory Surface：负责触发、生成 review note、打开候选笔记；检索编排与关系判断仍由 wrapper/Codex/QMD 侧负责。
+插件代码位于 `obsidian-plugin/`，wrapper 位于 `scripts/aha/`。这部分不迁移、不修改现有 `insight-package/`，只把 Obsidian 当作 Memory Surface：负责触发、生成 review note、打开候选笔记；检索编排与关系判断仍由 wrapper/LLM/QMD 侧负责。
 
 本地验证：
 
@@ -186,12 +186,16 @@ npm run verify
 
 - Relation Judge、QMD、wrapper 传输或超时失败不会伪装成成功轮次；wrapper 会保留结构化 `{ ok:false, error:{ message, tool, details } }`，插件会把它写成 failed search record。
 - Obsidian 桌面 App 的 PATH 可能没有 Node；插件会优先用设置里的 Node command，其次自动探测常见桌面安装路径，并用 Node 显式执行 wrapper，不再依赖 `#!/usr/bin/env node`。
-- 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径，避免把 vault 外文件内容带入 Codex judge prompt。
+- 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径，避免把 vault 外文件内容带入 Relation Judge prompt。
 - wrapper 会过滤当前 Aha Review Note 和 `Aha/Reviews/` 生成物，避免 Obsidian backlink 把 review shell 当成旧记忆候选。
-- Codex 生成的多条 QMD plan query 会逐条执行，避免多个 `qmd query` 进程争用 QMD/SQLite runtime；单条默认 30 秒超时，并给 QMD 传 `-C 20` 限制内部 rerank 候选数。某条 QMD 慢或卡住时会作为 warning 保留，不会自动降级到 `qmd vsearch`。
+- LLM 生成的多条 QMD plan query 会逐条执行，避免多个 QMD 检索争用 QMD/SQLite runtime；单条默认 30 秒超时。SDK runner 默认关闭 QMD 内部 rerank；CLI fallback 会给 QMD 传 `-C 20` 限制内部候选数。某条 QMD 慢或卡住时会作为 warning 保留，不会自动降级到 `qmd vsearch`。
 - CLI 和插件侧外部进程都关闭 stdin、设置超时，并限制 stdout/stderr 缓冲大小。
 - 搜索开始时插件会立即把 running record 写入 Review Note 的 Search Results 区块；成功或失败退出后再追加对应记录，避免后台状态不可见。
 - `--target-candidates` 在 wrapper CLI 层也会限制到 15-20，和插件 UI slider 保持一致。
+- Obsidian 插件默认使用 OpenAI-compatible API 做 query plan 与 Relation Judge：`provider=openai`、`baseUrl=https://api.openai.com/v1`、`model=gpt-5.5`。OpenAI API key 可直接填在插件设置里，插件会把它注入 wrapper 子进程环境；如果该字段留空，则回退读取本地环境变量，默认变量名是 `OPENAI_API_KEY`。
+- 直接填写在插件里的 API key 会保存在当前 vault 的 Obsidian 插件数据中，只用于本机运行；不要把 `.obsidian/plugins/.../data.json` 或相关插件数据提交到仓库。
+- OpenAI HTTPS 请求优先走 Node 内置请求；如果本地代理导致 Node TLS 握手被 reset，wrapper 会读取 `HTTPS_PROXY` / macOS 系统代理并用 curl fallback 发起同一请求，避免 Obsidian GUI 进程没有 shell 环境变量时失败。
+- QMD 默认走 SDK runner，并关闭 QMD 内部 rerank；Aha 仍会执行多 query 混合召回、wrapper scoring、候选正文读取和 Relation Judge 重排。`qmdCommand` 仍保留，用于 SDK module 推导和 CLI fallback。
 - Aha Review Note 会在 frontmatter 写入 `source_id`；桌面本地文件系统可用时使用 inode 级身份，因此 source note 改名、编辑大小或 mtime 变化后仍可复用同一个 review note。若只能降级到 ctime 身份，插件会要求 `source_path` 同时匹配，避免同时间戳碰撞污染别的 review note。
 - Aha Review Note 的成功搜索轮次采用 marker-backed 追加语义；重新运行不会删除已有的人工记录、Selected Memories 或 Grill Handoff 内容。
 - wrapper 的 note identity 默认大小写不敏感，匹配当前 macOS/Obsidian vault 常用行为；测试里保留了大小写敏感选项，便于未来支持严格区分大小写的 vault。
@@ -230,7 +234,7 @@ L2 流程是：
 ```text
 raw insight input
 -> query-generation agent 生成 3-5 条 intent/lex/vec/hyde 查询
--> 逐条调用 QMD
+-> 逐条调用 QMD SDK/CLI
 -> 用 QMD top10 作为 backlink seeds
 -> 合并 QMD/backlink 候选
 -> rerank agent 排序

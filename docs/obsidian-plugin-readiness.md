@@ -25,6 +25,8 @@ Created: 2026-06-27
 - Embedded vectors: 567
 - Collection: `obsidian`
 - Smoke search: passed with one JSON result for a small query.
+- Plugin default runner: QMD SDK. The wrapper first tries `@tobilu/qmd`; if that package is not resolvable from the repo, it can infer the SDK module from the configured `qmd` command, for example `/Users/hong/.npm-global/lib/node_modules/@tobilu/qmd/dist/index.js`.
+- Plugin default QMD rerank: off. Aha still performs multi-query mixed retrieval, wrapper scoring/reranking, candidate excerpt reads, and bounded Relation Judge.
 
 ### QMD Remote Services
 
@@ -41,12 +43,20 @@ Created: 2026-06-27
 
 Note: `/Users/hong/.local/bin/obsidian` also returned the CLI result, but emitted Electron helper warnings on stderr. Prefer the direct `obsidian-cli` path in plugin settings and wrapper defaults.
 
-### Codex CLI
+### OpenAI API
+
+- Plugin default provider: `openai`
+- Base URL: `https://api.openai.com/v1`
+- Model: `gpt-5.5`
+- API key source: plugin setting first; if empty, local environment variable, default `OPENAI_API_KEY`
+- Readiness behavior: checks the configured OpenAI key source. A direct plugin key is injected only into the wrapper child process environment and is not passed as a CLI argument.
+
+### Codex CLI Fallback
 
 - Binary: `/Users/hong/.local/bin/codex`
 - Version: `codex-cli 0.142.3`
 - Non-interactive smoke: passed with `codex-smoke-ok`
-- Correct invocation shape for this installed version:
+- Correct fallback invocation shape for this installed version:
 
 ```bash
 codex --ask-for-approval never --sandbox read-only exec --ephemeral -C "$AHA_PROJECT_ROOT" "<prompt>"
@@ -60,3 +70,5 @@ Before implementation starts, confirm:
 - The direct Obsidian CLI path is acceptable as the default configured command.
 - The MVP remains command-palette first and does not include a side panel.
 - The MVP prepares Grill Handoff Markdown but does not automatically launch Codex.
+- The normal plugin path uses OpenAI API for query planning and Relation Judge; Codex CLI remains a fallback provider.
+- The normal plugin path uses QMD SDK with QMD internal rerank off; QMD CLI remains available for fallback and diagnostics.

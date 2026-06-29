@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -30,12 +30,21 @@ test("process bridge runs wrapper through explicit Node when PATH lacks node", a
     const result = await processBridge.runReadinessCheck({
       ahaWorkspace: repoRoot,
       nodeCommand: "",
+      llmProvider: "codex-cli",
+      llmBaseUrl: "https://api.openai.com/v1",
+      llmModel: "gpt-5.5",
+      llmApiKey: "",
+      llmApiKeyEnv: "OPENAI_API_KEY",
       codexModel: "gpt-5.3-codex-spark",
       codexReasoningEffort: "low",
       codexSandbox: "danger-full-access",
       reviewFolder: "Aha/Reviews",
       codexCommand: helper,
+      qmdRunner: "cli",
       qmdCommand: helper,
+      qmdIndex: "obsidian",
+      qmdSdkModule: "",
+      qmdRerank: false,
       obsidianCommand: helper,
       wrapperRelativePath: "scripts/aha/aha-wrapper.mjs",
       targetCandidates: 20,
@@ -58,6 +67,80 @@ test("process bridge runs wrapper through explicit Node when PATH lacks node", a
   }
 });
 
+test("process bridge forwards LLM and QMD runtime arguments", async () => {
+  const processBridge = await loadProcessModule();
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-process-argv-"));
+  const wrapper = path.join(temp, "wrapper.mjs");
+  const argvLog = path.join(temp, "argv.json");
+  const envLog = path.join(temp, "env.txt");
+  const previousRequire = globalThis.require;
+  globalThis.require = createRequire(import.meta.url);
+
+  await writeFile(wrapper, [
+    "#!/usr/bin/env node",
+    "import { writeFileSync } from 'node:fs';",
+    `writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)));`,
+    `writeFileSync(${JSON.stringify(envLog)}, process.env.AHA_TEST_OPENAI_KEY || '');`,
+    "process.stdout.write('\\u001b[?25l');",
+    "console.log(JSON.stringify({ ok: true, sourcePath: 'Idea/Source.md', generatedAt: new Date().toISOString(), summary: 'ok', warnings: [], candidates: [] }));",
+    "",
+  ].join("\n"));
+  await chmod(wrapper, 0o755);
+
+  const settings = {
+    ahaWorkspace: repoRoot,
+    nodeCommand: process.execPath,
+    llmProvider: "openai",
+    llmBaseUrl: "https://api.openai.test/v1",
+    llmModel: "gpt-5.5",
+    llmApiKey: "direct-openai-key",
+    llmApiKeyEnv: "AHA_TEST_OPENAI_KEY",
+    codexModel: "gpt-5.3-codex-spark",
+    codexReasoningEffort: "low",
+    codexSandbox: "danger-full-access",
+    reviewFolder: "Aha/Reviews",
+    codexCommand: "/tmp/codex",
+    qmdRunner: "sdk",
+    qmdCommand: "/tmp/qmd",
+    qmdIndex: "obsidian",
+    qmdSdkModule: "/tmp/qmd-sdk.mjs",
+    qmdRerank: true,
+    obsidianCommand: "/tmp/obsidian",
+    wrapperRelativePath: wrapper,
+    targetCandidates: 20,
+    useFixtureResult: false,
+  };
+
+  try {
+    await processBridge.runAhaWrapper(settings, {
+      reviewPath: "Aha/Reviews/Source.md",
+      sourceAbsolutePath: "/vault/Idea/Source.md",
+      sourcePath: "Idea/Source.md",
+      vaultRoot: "/vault",
+    });
+    const argv = JSON.parse(await readFile(argvLog, "utf8"));
+    const envValue = await readFile(envLog, "utf8");
+    assertIncludesPair(argv, "--llm-provider", "openai");
+    assertIncludesPair(argv, "--llm-base-url", "https://api.openai.test/v1");
+    assertIncludesPair(argv, "--llm-model", "gpt-5.5");
+    assertIncludesPair(argv, "--llm-api-key-env", "AHA_TEST_OPENAI_KEY");
+    assertIncludesPair(argv, "--qmd-runner", "sdk");
+    assertIncludesPair(argv, "--qmd-command", "/tmp/qmd");
+    assertIncludesPair(argv, "--qmd-index", "obsidian");
+    assertIncludesPair(argv, "--qmd-sdk-module", "/tmp/qmd-sdk.mjs");
+    assert.ok(argv.includes("--qmd-rerank"));
+    assert.equal(envValue, "direct-openai-key");
+    assert.ok(!argv.includes("direct-openai-key"));
+  } finally {
+    if (previousRequire === undefined) {
+      delete globalThis.require;
+    } else {
+      globalThis.require = previousRequire;
+    }
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 async function loadProcessModule() {
   const temp = await mkdtemp(path.join(tmpdir(), "aha-process-test-"));
   const entry = path.join(temp, "entry.ts");
@@ -75,6 +158,12 @@ async function loadProcessModule() {
   const loaded = await import(`${pathToFileURL(out).href}?cacheBust=${Date.now()}`);
   await rm(temp, { recursive: true, force: true });
   return loaded;
+}
+
+function assertIncludesPair(argv, flag, value) {
+  const index = argv.indexOf(flag);
+  assert.notEqual(index, -1, `${flag} not found in ${argv.join(" ")}`);
+  assert.equal(argv[index + 1], value);
 }
 
 function obsidianStubPlugin() {
