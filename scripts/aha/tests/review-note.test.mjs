@@ -165,6 +165,104 @@ test("latest selected memories can sync checkbox state and handoff text", async 
   assert.match(synced.handoff, /Memory\/Second/);
 });
 
+test("review benchmark seeds render and parse draft labels without changing handoff selections", async () => {
+  const reviewNote = await loadReviewNoteModule();
+  const initial = reviewNote.makeReviewNoteContent({
+    createdAt: new Date("2026-06-28T00:00:00Z"),
+    sourceId: "src:seed-actions",
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+  });
+  const appended = reviewNote.appendSuccessfulSearchRound(initial, searchRound("2026-06-28T07:00:00Z"));
+  const candidate = searchRound("2026-06-28T07:00:00Z").result.candidates[0];
+
+  const withAccept = reviewNote.appendReviewBenchmarkSeed(appended, {
+    action: "accept",
+    createdAt: new Date("2026-06-28T07:01:00Z"),
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+    candidate,
+  });
+  const withReject = reviewNote.appendReviewBenchmarkSeed(withAccept, {
+    action: "reject_as_noise",
+    createdAt: new Date("2026-06-28T07:02:00Z"),
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+    candidate: { ...candidate, why: "This candidate is lexical noise, not a useful memory." },
+  });
+  const withMissing = reviewNote.appendReviewBenchmarkSeed(withReject, {
+    action: "should_have_found",
+    createdAt: new Date("2026-06-28T07:03:00Z"),
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+    missingMemory: "Memory/Missing.md",
+  });
+
+  assert.match(withMissing, /## Review Benchmark Seeds/);
+  assert.equal((withMissing.match(/### Review Benchmark Seed - /g) ?? []).length, 3);
+  assert.match(withMissing, /- action: `accept`/);
+  assert.match(withMissing, /- seed_label: `nice_to_have`/);
+  assert.match(withMissing, /- action: `reject_as_noise`/);
+  assert.match(withMissing, /- seed_label: `negative`/);
+  assert.match(withMissing, /- action: `should_have_found`/);
+  assert.match(withMissing, /- seed_label: `must_recall`/);
+  assert.match(withMissing, /- memory: \[\[Memory\/Missing\]\]/);
+
+  const latest = reviewNote.latestSelectedMemoriesRound(withMissing);
+  assert.equal(latest.candidates.length, 1);
+  assert.equal(latest.candidates[0].selected, true);
+  const synced = reviewNote.syncLatestSelectedMemoriesAndHandoff(
+    withMissing,
+    "Source/Insight.md",
+    "Insight",
+    new Map([[1, false]]),
+  );
+  assert.match(synced.content, /### Review Benchmark Seed - 2026-06-28T07:01:00\.000Z/);
+  assert.match(synced.content, /1\. \[ \] \[\[Memory\/Candidate\]\]/);
+
+  const seeds = reviewNote.parseReviewBenchmarkSeeds(synced.content);
+  assert.deepEqual(seeds.map((seed) => [seed.action, seed.seedLabel]), [
+    ["accept", "nice_to_have"],
+    ["reject_as_noise", "negative"],
+    ["should_have_found", "must_recall"],
+  ]);
+});
+
+test("should-have-found seed can be recorded for a zero-candidate search round", async () => {
+  const reviewNote = await loadReviewNoteModule();
+  const initial = reviewNote.makeReviewNoteContent({
+    createdAt: new Date("2026-06-28T00:00:00Z"),
+    sourceId: "src:zero-candidates",
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+  });
+  const zeroCandidateRound = reviewNote.appendSuccessfulSearchRound(initial, {
+    generatedAt: new Date("2026-06-28T07:10:00Z"),
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+    result: {
+      ok: true,
+      generatedAt: "2026-06-28T07:10:00.000Z",
+      summary: "No candidates found.",
+      candidates: [],
+    },
+  });
+
+  assert.equal(reviewNote.latestSelectedMemoriesRound(zeroCandidateRound).candidates.length, 0);
+  const withMissingSeed = reviewNote.appendReviewBenchmarkSeed(zeroCandidateRound, {
+    action: "should_have_found",
+    createdAt: new Date("2026-06-28T07:11:00Z"),
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+    missingMemory: "Memory/Missing.md",
+  });
+
+  assert.match(withMissingSeed, /- action: `should_have_found`/);
+  assert.match(withMissingSeed, /- seed_label: `must_recall`/);
+  assert.match(withMissingSeed, /- memory: \[\[Memory\/Missing\]\]/);
+  assert.equal(reviewNote.parseReviewBenchmarkSeeds(withMissingSeed)[0].seedLabel, "must_recall");
+});
+
 test("selection sync prunes legacy selected-memory and handoff rounds", async () => {
   const reviewNote = await loadReviewNoteModule();
   const initial = reviewNote.makeReviewNoteContent({
