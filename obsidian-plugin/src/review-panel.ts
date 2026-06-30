@@ -1,8 +1,10 @@
 import { ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import {
+  appendReviewBenchmarkSeed,
   latestSelectedMemoriesRound,
   noteDisplayTitleFromPath,
   syncLatestSelectedMemoriesAndHandoff,
+  type ReviewBenchmarkSeedAction,
   type ReviewPanelCandidate,
   type SyncReviewSelectionResult,
 } from "./review-note";
@@ -82,6 +84,10 @@ export class AhaReviewPanelView extends ItemView {
     const root = this.contentEl.createDiv({ cls: "aha-review-panel" });
     root.createEl("h2", { text: "Aha Review" });
     root.createDiv({ cls: "aha-review-panel-empty", text: message });
+    if (!this.context) return;
+
+    const footer = root.createDiv({ cls: "aha-review-panel-footer" });
+    this.renderMissingMemorySeedButton(footer);
   }
 
   private renderCandidates(): void {
@@ -107,6 +113,8 @@ export class AhaReviewPanelView extends ItemView {
     }
 
     const footer = root.createDiv({ cls: "aha-review-panel-footer" });
+    this.renderMissingMemorySeedButton(footer);
+
     this.copyButton = footer.createEl("button", {
       text: "复制 handoff",
       cls: "aha-review-panel-copy",
@@ -115,6 +123,18 @@ export class AhaReviewPanelView extends ItemView {
     this.copyButton.addEventListener("click", () => {
       void this.copyHandoff();
     });
+  }
+
+  private renderMissingMemorySeedButton(parent: HTMLElement): HTMLButtonElement {
+    const missingButton = parent.createEl("button", {
+      text: "记录 should-have-found",
+      cls: "aha-review-panel-seed-button",
+      title: "把本轮漏掉的旧笔记保存为草稿 must-recall seed",
+    });
+    missingButton.addEventListener("click", () => {
+      void this.recordMissingMemorySeed();
+    });
+    return missingButton;
   }
 
   private renderSelectionCell(row: HTMLElement, candidate: ReviewPanelCandidate): void {
@@ -152,11 +172,72 @@ export class AhaReviewPanelView extends ItemView {
   private renderReasonCell(row: HTMLElement, candidate: ReviewPanelCandidate): void {
     const cell = row.createDiv({ cls: "aha-review-panel-cell aha-review-panel-reason", attr: { role: "cell" } });
     cell.createDiv({ text: candidate.why || candidate.hit, cls: "aha-review-panel-reason-text" });
+    this.renderSeedActions(cell, candidate);
     if (!candidate.hit && candidate.quotes.length === 0) return;
 
     const details = cell.createEl("details", { cls: "aha-review-panel-hit" });
     details.createEl("summary", { text: "hit" });
     details.createDiv({ text: candidate.hit || candidate.quotes[0] });
+  }
+
+  private renderSeedActions(cell: HTMLElement, candidate: ReviewPanelCandidate): void {
+    const actions = cell.createDiv({ cls: "aha-review-panel-seed-actions" });
+    this.renderSeedButton(actions, "accept", "accept seed", candidate);
+    this.renderSeedButton(actions, "reject_as_noise", "noise seed", candidate);
+  }
+
+  private renderSeedButton(parent: HTMLElement, action: Exclude<ReviewBenchmarkSeedAction, "should_have_found">, text: string, candidate: ReviewPanelCandidate): void {
+    const button = parent.createEl("button", {
+      text,
+      cls: "aha-review-panel-seed-button",
+      title: action === "accept"
+        ? "保存为草稿 nice-to-have seed，不会自动标记 must-recall"
+        : "保存为草稿 negative seed，不会自动启用负例标签",
+    });
+    button.addEventListener("click", () => {
+      void this.recordCandidateSeed(action, candidate);
+    });
+  }
+
+  private async recordCandidateSeed(action: Exclude<ReviewBenchmarkSeedAction, "should_have_found">, candidate: ReviewPanelCandidate): Promise<void> {
+    if (!this.context) return;
+    try {
+      const content = await this.app.vault.read(this.context.reviewFile);
+      const nextContent = appendReviewBenchmarkSeed(content, {
+        action,
+        createdAt: new Date(),
+        sourcePath: this.context.sourcePath,
+        sourceTitle: this.context.sourceTitle,
+        candidate,
+      });
+      await this.app.vault.modify(this.context.reviewFile, nextContent);
+      new Notice(action === "accept" ? "已记录 accept 草稿 seed。" : "已记录 reject_as_noise 草稿 seed。", 3000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`Aha seed 写回失败：${message}`, 8000);
+    }
+  }
+
+  private async recordMissingMemorySeed(): Promise<void> {
+    if (!this.context) return;
+    const missingMemory = window.prompt("应该找到哪条旧记忆？输入 Obsidian 路径或 [[链接]]：")?.trim();
+    if (!missingMemory) return;
+
+    try {
+      const content = await this.app.vault.read(this.context.reviewFile);
+      const nextContent = appendReviewBenchmarkSeed(content, {
+        action: "should_have_found",
+        createdAt: new Date(),
+        sourcePath: this.context.sourcePath,
+        sourceTitle: this.context.sourceTitle,
+        missingMemory,
+      });
+      await this.app.vault.modify(this.context.reviewFile, nextContent);
+      new Notice("已记录 should_have_found 草稿 seed。", 3000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`Aha seed 写回失败：${message}`, 8000);
+    }
   }
 
   private async persistSelections(): Promise<SyncReviewSelectionResult | null> {

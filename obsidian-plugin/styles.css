@@ -154,3 +154,22 @@
     grid-column: 2;
   }
 }
+
+.aha-review-panel-seed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.aha-review-panel-seed-button {
+  background: var(--interactive-normal) !important;
+  box-shadow: none !important;
+  color: var(--text-normal) !important;
+  font-size: var(--font-ui-smaller);
+  padding: 2px 8px;
+}
+
+.aha-review-panel-seed-button:hover {
+  background: var(--interactive-hover) !important;
+}

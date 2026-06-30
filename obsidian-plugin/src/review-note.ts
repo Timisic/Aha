@@ -34,6 +34,34 @@ export interface SyncReviewSelectionResult {
   handoff: string;
 }
 
+export type ReviewBenchmarkSeedAction = "accept" | "reject_as_noise" | "should_have_found";
+
+export type ReviewBenchmarkSeedLabel = "nice_to_have" | "negative" | "must_recall";
+
+export interface ReviewBenchmarkSeedInput {
+  action: ReviewBenchmarkSeedAction;
+  createdAt: Date;
+  sourcePath: string;
+  sourceTitle: string;
+  candidate?: Pick<AhaCandidate, "notePath" | "noteTitle" | "relation" | "hit" | "why" | "quotes">;
+  missingMemory?: string;
+  note?: string;
+}
+
+export interface ReviewBenchmarkSeed {
+  action: ReviewBenchmarkSeedAction;
+  status: "draft";
+  seedLabel: ReviewBenchmarkSeedLabel;
+  createdAt: string;
+  sourcePath: string;
+  sourceTitle: string;
+  memory?: string;
+  relation?: string;
+  hit?: string;
+  why?: string;
+  note?: string;
+}
+
 export function reviewFolderPath(folder: string): string {
   return normalizePath(folder.trim().replace(/^\/+|\/+$/g, "") || "Aha/Reviews");
 }
@@ -75,6 +103,12 @@ export function makeReviewNoteContent(input: ReviewNoteInit): string {
     "<!-- aha:selected-memories:start -->",
     "_检索完成后，Aha 会在这里列出默认纳入 handoff 的候选记忆。_",
     "<!-- aha:selected-memories:end -->",
+    "",
+    "## Review Benchmark Seeds",
+    "",
+    "<!-- aha:review-benchmark-seeds:start -->",
+    "_审阅动作会在这里保存为草稿 benchmark seed；不会自动写入私有 benchmark。_",
+    "<!-- aha:review-benchmark-seeds:end -->",
     "",
     "## Grill Handoff",
     "",
@@ -244,6 +278,76 @@ export function syncLatestSelectedMemoriesAndHandoff(
   };
 }
 
+export function appendReviewBenchmarkSeed(content: string, input: ReviewBenchmarkSeedInput): string {
+  const blockName = "review-benchmark-seeds";
+  const heading = "Review Benchmark Seeds";
+  const withBlock = contentHasGeneratedBlock(content, blockName) ? content : ensureGeneratedBlock(content, blockName, heading);
+  const body = generatedBlockBody(withBlock, blockName)?.value.trim();
+  const existing = body && !body.includes("审阅动作会在这里保存为草稿 benchmark seed") ? body : "";
+  const nextBlock = [existing, renderReviewBenchmarkSeed(input)].filter((part) => part.trim()).join("\n\n");
+  return `${replaceGeneratedBlock(withBlock, blockName, heading, nextBlock).trimEnd()}\n`;
+}
+
+export function renderReviewBenchmarkSeed(input: ReviewBenchmarkSeedInput): string {
+  const seedLabel = seedLabelForAction(input.action);
+  const memory = input.action === "should_have_found"
+    ? input.missingMemory?.trim()
+    : input.candidate?.notePath;
+  const lines = [
+    `### Review Benchmark Seed - ${input.createdAt.toISOString()}`,
+    "",
+    `- action: \`${input.action}\``,
+    "- status: draft",
+    `- seed_label: \`${seedLabel}\``,
+    `- source: ${obsidianLink(input.sourcePath, input.sourceTitle)}`,
+    memory ? `- memory: ${formatSeedMemory(memory, input.candidate?.noteTitle)}` : undefined,
+    input.candidate?.relation ? `- relation: \`${oneLine(input.candidate.relation)}\`` : undefined,
+    input.candidate?.hit ? `- hit: ${oneLine(input.candidate.hit)}` : undefined,
+    input.candidate?.why ? `- why: ${oneLine(input.candidate.why)}` : undefined,
+    input.note?.trim() ? `- note: ${oneLine(input.note)}` : undefined,
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+export function parseReviewBenchmarkSeeds(content: string): ReviewBenchmarkSeed[] {
+  const body = generatedBlockBody(content, "review-benchmark-seeds");
+  if (!body) return [];
+  const sections = body.value
+    .split(/\n(?=### Review Benchmark Seed - )/)
+    .map((section) => section.trim())
+    .filter((section) => section.startsWith("### Review Benchmark Seed - "));
+
+  return sections.map((section) => {
+    const createdAt = section.match(/^### Review Benchmark Seed - (.+)$/m)?.[1]?.trim() || "";
+    const fields = new Map<string, string>();
+    for (const line of section.split("\n")) {
+      const field = line.match(/^-\s*([^:]+):\s*(.*)$/);
+      if (field) fields.set(field[1].trim(), stripWrappingBackticks(field[2].trim()));
+    }
+    const source = fields.get("source") || "";
+    const parsedSource = parseObsidianMarkdownLink(source);
+    return {
+      action: (fields.get("action") || "accept") as ReviewBenchmarkSeedAction,
+      status: "draft",
+      seedLabel: (fields.get("seed_label") || "nice_to_have") as ReviewBenchmarkSeedLabel,
+      createdAt,
+      sourcePath: parsedSource?.path || source,
+      sourceTitle: parsedSource?.title || "",
+      memory: fields.get("memory"),
+      relation: fields.get("relation"),
+      hit: fields.get("hit"),
+      why: fields.get("why"),
+      note: fields.get("note"),
+    };
+  });
+}
+
+export function seedLabelForAction(action: ReviewBenchmarkSeedAction): ReviewBenchmarkSeedLabel {
+  if (action === "reject_as_noise") return "negative";
+  if (action === "should_have_found") return "must_recall";
+  return "nice_to_have";
+}
+
 export function sanitizeFileName(value: string): string {
   return value
     .replace(/[\\/:*?"<>|#^[\]]/g, " ")
@@ -340,6 +444,17 @@ function appendToSection(content: string, heading: string, block: string): strin
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function formatSeedMemory(memory: string, title?: string): string {
+  const trimmed = memory.trim();
+  if (!trimmed) return "";
+  if (/^\[\[.+\]\]$/.test(trimmed)) return trimmed;
+  return obsidianLink(trimmed, title);
+}
+
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function formatDate(date: Date): string {
