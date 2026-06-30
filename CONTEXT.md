@@ -88,6 +88,10 @@ _Avoid_: separate review phase, separate interview phase
 A tentative label the agent uses to present how an old note may relate to the current insight before the user completes Review. The core relation labels are supports, challenges, resembles, bounds, and weak.
 _Avoid_: completed review, relevance score, background
 
+**Relation Evaluation Target**:
+An optional benchmark label for a specific insight-memory pair when the case is meant to test Relation Judge quality. It should not be required for every benchmark case because ordinary recall cases primarily evaluate candidate concentration, ranking, and noise control.
+_Avoid_: required case field, retrieval gold label, user review shortcut
+
 **Relation Judge**:
 The evidence-bound step that compares one current insight with one candidate old note and proposes a Memory Relation, quoted source evidence, and a short reason. It runs after retrieval and before final candidate presentation or ranking.
 _Avoid_: reranker, search score, final judgment
@@ -156,6 +160,14 @@ _Avoid_: plugin-owned grill conversation, automatic summary, hidden agent run, o
 A reviewed memory candidate and relation result that the user explicitly saves as material for a future benchmark case, usually first as a structured entry inside an Aha Review Note. It records a real use discovery after review; it is not an automatic gold label at retrieval time or a committed benchmark case.
 _Avoid_: auto-generated benchmark answer, unreviewed candidate, exhaustive relevance set, direct bench JSON write
 
+**Review Feedback Action**:
+A low-friction user action captured during memory review as a byproduct of normal product use. The primary actions are accept, reject_as_noise, and should_have_found; relation fixes may exist in candidate details but should not interrupt the main review flow.
+_Avoid_: separate annotation task, full benchmark editing, hidden implicit feedback
+
+**Accepted Memory Signal**:
+A user review signal that a memory candidate was useful for the current insight. Accepted memories should become nice-to-have benchmark material by default, and only become must-recall memories when the user explicitly marks them as required for future runs.
+_Avoid_: automatic must-recall label, final evidence, hidden preference update
+
 **Memory Candidate Recall Benchmark**:
 A small retrieval benchmark that evaluates whether the Memory Stage surfaces the old notes that should become review candidates for a realistic insight input. It scores candidate-note recall and ranking, not the quality of the final judgment, grilling, or summary draft.
 _Avoid_: full Aha quality evaluation, final-answer evaluation, summary quality score
@@ -168,9 +180,21 @@ _Avoid_: QMD-only benchmark, final summary evaluation, human judgment quality sc
 A scripted benchmark for the human-in-the-loop contract across candidate display, memory review, readiness gating, summary save, source-note non-mutation, resume, and second memory search.
 _Avoid_: retrieval benchmark, summary quality score
 
+**Failure Attribution**:
+The single primary reason assigned to a benchmark miss or poor candidate ranking so the next improvement target is clear. The first Aha taxonomy is case_label_failure, input_representation_failure, query_failure, retrieval_failure, rerank_failure, and relation_failure; auxiliary flags may record secondary symptoms, but each failure should have one primary attribution.
+_Avoid_: vague bad result, multi-paragraph postmortem, metric-only failure
+
 **Benchmark Case**:
 One human-authored evaluation example for the Memory Candidate Recall Benchmark. Its source of truth is the realistic insight input plus the must-recall memories; executable QMD queries may be derived from it by an agent or script.
 _Avoid_: synthetic search query, metric output, generated-only test case
+
+**Review Attention Budget**:
+The default number of memory candidates the user is expected to scan in one benchmarked review batch. Aha's first evaluation budget is ten candidates, so primary recall, precision, ranking, and noise metrics should be reported at 10 unless a case explicitly justifies another cutoff.
+_Avoid_: unlimited result list, hidden scoring limit, arbitrary top-k
+
+**Expanded Pool Diagnostic Budget**:
+The wider internal candidate cutoff used to decide whether a must-recall memory was reached by retrieval before final ranking. Aha may use twenty candidates for this diagnostic even when user-facing review metrics remain fixed at ten.
+_Avoid_: user review budget, primary quality metric, final candidate list
 
 **Executable Benchmark Query**:
 The structured memory query derived from a benchmark case and passed to QMD for automatic scoring. It is a machine-executable artifact, not the human-authored evaluation source.
@@ -187,6 +211,14 @@ _Avoid_: all related notes, nice-to-have context, interesting tangent
 **Nice-to-Have Memory**:
 A prior note that would be useful or interesting if retrieved for a benchmark query, but should not count as required ground truth for automatic recall metrics.
 _Avoid_: required hit, failure condition, exhaustive relevance set
+
+**Negative Memory**:
+A prior note that looks superficially related to the insight but should not be ranked as useful because it does not help the user form, challenge, or bound the current judgment. Negative memories are core evaluation labels for noise control, not casual irrelevant notes.
+_Avoid_: random irrelevant note, unscored false positive, harmless tangent
+
+**Rejected Noise Signal**:
+A user review signal that a memory candidate was not useful in the current review. Rejected noise should first remain draft benchmark material, and should become an active negative memory only when the candidate is a misleading false positive rather than merely unnecessary for that moment.
+_Avoid_: automatic negative label, ordinary skip, permanent dislike
 
 **Search Signal**:
 A retrieval clue such as rank, score, or query source that helps the agent organize candidates. Search signals are not part of the user's judgment and should not be presented as evidence by default.
