@@ -115,8 +115,11 @@ function main() {
         query_generated_by: generatedQuery.query_generated_by,
         query_generation_fallback: generatedQuery.query_generation_fallback,
         query_generation_error: generatedQuery.query_generation_error,
-        type: caseItem.type || "semantic",
-        description: caseItem.description || caseItem.annotation_note || caseItem.id,
+        state: caseItem.state,
+        title: caseItem.title || caseItem.id,
+        why: caseItem.why || undefined,
+        type: caseItem.type || "real",
+        description: caseItem.title || caseItem.description || caseItem.id,
         expected_files: caseItem.must_recall.map(qmdExpectedPath),
         expected_in_top_k: Math.max(
           Number(caseItem.expected_in_top_k ?? expectedInTopK),
