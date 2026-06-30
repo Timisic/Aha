@@ -202,20 +202,96 @@ npm run verify
 
 ## 评测
 
-小评测集使用本地私有文件 `bench/aha-memory-cases.json`。每条 case 保存真实会输入 `/insight` 的原始内容来源，以及人工标注的 `must_recall` / `nice_to_have` 笔记，因此这个文件默认被 Git ignore，不应提交。
+小评测集使用本地私有文件 `bench/aha-memory-cases.json`。每条 case 保存真实会输入 `/insight` 的原始内容来源，以及人工标注的 `gold.must` / `gold.nice` / `gold.noise` 笔记；这个文件默认被 Git ignore，不应提交。仓库只保留无隐私内容的 `bench/aha-memory-cases.example.json`。
 
-第一次使用时，从无隐私内容的模板复制一份：
+第一次使用时，从模板复制一份：
 
 ```bash
 cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json
 ```
 
-核心指标：
+case v3 结构：
 
-- `R@10`：must-recall 笔记是否进入最终前 10。当前假设是你愿意扫十条自己写过的笔记。
-- `nice_to_have R@20`：有帮助但不必强制命中的发散笔记是否进入前 20。
-- `found_must_recall_ranks`：命中的 must-recall 排名，用来判断是不是只是勉强压线。
-- `expanded_pool_recall`：QMD + backlink 合并池里是否已经有答案，用来区分 retrieval 问题和 rerank 问题。
+- `state`：`active` 默认计分；`draft` 候选待确认；`off` 保留但不使用。
+- `title`：报告里的短标题，不参与评分。
+- `input`：真实会给 `/insight` 的输入：
+  - `input.note`：可选，原始 insight 所在笔记。
+  - `input.lines`：有 note 时默认填写，1-based inclusive 行号范围。
+  - `input.whole_note`：仅当整篇 note 就是原始输入时显式设为 `true`。
+  - `input.thought`：真实想法；有 note 时作为补充，没有 note 时就是完整输入。
+- `gold`：评分标签：
+  - `gold.must`：必须召回，缺失算硬失败。
+  - `gold.nice`：召回很好，缺失不算硬失败。
+  - `gold.noise`：看似相关但应视为噪声。
+- `why`：标注理由，不参与 query 生成、rerank 或最终分数。
+
+旧字段 `status` / `source_note_path` / `insight_input` / `must_recall` / `nice_to_have` / `negative` 仍可被读取用于迁移，但新文件应使用 v3。
+
+主 benchmark 只放真实 insight case；路径解析、重复文件名、missing cue、source-note self-hit 等技术回归 case 不进入主分，可以放在 ignored 的 `bench/aha-memory-regression-cases.json`。
+
+如果 case 来自笔记片段，优先用 `input.note + input.lines`；benchmark runner 只会把这段行号切片交给后续 query/rerank 流程。可以先预览精确片段，避免整篇 note 污染输入：
+
+```bash
+node scripts/bench/extract-note-excerpt.mjs \
+  --note "Projects/path/to/source.md" \
+  --lines 8:20 \
+  --vault-root "$HOME/Obsidian Notes"
+```
+
+按 case 预览：
+
+```bash
+node scripts/bench/extract-note-excerpt.mjs --case aha-001 --full-input
+```
+
+Review Note 里的反馈动作会先生成可见 seed，不会直接写入正式私有 benchmark：
+
+- `accept` -> 草稿 `gold.nice` seed。
+- `reject_as_noise` -> 草稿 `gold.noise` seed。
+- `should_have_found` -> 草稿 `gold.must` seed。
+
+为了避免手工从 Markdown 复制字段，可以把这些 Review Note seeds 聚合成一个 ignored 的 benchmark-like inbox：
+
+```bash
+node scripts/bench/collect-review-seeds.mjs \
+  --vault-root "$HOME/Obsidian Notes" \
+  --output bench/aha-memory-seed-cases.json
+```
+
+`bench/aha-memory-seed-cases.json` 同样被 Git ignore。它按 source note 聚合成 `state: draft` v3 cases：
+
+- `accept` 聚合进 `gold.nice`。
+- `reject_as_noise` 聚合进 `gold.noise`。
+- `should_have_found` 聚合进 `gold.must`。
+- 如果某个 source 只有 `accept` / `reject_as_noise`，collector 会加 `expected_no_recall: true`，让它仍然是合法 draft case。
+- 如果同一条 memory 被标成多个 label，collector 会按 `must > noise > nice` 保留一个标签，并写入 `seed_label_conflicts`，提醒人工检查。
+- 由于当前 Review Note 不记录 source line range，seed inbox 会显式写 `input.whole_note: true`；提升到 active 前最好替换成 `input.lines`。
+
+你需要人工决定的是：哪些 draft case 值得进入 `bench/aha-memory-cases.json`，以及何时把 `state` 从 `draft` 改成 `active`。collector 不会自动修改 `bench/aha-memory-cases.json`。
+
+想单独 smoke 这些 draft seed cases，可以显式指定 seed inbox：
+
+```bash
+node scripts/bench/run-pipeline-bench.mjs \
+  --cases bench/aha-memory-seed-cases.json \
+  --include-draft
+```
+
+Aha eval-v2 的产品目标是：在十条候选的 Review Attention Budget 里，提高有价值旧记忆的浓度，同时降低噪声泄漏。
+
+主要指标（默认 `@10`）：
+
+- `Must Recall@10`：必须召回的旧笔记有多少进入最终前 10。
+- `Useful Precision@10`：前 10 中 `must_recall + nice_to_have` 的有效命中比例。
+- `nDCG@10`：排序质量；`must_recall` 权重大于 `nice_to_have`，`negative` 单独计噪声。
+- `Negative Rate@10`：前 10 中主动负例/噪声命中的比例。
+
+诊断指标：
+
+- `Expanded Pool Recall@20`：QMD + backlink 合并池在更宽的 20 条诊断预算里是否已经触达答案。
+- `Dropped Must Count`：expanded pool 已触达、但最终前 10 没保住的 must-recall 数量；包括最终排在第 11 名之后的情况。
+- `Stability@10`：确定性报告里最终前 10 顺序的稳定性/指纹。
+- `Failure Attribution`：失败/低质量 case 的单一主因分组：`case_label_failure`、`input_representation_failure`、`query_failure`、`retrieval_failure`、`rerank_failure`、`relation_failure`；可附加 secondary flags。
 
 L1 只测 QMD 直接召回：
 
@@ -238,7 +314,7 @@ raw insight input
 -> 用 QMD top10 作为 backlink seeds
 -> 合并 QMD/backlink 候选
 -> rerank agent 排序
--> 计算 R@10 / nice R@20
+-> 计算 eval-v2 primary metrics + diagnostics
 ```
 
 最新报告写到：
@@ -252,6 +328,18 @@ bench/reports/latest/pipeline.json
 
 ```text
 bench/reports/archive/
+```
+
+Eval-v2 代码/文档变更的最小验证路径：
+
+```bash
+node --test scripts/aha/tests/aha-bench-eval-v2.test.mjs
+node --test scripts/aha/tests/review-note.test.mjs
+node --test scripts/aha/tests/review-seeds-collector.test.mjs
+node --check scripts/bench/collect-review-seeds.mjs
+node --check scripts/bench/run-pipeline-bench.mjs
+node --check scripts/bench/summarize-report.mjs
+cd obsidian-plugin && npm run verify
 ```
 
 ## 开发与验证

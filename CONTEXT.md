@@ -185,8 +185,72 @@ The single primary reason assigned to a benchmark miss or poor candidate ranking
 _Avoid_: vague bad result, multi-paragraph postmortem, metric-only failure
 
 **Benchmark Case**:
-One human-authored evaluation example for the Memory Candidate Recall Benchmark. Its source of truth is the realistic insight input plus the must-recall memories; executable QMD queries may be derived from it by an agent or script.
+One human-authored evaluation example for the Memory Candidate Recall Benchmark. Its source of truth is the Benchmark Insight Input plus human review labels; executable QMD queries may be derived from it by an agent or script.
 _Avoid_: synthetic search query, metric output, generated-only test case
+
+**Benchmark Insight Input**:
+The original insight material used to run a benchmark case, usually the exact text the user would give `/insight` or a source-note excerpt plus an optional fresh thought. It should preserve the user's real context and should not be replaced by an AI-written search prompt.
+_Avoid_: synthetic prompt, hand-written search query, keyword bundle
+
+**Source-Note Excerpt Benchmark Input**:
+The preferred form of Benchmark Insight Input when the insight came from part of an Obsidian note. It identifies the source note and excerpt range, with an optional fresh thought, so the benchmark can preserve real context without copying large private text into JSON.
+_Avoid_: copied full note body, AI-rewritten insight, detached prompt
+
+**Benchmark Line Range**:
+The 1-based inclusive source-note line span used by a Source-Note Excerpt Benchmark Input. When a benchmark input references a note, the line range should be present by default so retrieval agents see only the original insight excerpt, not the whole evolving note.
+_Avoid_: whole-note default, vague excerpt, hidden surrounding context
+
+**Whole-Note Benchmark Input**:
+A source-note Benchmark Insight Input that intentionally uses the entire note because the whole note is the original insight material. It must be explicit in the case, for example `input.whole_note: true`, instead of being the silent fallback when no line range is present.
+_Avoid_: accidental full-note read, implicit allow all, missing line range fallback
+
+**Benchmark Input Block**:
+The grouped `input` field inside a Benchmark Case. It should contain a source-note excerpt reference when one exists, plus a `thought` field that either supplements the source excerpt or, when no source note exists, holds the full standalone insight the user would have given `/insight`; whole-note inputs require an explicit whole-note flag.
+_Avoid_: flat source fields, generated prompt fields, mixed query metadata
+
+**Standalone Benchmark Text**:
+The fallback use of `input.thought` for cases that did not originate from a source-note excerpt. It must be the user's real standalone `/insight` input, not an AI-written benchmark prompt.
+_Avoid_: input.text, synthetic insight_input, rewritten search request, convenience prompt
+
+**Benchmark Gold Block**:
+The grouped `gold` field inside a Benchmark Case. It contains human review labels for scoring: required memories, useful optional memories, and misleading noise memories.
+_Avoid_: scattered recall fields, generated expected answers, relation-judge output
+
+**Required Gold Memory**:
+A `gold.must` memory in a Benchmark Case. Missing it from the review candidate budget is a hard recall failure.
+_Avoid_: nice-to-have memory, broad related context, optional tangent
+
+**Helpful Gold Memory**:
+A `gold.nice` memory in a Benchmark Case. Finding it improves review quality but missing it should not be treated as a hard recall failure.
+_Avoid_: must-recall memory, noise label, exhaustive related note
+
+**Noise Gold Memory**:
+A `gold.noise` memory in a Benchmark Case. Surfacing it as useful indicates misleading retrieval or ranking because the note is superficially related but unhelpful for this insight.
+_Avoid_: random irrelevant note, ordinary skip, merely low-priority memory
+
+**Benchmark Case Title**:
+A short human-readable label for a Benchmark Case, used only to recognize the case in reports and during curation. It is not retrieval input and does not affect scoring.
+_Avoid_: description, query summary, scoring reason
+
+**Benchmark Case Why**:
+A brief human-maintenance note explaining why the gold labels are present. It records annotation rationale for future review, but is not retrieval input and does not affect scoring.
+_Avoid_: annotation_note, model instruction, hidden scoring rule
+
+**Primary Benchmark Suite**:
+The local private benchmark file that scores Aha against the user's real insight workflow. It should contain only real or draft Benchmark Cases derived from actual insight inputs, not engineering edge-case tests.
+_Avoid_: regression fixture, synthetic test suite, path-resolution test file
+
+**Benchmark Case State**:
+The lifecycle marker for a case inside the Primary Benchmark Suite. The allowed states are `active` for default scoring, `draft` for human curation before scoring, and `off` for retained-but-unused cases.
+_Avoid_: holdout, tech, disabled, implementation status
+
+**Benchmark Regression Fixture**:
+A separate test artifact for engineering edge cases such as duplicate basenames, qmd URI resolution, missing explicit cues, source-note self-hit filtering, or no-related-memory behavior. It protects implementation behavior but should not contribute to the Primary Benchmark Suite's product-quality score.
+_Avoid_: primary benchmark case, personal memory quality score, real insight case
+
+**Relation Evaluation Benchmark**:
+A future separate benchmark for whether Relation Judge labels and evidence are correct after a memory has already been retrieved. It should not be mixed into the Primary Benchmark Suite, which first measures candidate recall, ranking, and noise control.
+_Avoid_: required field in recall cases, primary memory candidate benchmark, gold recall label
 
 **Review Attention Budget**:
 The default number of memory candidates the user is expected to scan in one benchmarked review batch. Aha's first evaluation budget is ten candidates, so primary recall, precision, ranking, and noise metrics should be reported at 10 unless a case explicitly justifies another cutoff.

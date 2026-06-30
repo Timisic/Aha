@@ -8,6 +8,7 @@ This directory keeps executable project scripts grouped by workflow.
 scripts/
   bench/
     build-fixture.mjs       # Build a qmd bench fixture from active cases.
+    collect-review-seeds.mjs # Collect Obsidian Review Note seeds into an ignored draft case inbox.
     run-qmd-bench.mjs       # L1: QMD-only retrieval benchmark.
     run-pipeline-bench.mjs  # L2: query agent -> QMD -> backlinks -> rerank benchmark.
     summarize-report.mjs    # Print a compact QMD bench report summary.
@@ -39,6 +40,14 @@ Run the QMD-only benchmark:
 ```bash
 cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json # first run only; then edit local private cases
 node scripts/bench/run-qmd-bench.mjs
+```
+
+Collect Obsidian Review Note seeds into a private draft case inbox:
+
+```bash
+node scripts/bench/collect-review-seeds.mjs \
+  --vault-root "$HOME/Obsidian Notes" \
+  --output bench/aha-memory-seed-cases.json
 ```
 
 Run the pipeline benchmark:
