@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { expandHome, qmdExpectedPath } from "./aha-bench-evaluation.mjs";
+import { expandHome, normalizeFailureAttribution, qmdExpectedPath } from "./aha-bench-evaluation.mjs";
+import { normalizeLineRange, parseLineRange, sliceLineRange } from "./note-excerpt.mjs";
 import {
   buildVaultPathResolver,
   resolveVaultPath,
@@ -20,11 +21,16 @@ export {
 
 export {
   applyBenchEvaluationPolicy,
+  droppedMustFromExpandedPool,
   expandHome,
+  FAILURE_ATTRIBUTION_GROUPS,
+  failureAttributionForPipelineCase,
   filterSourceNoteFromResults,
+  normalizeFailureAttribution,
   normalizePathForScore,
   pathsMatch,
   qmdExpectedPath,
+  scoreEvalV2,
   scoreNiceToHave,
   scoreResults,
   sourceNotePathForCase,
@@ -32,15 +38,13 @@ export {
 } from "./aha-bench-evaluation.mjs";
 
 function sliceSourceNote(content, caseItem) {
-  const start = Number(caseItem.source_note_start_line ?? 1);
-  const end = Number(caseItem.source_note_end_line ?? 0);
-  if ((!caseItem.source_note_start_line && !caseItem.source_note_end_line) || !Number.isFinite(start)) {
-    return content;
+  if (!caseItem.source_note_start_line && !caseItem.source_note_end_line && !caseItem.allow_full_note) {
+    throw new Error("source note benchmark input requires input.lines/source_note_*_line, or explicit input.whole_note: true.");
   }
-  const lines = content.split(/\r?\n/);
-  const from = Math.max(0, start - 1);
-  const to = Number.isFinite(end) && end > 0 ? Math.min(lines.length, end) : lines.length;
-  return lines.slice(from, to).join("\n");
+  return sliceLineRange(content, {
+    start: caseItem.source_note_start_line,
+    end: caseItem.source_note_end_line,
+  });
 }
 
 export function readSourceNote(sourceNotePath, casesDir, caseId, caseItem = {}) {
@@ -66,13 +70,16 @@ export function readSourceNote(sourceNotePath, casesDir, caseId, caseItem = {}) 
 }
 
 export function insightInputForCase(caseItem, casesDir) {
-  if (typeof caseItem.insight_input === "string" && caseItem.insight_input.trim()) {
+  if (!caseItem.source_note_path && typeof caseItem.insight_input === "string" && caseItem.insight_input.trim()) {
     return caseItem.insight_input.trim();
   }
 
   const caseId = caseItem.id || "(missing id)";
   const sourceNotePath = String(caseItem.source_note_path ?? "").trim();
-  if (!sourceNotePath) return "";
+  if (!sourceNotePath) return String(caseItem.insight_thought ?? "").trim();
+  if (!caseItem.allow_full_note && (!caseItem.source_note_start_line || !caseItem.source_note_end_line)) {
+    throw new Error(`${caseId}: note-based benchmark inputs require input.lines or explicit input.whole_note: true.`);
+  }
 
   const sourceNote = readSourceNote(sourceNotePath, casesDir, caseId, caseItem);
   const thought = String(caseItem.insight_thought ?? "").trim();
@@ -83,9 +90,114 @@ export function insightInputForCase(caseItem, casesDir) {
   ].filter(Boolean).join("\n");
 }
 
+function normalizeCaseState(caseItem) {
+  const rawState = String(caseItem.state ?? caseItem.status ?? "active").trim().toLowerCase();
+  if (rawState === "active") return "active";
+  if (rawState === "draft") return "draft";
+  if (rawState === "off" || rawState === "disabled" || rawState === "holdout") return "off";
+  throw new Error(`${caseItem.id || "(missing id)"}: state must be active, draft, or off.`);
+}
+
+function normalizeLines(input, caseItem) {
+  const value = input.lines;
+  if (Array.isArray(value) || (typeof value === "string" && value.trim())) {
+    const range = Array.isArray(value) ? normalizeLineRange(value[0], value[1]) : parseLineRange(value);
+    return [range.start, range.end];
+  }
+  const hasLegacyStart = caseItem.source_note_start_line !== undefined && caseItem.source_note_start_line !== null && caseItem.source_note_start_line !== "";
+  const hasLegacyEnd = caseItem.source_note_end_line !== undefined && caseItem.source_note_end_line !== null && caseItem.source_note_end_line !== "";
+  if (hasLegacyStart || hasLegacyEnd) {
+    const range = normalizeLineRange(caseItem.source_note_start_line, caseItem.source_note_end_line);
+    return [range.start, range.end];
+  }
+  return undefined;
+}
+
+function normalizeStringArray(value, label, caseId) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${caseId}: ${label} must be an array.`);
+  }
+  return value;
+}
+
+export function normalizeBenchmarkCase(caseItem) {
+  const input = caseItem.input && typeof caseItem.input === "object" && !Array.isArray(caseItem.input)
+    ? caseItem.input
+    : {};
+  const gold = caseItem.gold && typeof caseItem.gold === "object" && !Array.isArray(caseItem.gold)
+    ? caseItem.gold
+    : {};
+  const note = String(input.note ?? caseItem.source_note_path ?? "").trim();
+  const lines = normalizeLines(input, caseItem);
+  const thought = String(input.thought ?? caseItem.insight_thought ?? (!note ? caseItem.insight_input ?? "" : "")).trim();
+  const wholeNote = input.whole_note === true || caseItem.allow_full_note === true;
+  const state = normalizeCaseState(caseItem);
+  const must = normalizeStringArray(gold.must ?? caseItem.must_recall, "gold.must", caseItem.id || "(missing id)");
+  const nice = normalizeStringArray(gold.nice ?? caseItem.nice_to_have, "gold.nice", caseItem.id || "(missing id)");
+  const noise = normalizeStringArray(gold.noise ?? caseItem.negative, "gold.noise", caseItem.id || "(missing id)");
+  const title = String(caseItem.title ?? caseItem.description ?? caseItem.id ?? "").trim();
+  const why = String(caseItem.why ?? caseItem.annotation_note ?? "").trim();
+
+  return {
+    ...caseItem,
+    state,
+    status: state === "off" ? "disabled" : state,
+    title,
+    why,
+    description: title || caseItem.description,
+    annotation_note: why || caseItem.annotation_note,
+    input: {
+      ...(note ? { note } : {}),
+      ...(lines ? { lines } : {}),
+      ...(wholeNote ? { whole_note: true } : {}),
+      ...(thought ? { thought } : {}),
+    },
+    gold: {
+      must,
+      nice,
+      noise,
+    },
+    source_note_path: note || undefined,
+    source_note_start_line: lines?.[0],
+    source_note_end_line: lines?.[1],
+    allow_full_note: wholeNote,
+    insight_thought: thought || undefined,
+    insight_input: !note && thought ? thought : caseItem.insight_input,
+    must_recall: must,
+    nice_to_have: nice,
+    negative: noise,
+    expected_no_recall: caseItem.expected_no_recall === true,
+    _schema_version: 3,
+  };
+}
+
 function assertArrayOfStrings(value, label, caseId) {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim())) {
     throw new Error(`${caseId}: ${label} must be an array of non-empty strings.`);
+  }
+}
+
+function assertRelationTargets(value, caseId) {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new Error(`${caseId}: relation_targets must be an array when present.`);
+  }
+  for (const [index, target] of value.entries()) {
+    if (!target || typeof target !== "object" || Array.isArray(target)) {
+      throw new Error(`${caseId}: relation_targets[${index}] must be an object.`);
+    }
+    const notePath = typeof target.note_path === "string"
+      ? target.note_path
+      : typeof target.notePath === "string"
+        ? target.notePath
+        : "";
+    if (!notePath.trim()) {
+      throw new Error(`${caseId}: relation_targets[${index}] must include note_path.`);
+    }
+    if (target.relation !== undefined && (typeof target.relation !== "string" || !target.relation.trim())) {
+      throw new Error(`${caseId}: relation_targets[${index}].relation must be a non-empty string when present.`);
+    }
   }
 }
 
@@ -94,8 +206,11 @@ export function validateCase(caseItem) {
   if (typeof caseItem.id !== "string" || !caseItem.id.trim()) {
     throw new Error("Each case must have a non-empty id.");
   }
+  if (caseItem.source_note_path && !caseItem.allow_full_note && (!caseItem.source_note_start_line || !caseItem.source_note_end_line)) {
+    throw new Error(`${caseId}: note-based benchmark inputs require input.lines or explicit input.whole_note: true.`);
+  }
   if (typeof caseItem._resolved_insight_input !== "string" || !caseItem._resolved_insight_input.trim()) {
-    throw new Error(`${caseId}: provide either insight_input, or source_note_path with an optional insight_thought.`);
+    throw new Error(`${caseId}: provide input.note with lines/whole_note, or standalone input.thought.`);
   }
   assertArrayOfStrings(caseItem.must_recall, "must_recall", caseId);
   if (!caseItem.expected_no_recall && (caseItem.must_recall.length < 1 || caseItem.must_recall.length > 8)) {
@@ -107,14 +222,24 @@ export function validateCase(caseItem) {
   if (caseItem.nice_to_have !== undefined) {
     assertArrayOfStrings(caseItem.nice_to_have, "nice_to_have", caseId);
   }
-  const goldIdentities = [...caseItem.must_recall, ...(caseItem.nice_to_have ?? [])].map(qmdExpectedPath);
+  if (caseItem.negative !== undefined) {
+    assertArrayOfStrings(caseItem.negative, "negative", caseId);
+  }
+  assertRelationTargets(caseItem.relation_targets, caseId);
+  normalizeFailureAttribution(caseItem.failure_attribution, caseId);
+  const relationTargetPaths = (caseItem.relation_targets ?? []).map((target) => target.note_path ?? target.notePath);
+  const goldIdentities = [
+    ...caseItem.must_recall,
+    ...(caseItem.nice_to_have ?? []),
+    ...(caseItem.negative ?? []),
+  ].map(qmdExpectedPath);
   const duplicates = goldIdentities.filter((identity, index) => goldIdentities.indexOf(identity) !== index);
   if (duplicates.length > 0) {
     throw new Error(`${caseId}: benchmark gold paths contain duplicate canonical identities: ${Array.from(new Set(duplicates)).join(", ")}`);
   }
   const vaultRoot = expandHome(process.env.AHA_BENCH_VAULT_ROOT || "/path/to/vault");
   const resolver = buildVaultPathResolver(vaultRoot);
-  for (const goldPath of [...caseItem.must_recall, ...(caseItem.nice_to_have ?? [])]) {
+  for (const goldPath of [...caseItem.must_recall, ...(caseItem.nice_to_have ?? []), ...(caseItem.negative ?? []), ...relationTargetPaths]) {
     const resolved = resolveVaultPath(goldPath, resolver);
     if (resolved.status === "ambiguous") {
       throw new Error(`${caseId}: ambiguous benchmark gold path ${goldPath}: ${resolved.matches.join(", ")}`);
@@ -124,9 +249,9 @@ export function validateCase(caseItem) {
 
 export function activeCases(cases, includeDraft) {
   return cases.filter((caseItem) => {
-    const status = String(caseItem.status ?? "active").toLowerCase();
-    if (includeDraft) return status !== "disabled";
-    return status === "active";
+    const state = normalizeCaseState(caseItem);
+    if (includeDraft) return state !== "off";
+    return state === "active";
   });
 }
 
@@ -138,10 +263,13 @@ export function readBenchmarkCases(inputPath, options = {}) {
     throw new Error("cases.json must contain a cases array.");
   }
 
-  const cases = activeCases(input.cases, !!options.includeDraft).map((caseItem) => ({
-    ...caseItem,
-    _resolved_insight_input: insightInputForCase(caseItem, casesDir),
-  }));
+  const cases = activeCases(input.cases, !!options.includeDraft).map((caseItem) => {
+    const normalized = normalizeBenchmarkCase(caseItem);
+    return {
+      ...normalized,
+      _resolved_insight_input: insightInputForCase(normalized, casesDir),
+    };
+  });
   for (const caseItem of cases) {
     validateCase(caseItem);
   }

@@ -54,8 +54,21 @@ export function pathsMatch(result, expected) {
 }
 
 export function sourceNotePathForCase(caseItem) {
-  const sourceNotePath = String(caseItem.source_note_path ?? "").trim();
+  const sourceNotePath = String(caseItem.input?.note ?? caseItem.source_note_path ?? "").trim();
   return sourceNotePath ? expandHome(sourceNotePath) : "";
+}
+
+export const FAILURE_ATTRIBUTION_GROUPS = [
+  "case_label_failure",
+  "input_representation_failure",
+  "query_failure",
+  "retrieval_failure",
+  "rerank_failure",
+  "relation_failure",
+];
+
+export function emptyFailureAttributionCounts() {
+  return Object.fromEntries(FAILURE_ATTRIBUTION_GROUPS.map((group) => [group, 0]));
 }
 
 export function filterSourceNoteFromResults(resultFiles, sourceNotePath) {
@@ -107,6 +120,148 @@ function foundRanks(ranks) {
     .map((item) => item.rank)
     .filter((rank) => typeof rank === "number")
     .sort((a, b) => a - b);
+}
+
+function firstMatchingLabel(path, labelSets) {
+  for (const labelSet of labelSets) {
+    if (labelSet.files.some((expected) => pathsMatch(path, expected))) {
+      return labelSet;
+    }
+  }
+  return null;
+}
+
+function targetHitsWithin(resultFiles, expectedFiles, topK) {
+  const topKResults = resultFiles.slice(0, topK);
+  return targetRanks(topKResults, expectedFiles)
+    .filter((item) => item.rank !== null)
+    .map((item) => item.file);
+}
+
+function dcg(relevanceValues) {
+  return relevanceValues.reduce((sum, relevance, index) => {
+    if (relevance <= 0) return sum;
+    return sum + ((2 ** relevance) - 1) / Math.log2(index + 2);
+  }, 0);
+}
+
+export function scoreEvalV2(resultFiles, config = {}) {
+  const topK = Number(config.topK ?? 10);
+  const mustRecallFiles = config.mustRecallFiles ?? config.must_recall ?? [];
+  const niceToHaveFiles = config.niceToHaveFiles ?? config.nice_to_have ?? [];
+  const negativeFiles = config.negativeFiles ?? config.negative ?? [];
+  const topKResults = resultFiles.slice(0, topK);
+  const mustHits = targetHitsWithin(topKResults, mustRecallFiles, topK);
+  const niceHits = targetHitsWithin(topKResults, niceToHaveFiles, topK);
+  const negativeHits = targetHitsWithin(topKResults, negativeFiles, topK);
+  const usefulHitCount = new Set(
+    [...mustHits, ...niceHits].map((file) => qmdExpectedPath(file)),
+  ).size;
+
+  const relevanceLabels = [
+    { label: "must_recall", relevance: 2, files: mustRecallFiles },
+    { label: "nice_to_have", relevance: 1, files: niceToHaveFiles },
+  ];
+  const rankedRelevance = topKResults.map((file) => firstMatchingLabel(file, relevanceLabels)?.relevance ?? 0);
+  const idealRelevance = [
+    ...mustRecallFiles.map(() => 2),
+    ...niceToHaveFiles.map(() => 1),
+  ]
+    .sort((left, right) => right - left)
+    .slice(0, topK);
+  const idealDcg = dcg(idealRelevance);
+
+  return {
+    top_k: topK,
+    must_recall_at_k: mustRecallFiles.length > 0 ? mustHits.length / mustRecallFiles.length : 1,
+    must_recall_hits_at_k: mustHits.length,
+    total_must_recall: mustRecallFiles.length,
+    useful_precision_at_k: usefulHitCount / topK,
+    useful_hits_at_k: usefulHitCount,
+    ndcg_at_k: idealDcg > 0 ? dcg(rankedRelevance) / idealDcg : 1,
+    negative_rate_at_k: negativeHits.length / topK,
+    negative_hits_at_k: negativeHits.length,
+    total_negative: negativeFiles.length,
+    must_recall_hits: mustHits,
+    nice_to_have_hits: niceHits,
+    negative_hits: negativeHits,
+  };
+}
+
+export function mustRecallMissesAtK(score, topK) {
+  return (score.must_recall_ranks ?? [])
+    .filter((item) => item.rank === null || item.rank > topK)
+    .map((item) => item.file);
+}
+
+export function droppedMustFromExpandedPool(expandedPoolScore, pipelineScore, topK) {
+  const missedAtTopK = mustRecallMissesAtK(pipelineScore, topK);
+  return (expandedPoolScore.matched_files ?? []).filter((file) =>
+    missedAtTopK.some((expected) => pathsMatch(file, expected)),
+  );
+}
+
+export function failureFlagsForPipelineCase(caseItem, diagnostics) {
+  const flags = new Set();
+  if (diagnostics.sourceNoteRank) flags.add("source_self_hit");
+  if (caseItem.query_generation_fallback || diagnostics.queryFallback || diagnostics.rerankFallback) flags.add("runtime_fallback");
+  if (diagnostics.droppedMustCount > 0) flags.add("dropped_must_from_final_top_k");
+  if (diagnostics.missingFromExpandedPool > 0) flags.add("missing_from_expanded_pool");
+  return Array.from(flags);
+}
+
+export function failureAttributionForPipelineCase(caseItem, diagnostics) {
+  const explicit = normalizeFailureAttribution(caseItem.failure_attribution, caseItem.id);
+  if (explicit) return explicit;
+  if (diagnostics.pipelineMissedAtTopKCount < 1) return null;
+
+  const primary = diagnostics.droppedMustCount > 0
+    ? "rerank_failure"
+    : "retrieval_failure";
+  return {
+    primary,
+    flags: failureFlagsForPipelineCase(caseItem, diagnostics),
+  };
+}
+
+export function normalizeFailureAttribution(input, caseId = "(unknown case)") {
+  if (input === undefined || input === null || input === "") return null;
+  if (typeof input === "string") {
+    if (!FAILURE_ATTRIBUTION_GROUPS.includes(input)) {
+      throw new Error(`${caseId}: unknown failure_attribution primary: ${input}`);
+    }
+    return {
+      primary: input,
+      flags: [],
+    };
+  }
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error(`${caseId}: failure_attribution must be a string or object.`);
+  }
+  if (Array.isArray(input.primary)) {
+    throw new Error(`${caseId}: failure_attribution.primary must contain exactly one primary attribution.`);
+  }
+  if (Array.isArray(input.primaries) || Array.isArray(input.primary_attributions)) {
+    throw new Error(`${caseId}: failure_attribution supports exactly one primary attribution.`);
+  }
+  const primary = String(input.primary ?? "").trim();
+  if (!primary) {
+    throw new Error(`${caseId}: failure_attribution.primary is required when failure_attribution is present.`);
+  }
+  if (!FAILURE_ATTRIBUTION_GROUPS.includes(primary)) {
+    throw new Error(`${caseId}: unknown failure_attribution primary: ${primary}`);
+  }
+  const flags = input.flags === undefined
+    ? []
+    : Array.isArray(input.flags)
+      ? input.flags.map((flag) => String(flag).trim()).filter(Boolean)
+      : (() => {
+          throw new Error(`${caseId}: failure_attribution.flags must be an array of strings when present.`);
+        })();
+  return {
+    primary,
+    flags: Array.from(new Set(flags)),
+  };
 }
 
 export function scoreResults(resultFiles, expectedFiles, topK) {
@@ -215,6 +370,7 @@ export function applyBenchEvaluationPolicy(report, config) {
     const niceTopK = Number(caseConfig.niceTopK ?? 20);
     const expectedFiles = config.expectedById.get(result.id) ?? [];
     const niceToHaveFiles = caseConfig.niceToHave ?? [];
+    const negativeFiles = caseConfig.negative ?? [];
     result.query_object = queryMeta.query_object;
     result.query_generated_by = queryMeta.query_generated_by;
     result.query_generation_fallback = queryMeta.query_generation_fallback;
@@ -222,10 +378,17 @@ export function applyBenchEvaluationPolicy(report, config) {
     result.expected_in_top_k = topK;
     result.nice_expected_in_top_k = niceTopK;
     result.nice_to_have_files = niceToHaveFiles;
+    result.negative_files = negativeFiles;
     for (const stats of Object.values(result.backends ?? {})) {
       const filtered = filterSourceNoteFromResults(stats.top_files ?? [], caseConfig.sourceNotePath);
       const score = scoreResults(filtered.files, expectedFiles, topK);
       const niceScore = scoreNiceToHave(filtered.files, niceToHaveFiles, niceTopK);
+      const evalV2Score = scoreEvalV2(filtered.files, {
+        topK,
+        mustRecallFiles: expectedFiles,
+        niceToHaveFiles,
+        negativeFiles,
+      });
       stats.top_k = topK;
       stats.nice_top_k = niceTopK;
       stats.evaluation_excludes_source_note = !!caseConfig.sourceNotePath;
@@ -248,6 +411,7 @@ export function applyBenchEvaluationPolicy(report, config) {
       stats.unmatched_expected_files = score.unmatched_expected_files;
       stats.f1 = score.f1;
       stats.nice_to_have = niceScore;
+      stats.eval_v2 = evalV2Score;
       delete stats[String.fromCharCode(109, 114, 114)];
     }
   }
@@ -265,6 +429,10 @@ export function applyBenchEvaluationPolicy(report, config) {
     const worstRankValues = numericValues(backendStats.map((stats) => stats.worst_must_rank));
     const missingCountValues = numericValues(backendStats.map((stats) => stats.missing_must_count));
     const niceRecallValues = numericValues(backendStats.map((stats) => stats.nice_to_have?.recall_at_k));
+    const evalV2MustRecallValues = numericValues(backendStats.map((stats) => stats.eval_v2?.must_recall_at_k));
+    const evalV2UsefulPrecisionValues = numericValues(backendStats.map((stats) => stats.eval_v2?.useful_precision_at_k));
+    const evalV2NdcgValues = numericValues(backendStats.map((stats) => stats.eval_v2?.ndcg_at_k));
+    const evalV2NegativeRateValues = numericValues(backendStats.map((stats) => stats.eval_v2?.negative_rate_at_k));
     summary.top_k = topKValues[0] ?? 10;
     summary.nice_top_k = niceTopKValues[0] ?? 20;
     if (recallValues.length > 0) {
@@ -280,6 +448,13 @@ export function applyBenchEvaluationPolicy(report, config) {
     summary.avg_nice_to_have_recall_at_k = niceRecallValues.length > 0
       ? average(niceRecallValues, 0)
       : null;
+    summary.eval_v2 = {
+      top_k: summary.top_k,
+      avg_must_recall_at_k: average(evalV2MustRecallValues, 0),
+      avg_useful_precision_at_k: average(evalV2UsefulPrecisionValues, 0),
+      avg_ndcg_at_k: average(evalV2NdcgValues, 0),
+      avg_negative_rate_at_k: average(evalV2NegativeRateValues, 0),
+    };
     delete summary[`avg_${String.fromCharCode(109, 114, 114)}`];
   }
 
@@ -295,6 +470,18 @@ export function summarizePipelineEvaluation(results) {
       avg_pipeline_nice_to_have_recall_at_k: 0,
       avg_worst_must_rank: 0,
       avg_expanded_pool_recall: 0,
+      avg_expanded_pool_recall_at_20: 0,
+      dropped_must_count: 0,
+      avg_stability_at_10: 0,
+      failure_attribution_counts: emptyFailureAttributionCounts(),
+      failure_flag_counts: {},
+      eval_v2: {
+        top_k: 10,
+        avg_must_recall_at_k: 0,
+        avg_useful_precision_at_k: 0,
+        avg_ndcg_at_k: 0,
+        avg_negative_rate_at_k: 0,
+      },
       qmd_direct_matches: 0,
       backlink_matches: 0,
       missing_matches: 0,
@@ -309,14 +496,27 @@ export function summarizePipelineEvaluation(results) {
   let worstMustRank = 0;
   let worstMustRankCount = 0;
   let expandedRecall = 0;
+  let expandedRecallAt20 = 0;
+  let stabilityAt10 = 0;
+  let evalV2MustRecall = 0;
+  let evalV2UsefulPrecision = 0;
+  let evalV2Ndcg = 0;
+  let evalV2NegativeRate = 0;
   let qmdDirectMatches = 0;
   let backlinkMatches = 0;
   let missingMatches = 0;
   let expandedPoolDroppedTopK = 0;
+  let droppedMustCount = 0;
+  const failureAttributionCounts = emptyFailureAttributionCounts();
+  const failureFlagCounts = {};
 
   for (const result of results) {
     qmdRecallAtK += result.qmd.score.recall_at_k;
     pipelineRecallAtK += result.pipeline.score.recall_at_k;
+    evalV2MustRecall += result.pipeline.eval_v2?.must_recall_at_k ?? result.pipeline.score.recall_at_k ?? 0;
+    evalV2UsefulPrecision += result.pipeline.eval_v2?.useful_precision_at_k ?? 0;
+    evalV2Ndcg += result.pipeline.eval_v2?.ndcg_at_k ?? 0;
+    evalV2NegativeRate += result.pipeline.eval_v2?.negative_rate_at_k ?? 0;
     if (typeof result.pipeline.nice_to_have.recall_at_k === "number") {
       pipelineNiceRecallAtK += result.pipeline.nice_to_have.recall_at_k;
       pipelineNiceRecallCount += 1;
@@ -326,7 +526,17 @@ export function summarizePipelineEvaluation(results) {
       worstMustRankCount += 1;
     }
     expandedRecall += result.expanded_pool.score.recall;
+    expandedRecallAt20 += result.expanded_pool.recall_at_20 ?? result.expanded_pool.score_at_20?.recall_at_k ?? result.expanded_pool.score.recall_at_k ?? 0;
+    stabilityAt10 += result.pipeline.stability_at_k ?? result.pipeline.stability_at_10 ?? 1;
     expandedPoolDroppedTopK += result.expanded_pool.dropped_from_final_top_k?.length ?? 0;
+    droppedMustCount += result.expanded_pool.dropped_must_count ?? result.expanded_pool.dropped_from_final_top_k?.length ?? 0;
+    if (result.failure_attribution?.primary) {
+      failureAttributionCounts[result.failure_attribution.primary] =
+        (failureAttributionCounts[result.failure_attribution.primary] ?? 0) + 1;
+      for (const flag of result.failure_attribution.flags ?? []) {
+        failureFlagCounts[flag] = (failureFlagCounts[flag] ?? 0) + 1;
+      }
+    }
     for (const match of result.must_recall_sources) {
       const source = String(match.source ?? "");
       if (source === "missing") {
@@ -347,6 +557,18 @@ export function summarizePipelineEvaluation(results) {
       : null,
     avg_worst_must_rank: worstMustRankCount > 0 ? worstMustRank / worstMustRankCount : 0,
     avg_expanded_pool_recall: expandedRecall / results.length,
+    avg_expanded_pool_recall_at_20: expandedRecallAt20 / results.length,
+    dropped_must_count: droppedMustCount,
+    avg_stability_at_10: stabilityAt10 / results.length,
+    failure_attribution_counts: failureAttributionCounts,
+    failure_flag_counts: failureFlagCounts,
+    eval_v2: {
+      top_k: results[0]?.pipeline?.eval_v2?.top_k ?? results[0]?.pipeline?.score?.top_k ?? 10,
+      avg_must_recall_at_k: evalV2MustRecall / results.length,
+      avg_useful_precision_at_k: evalV2UsefulPrecision / results.length,
+      avg_ndcg_at_k: evalV2Ndcg / results.length,
+      avg_negative_rate_at_k: evalV2NegativeRate / results.length,
+    },
     qmd_direct_matches: qmdDirectMatches,
     backlink_matches: backlinkMatches,
     missing_matches: missingMatches,

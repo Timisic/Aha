@@ -6,12 +6,15 @@ import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative, resolve } from "node:path";
 import {
   collectResultItems,
+  droppedMustFromExpandedPool,
+  failureAttributionForPipelineCase,
   filterSourceNoteFromResults,
   pathsMatch,
   pickFirstString,
   readBenchmarkCases,
   resolveQmdQueriesForCase,
   scoreNiceToHave,
+  scoreEvalV2,
   scoreResults,
   sourceNotePathForCase,
   summarizePipelineEvaluation,
@@ -22,6 +25,11 @@ import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
   resolveVaultPath as sharedResolveVaultPath,
 } from "../../insight-package/src/path-resolver.js";
+import {
+  DEFAULT_OPENAI_API_KEY_ENV,
+  DEFAULT_OPENAI_BASE_URL,
+  DEFAULT_OPENAI_MODEL,
+} from "../lib/openai-json-agent.mjs";
 
 const DEFAULTS = {
   cases: "bench/aha-memory-cases.json",
@@ -37,12 +45,18 @@ const DEFAULTS = {
   qmdTimeoutMs: 90_000,
   obsidianTimeoutMs: 8_000,
   queryGenerator: "agent",
+  llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "openai",
+  llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_OPENAI_BASE_URL,
+  llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_OPENAI_MODEL,
+  llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_OPENAI_API_KEY_ENV,
+  queryAgentProvider: process.env.AHA_BENCH_QUERY_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
   queryAgentBin: "codex",
   queryAgentModel: "",
   queryAgentCache: "bench/generated/qmd-query-agent-cache.json",
   queryAgentFallback: true,
   queryAgentTimeoutMs: 120_000,
   reranker: "agent",
+  rerankAgentProvider: process.env.AHA_BENCH_RERANK_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
   rerankAgentBin: "codex",
   rerankAgentModel: "",
   rerankAgentCache: "bench/generated/agent-rerank-cache.json",
@@ -73,16 +87,22 @@ function usage() {
     "  --backlink-limit <n>           Default 20",
     "  --qmd-timeout-ms <n>           Default: 90000",
     "  --obsidian-timeout-ms <n>      Default: 8000",
+    "  --llm-provider <openai|codex-cli> Default: openai",
+    "  --llm-base-url <url>           Default: https://api.openai.com/v1",
+    "  --llm-model <model>            Default: gpt-5.5",
+    "  --llm-api-key-env <name>       Default: OPENAI_API_KEY",
     "  --query-generator <agent|rules> Default: agent",
+    "  --query-agent-provider <openai|codex-cli> Default: --llm-provider",
     "  --query-agent-bin <bin>         Default: codex",
-    "  --query-agent-model <model>",
+    "  --query-agent-model <model>     Overrides --llm-model for query generation",
     "  --query-agent-cache <path>      Default: bench/generated/qmd-query-agent-cache.json",
     "  --query-agent-timeout-ms <n>    Default: 120000",
     "  --no-query-agent-cache",
     "  --no-query-agent-fallback",
     "  --reranker <agent|none>         Default: agent",
+    "  --rerank-agent-provider <openai|codex-cli> Default: --llm-provider",
     "  --rerank-agent-bin <bin>        Default: codex",
-    "  --rerank-agent-model <model>",
+    "  --rerank-agent-model <model>    Overrides --llm-model for rerank",
     "  --rerank-agent-cache <path>     Default: bench/generated/agent-rerank-cache.json",
     "  --rerank-agent-timeout-ms <n>   Default: 300000",
     "  --no-rerank-agent-cache",
@@ -178,6 +198,20 @@ function parseArgs() {
       case "--obsidian-timeout-ms":
         options.obsidianTimeoutMs = Number(value);
         break;
+      case "--llm-provider":
+        options.llmProvider = value;
+        if (!options.queryAgentProviderExplicit) options.queryAgentProvider = value;
+        if (!options.rerankAgentProviderExplicit) options.rerankAgentProvider = value;
+        break;
+      case "--llm-base-url":
+        options.llmBaseUrl = value;
+        break;
+      case "--llm-model":
+        options.llmModel = value;
+        break;
+      case "--llm-api-key-env":
+        options.llmApiKeyEnv = value;
+        break;
       case "--query-generator":
         options.queryGenerator = value;
         break;
@@ -186,6 +220,10 @@ function parseArgs() {
         break;
       case "--query-agent-bin":
         options.queryAgentBin = value;
+        break;
+      case "--query-agent-provider":
+        options.queryAgentProvider = value;
+        options.queryAgentProviderExplicit = true;
         break;
       case "--query-agent-model":
         options.queryAgentModel = value;
@@ -198,6 +236,10 @@ function parseArgs() {
         break;
       case "--reranker":
         options.reranker = value;
+        break;
+      case "--rerank-agent-provider":
+        options.rerankAgentProvider = value;
+        options.rerankAgentProviderExplicit = true;
         break;
       case "--rerank-agent-bin":
         options.rerankAgentBin = value;
@@ -230,6 +272,17 @@ function parseArgs() {
   if (!["fair", "first"].includes(options.seedStrategy)) {
     throw new Error("seedStrategy must be fair or first.");
   }
+  for (const [key, value] of [
+    ["llmProvider", options.llmProvider],
+    ["queryAgentProvider", options.queryAgentProvider],
+    ["rerankAgentProvider", options.rerankAgentProvider],
+  ]) {
+    if (!["openai", "codex", "codex-cli"].includes(String(value || "").toLowerCase())) {
+      throw new Error(`${key} must be openai or codex-cli.`);
+    }
+  }
+  delete options.queryAgentProviderExplicit;
+  delete options.rerankAgentProviderExplicit;
   return options;
 }
 
@@ -683,6 +736,12 @@ function fixed(value) {
   return Number(value || 0).toFixed(3);
 }
 
+function topKFingerprint(files, topK) {
+  return createHash("sha256")
+    .update(files.slice(0, topK).join("\n"))
+    .digest("hex");
+}
+
 function printSummary(report) {
   console.log("# Aha Memory Pipeline Bench Summary");
   console.log("");
@@ -700,18 +759,15 @@ function printSummary(report) {
     return;
   }
 
-  console.log("| Case | Must K | QMD R@K | Pipeline R@K | Nice K | Nice R@K | Must-recall ranks | Nice ranks | Missing |");
-  console.log("|---|---:|---:|---:|---:|---:|---|---|---|");
+  console.log("| Case | Must K | Must Recall@K | Useful Precision@K | nDCG@K | Negative Rate@K | Expanded Pool Recall@20 | Dropped Must Count | Stability@K | Missing |");
+  console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---|");
   for (const result of report.results) {
-    const ranks = result.pipeline.score.found_must_recall_ranks
-      .join(", ");
-    const niceRanks = result.pipeline.nice_to_have.found_nice_to_have_ranks
-      .join(", ");
-    const niceRecall = result.pipeline.nice_to_have.recall_at_k;
     const missing = result.pipeline.score.unmatched_expected_files.join("<br>") || "-";
     const topK = result.pipeline.score.top_k || result.qmd.score.top_k || "K";
-    const niceTopK = result.pipeline.nice_to_have.top_k || "K";
-    console.log(`| ${result.id} | ${topK} | ${fixed(result.qmd.score.recall_at_k)} | ${fixed(result.pipeline.score.recall_at_k)} | ${niceTopK} | ${niceRecall === null ? "-" : fixed(niceRecall)} | [${ranks}] | [${niceRanks}] | ${missing} |`);
+    const evalV2 = result.pipeline.eval_v2 ?? {};
+    const expandedRecall = result.expanded_pool?.recall_at_20 ?? result.expanded_pool?.score_at_20?.recall_at_k ?? result.expanded_pool?.score?.recall;
+    const droppedMustCount = result.expanded_pool?.dropped_must_count ?? result.expanded_pool?.dropped_from_final_top_k?.length ?? 0;
+    console.log(`| ${result.id} | ${topK} | ${fixed(evalV2.must_recall_at_k)} | ${fixed(evalV2.useful_precision_at_k)} | ${fixed(evalV2.ndcg_at_k)} | ${fixed(evalV2.negative_rate_at_k)} | ${fixed(expandedRecall)} | ${droppedMustCount} | ${fixed(result.pipeline.stability_at_k ?? 1)} | ${missing} |`);
   }
 
   console.log("");
@@ -719,9 +775,18 @@ function printSummary(report) {
   console.log("|---|---:|");
   console.log(`| avg QMD R@K | ${fixed(report.summary.avg_qmd_recall_at_k)} |`);
   console.log(`| avg pipeline R@K | ${fixed(report.summary.avg_pipeline_recall_at_k)} |`);
+  console.log(`| avg Must Recall@10 | ${fixed(report.summary.eval_v2?.avg_must_recall_at_k)} |`);
+  console.log(`| avg Useful Precision@10 | ${fixed(report.summary.eval_v2?.avg_useful_precision_at_k)} |`);
+  console.log(`| avg nDCG@10 | ${fixed(report.summary.eval_v2?.avg_ndcg_at_k)} |`);
+  console.log(`| avg Negative Rate@10 | ${fixed(report.summary.eval_v2?.avg_negative_rate_at_k)} |`);
   console.log(`| avg pipeline nice-to-have R@20 | ${report.summary.avg_pipeline_nice_to_have_recall_at_k === null ? "-" : fixed(report.summary.avg_pipeline_nice_to_have_recall_at_k)} |`);
   console.log(`| avg worst must-rank | ${fixed(report.summary.avg_worst_must_rank, 1)} |`);
-  console.log(`| avg expanded-pool recall | ${fixed(report.summary.avg_expanded_pool_recall)} |`);
+  console.log(`| avg Expanded Pool Recall@20 | ${fixed(report.summary.avg_expanded_pool_recall_at_20 ?? report.summary.avg_expanded_pool_recall)} |`);
+  console.log(`| Dropped Must Count | ${report.summary.dropped_must_count ?? report.summary.expanded_pool_dropped_topk_count} |`);
+  console.log(`| avg Stability@10 | ${fixed(report.summary.avg_stability_at_10)} |`);
+  for (const [group, count] of Object.entries(report.summary.failure_attribution_counts ?? {})) {
+    console.log(`| Failure Attribution: ${group} | ${count} |`);
+  }
   console.log(`| QMD direct must-recall matches | ${report.summary.qmd_direct_matches} |`);
   console.log(`| backlink must-recall matches | ${report.summary.backlink_matches} |`);
   console.log(`| missing must-recall matches | ${report.summary.missing_matches} |`);
@@ -802,13 +867,23 @@ function reportMetadata(options) {
     pipeline_version: "aha-pipeline-bench-v2",
     query_prompt_version: "aha-qmd-query-plan-agent-v1",
     rerank_prompt_version: "aha-agent-rerank-v1",
+    llm_provider: options.llmProvider,
+    llm_base_url: options.llmBaseUrl,
+    llm_model: options.llmModel,
+    llm_api_key_env: options.llmApiKeyEnv,
+    query_agent_provider: options.queryAgentProvider,
     query_agent_bin: options.queryAgentBin,
-    query_agent_version: commandOutput(options.queryAgentBin, ["--version"]),
-    query_agent_model: options.queryAgentModel || null,
+    query_agent_version: ["codex", "codex-cli"].includes(String(options.queryAgentProvider).toLowerCase())
+      ? commandOutput(options.queryAgentBin, ["--version"])
+      : null,
+    query_agent_model: options.queryAgentModel || options.llmModel || null,
     query_agent_cache: options.queryAgentCache || null,
+    rerank_agent_provider: options.rerankAgentProvider,
     rerank_agent_bin: options.rerankAgentBin,
-    rerank_agent_version: commandOutput(options.rerankAgentBin, ["--version"]),
-    rerank_agent_model: options.rerankAgentModel || null,
+    rerank_agent_version: ["codex", "codex-cli"].includes(String(options.rerankAgentProvider).toLowerCase())
+      ? commandOutput(options.rerankAgentBin, ["--version"])
+      : null,
+    rerank_agent_model: options.rerankAgentModel || options.llmModel || null,
     rerank_agent_cache: options.rerankAgentCache || null,
     qmd_bin: options.qmd,
     qmd_version: commandOutput(options.qmd, ["--version"]),
@@ -907,6 +982,8 @@ function main() {
     const topK = Number(caseItem.expected_in_top_k ?? expectedInTopK);
     const niceTopK = Number(caseItem.nice_expected_in_top_k ?? expectedNiceInTopK);
     const niceToHave = caseItem.nice_to_have ?? [];
+    const negative = caseItem.negative ?? [];
+    const expandedPoolTopK = Number(caseItem.expanded_pool_expected_in_top_k ?? 20);
     const sourceNotePath = sourceNotePathForCase(caseItem);
     const qmdFiles = candidateFiles(qmdCandidates);
     const pipelineFiles = candidateFiles(finalCandidates);
@@ -916,26 +993,59 @@ function main() {
     const expandedPoolEval = sourceNoteEval(expandedPoolFiles, sourceNotePath, options);
     const qmdScore = scoreResults(qmdEval.files, caseItem.must_recall, topK);
     const qmdNiceScore = scoreNiceToHave(qmdEval.files, niceToHave, niceTopK);
+    const qmdEvalV2 = scoreEvalV2(qmdEval.files, {
+      topK,
+      mustRecallFiles: caseItem.must_recall,
+      niceToHaveFiles: niceToHave,
+      negativeFiles: negative,
+    });
     const pipelineScore = scoreResults(pipelineEval.files, caseItem.must_recall, topK);
     const pipelineNiceScore = scoreNiceToHave(pipelineEval.files, niceToHave, niceTopK);
+    const pipelineEvalV2 = scoreEvalV2(pipelineEval.files, {
+      topK,
+      mustRecallFiles: caseItem.must_recall,
+      niceToHaveFiles: niceToHave,
+      negativeFiles: negative,
+    });
     const expandedPoolScore = scoreResults(
       expandedPoolEval.files,
       caseItem.must_recall,
       Math.max(topK, expandedPool.length || topK),
     );
-    const expandedPoolDroppedFromTopK = expandedPoolScore.matched_files.filter((file) =>
-      pipelineScore.unmatched_expected_files.includes(file),
+    const expandedPoolScoreAt20 = scoreResults(
+      expandedPoolEval.files,
+      caseItem.must_recall,
+      expandedPoolTopK,
     );
+    const expandedPoolEvalV2 = scoreEvalV2(expandedPoolEval.files, {
+      topK: expandedPoolTopK,
+      mustRecallFiles: caseItem.must_recall,
+      niceToHaveFiles: niceToHave,
+      negativeFiles: negative,
+    });
+    const expandedPoolDroppedFromTopK = droppedMustFromExpandedPool(expandedPoolScoreAt20, pipelineScore, topK);
     const expandedPoolNiceScore = scoreNiceToHave(
       expandedPoolEval.files,
       niceToHave,
       Math.max(niceTopK, expandedPool.length || niceTopK),
     );
+    const missingFromExpandedPool = expandedPoolScoreAt20.unmatched_expected_files.length;
+    const failureAttribution = failureAttributionForPipelineCase(caseItem, {
+      pipelineMissedAtTopKCount: Math.max(0, pipelineScore.total_expected - pipelineScore.hits_at_k),
+      droppedMustCount: expandedPoolDroppedFromTopK.length,
+      missingFromExpandedPool,
+      sourceNoteRank: pipelineEval.source_note_rank || qmdEval.source_note_rank || expandedPoolEval.source_note_rank,
+      queryFallback: !!generatedQuery.query_generation_fallback,
+      rerankFallback: !!rerankResult.rerank_fallback,
+    });
 
     results.push({
       id: caseItem.id,
-      type: caseItem.type || "semantic",
-      description: caseItem.description || caseItem.annotation_note || caseItem.id,
+      state: caseItem.state,
+      title: caseItem.title || caseItem.id,
+      why: caseItem.why || undefined,
+      type: caseItem.type || "real",
+      description: caseItem.title || caseItem.description || caseItem.id,
       query: queryText,
       queries: querySpecs.map((query) => ({
         kind: query.kind,
@@ -953,11 +1063,14 @@ function main() {
       expected_files: caseItem.must_recall,
       expected_in_top_k: topK,
       nice_expected_in_top_k: niceTopK,
+      expanded_pool_expected_in_top_k: expandedPoolTopK,
       source_note_path: sourceNotePath || null,
       nice_to_have_files: niceToHave,
+      negative_files: negative,
       qmd: {
         score: qmdScore,
         nice_to_have: qmdNiceScore,
+        eval_v2: qmdEvalV2,
         source_note_rank: qmdEval.source_note_rank,
         top_files: candidateFiles(qmdCandidates).slice(0, options.limit),
         runs: qmdRuns.map((runItem) => ({
@@ -971,6 +1084,9 @@ function main() {
       pipeline: {
         score: pipelineScore,
         nice_to_have: pipelineNiceScore,
+        eval_v2: pipelineEvalV2,
+        stability_at_k: 1,
+        stability_top_k_fingerprint: topKFingerprint(pipelineEval.files, topK),
         source_note_rank: pipelineEval.source_note_rank,
         rerank_generated_by: rerankResult.rerank_generated_by,
         rerank_fallback: rerankResult.rerank_fallback,
@@ -1002,13 +1118,18 @@ function main() {
       })),
       expanded_pool: {
         score: expandedPoolScore,
+        score_at_20: expandedPoolScoreAt20,
         nice_to_have: expandedPoolNiceScore,
+        eval_v2: expandedPoolEvalV2,
+        recall_at_20: expandedPoolScoreAt20.recall_at_k,
         source_note_rank: expandedPoolEval.source_note_rank,
         candidate_count: expandedPool.length,
         qmd_candidate_count: qmdCandidates.length,
         backlink_candidate_count: backlinkResult.candidates.length,
         dropped_from_final_top_k: expandedPoolDroppedFromTopK,
+        dropped_must_count: expandedPoolDroppedFromTopK.length,
       },
+      failure_attribution: failureAttribution,
       must_recall_sources: pipelineScore.must_recall_ranks.map((item) => ({
         file: item.file,
         rank: item.rank,

@@ -3,6 +3,12 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import {
+  DEFAULT_OPENAI_API_KEY_ENV,
+  DEFAULT_OPENAI_BASE_URL,
+  DEFAULT_OPENAI_MODEL,
+  runOpenAiJsonSync,
+} from "./openai-json-agent.mjs";
 
 export function compactLine(value, max = 900) {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -137,6 +143,11 @@ export function defaultQueryGenerationOptions(overrides = {}) {
   );
   return {
     queryGenerator: process.env.AHA_BENCH_QUERY_GENERATOR || "agent",
+    llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "openai",
+    llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_OPENAI_BASE_URL,
+    llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_OPENAI_MODEL,
+    llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_OPENAI_API_KEY_ENV,
+    queryAgentProvider: process.env.AHA_BENCH_QUERY_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
     queryAgentBin: process.env.AHA_BENCH_QUERY_AGENT_BIN || "codex",
     queryAgentModel: process.env.AHA_BENCH_QUERY_AGENT_MODEL || "",
     queryAgentCache: process.env.AHA_BENCH_QUERY_AGENT_CACHE || "bench/generated/qmd-query-agent-cache.json",
@@ -150,9 +161,7 @@ function queryObjectCacheKey(caseItem, options) {
   const hash = createHash("sha256")
     .update(QUERY_AGENT_PROMPT_VERSION)
     .update("\0")
-    .update(String(options.queryAgentBin || "codex"))
-    .update("\0")
-    .update(String(options.queryAgentModel || ""))
+    .update(queryProviderCacheShape(options))
     .update("\0")
     .update(String(caseItem._resolved_insight_input ?? ""))
     .digest("hex");
@@ -163,13 +172,35 @@ function queryPlanCacheKey(caseItem, options) {
   const hash = createHash("sha256")
     .update(QUERY_PLAN_AGENT_PROMPT_VERSION)
     .update("\0")
-    .update(String(options.queryAgentBin || "codex"))
-    .update("\0")
-    .update(String(options.queryAgentModel || ""))
+    .update(queryProviderCacheShape(options))
     .update("\0")
     .update(String(caseItem._resolved_insight_input ?? ""))
     .digest("hex");
   return `${caseItem.id}:${hash}`;
+}
+
+function queryAgentProvider(options) {
+  return String(options.queryAgentProvider || options.llmProvider || "openai").toLowerCase();
+}
+
+function queryAgentModel(options) {
+  return String(options.queryAgentModel || options.llmModel || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL;
+}
+
+function queryProviderCacheShape(options) {
+  const provider = queryAgentProvider(options);
+  if (provider === "openai") {
+    return JSON.stringify({
+      provider,
+      baseUrl: options.llmBaseUrl || DEFAULT_OPENAI_BASE_URL,
+      model: queryAgentModel(options),
+    });
+  }
+  return JSON.stringify({
+    provider,
+    bin: options.queryAgentBin || "codex",
+    model: options.queryAgentModel || "",
+  });
 }
 
 function readQueryObjectCache(cachePath) {
@@ -305,6 +336,22 @@ function parseQueryAgentOutput(output, caseId) {
 }
 
 function generateQueryObjectWithAgent(caseItem, options) {
+  if (queryAgentProvider(options) === "openai") {
+    return parseQueryAgentOutput(runOpenAiJsonSync({
+      baseUrl: options.llmBaseUrl,
+      model: queryAgentModel(options),
+      apiKeyEnv: options.llmApiKeyEnv,
+      prompt: queryAgentPrompt(caseItem),
+      schema: AGENT_QUERY_SCHEMA,
+      schemaName: "aha_qmd_query_agent",
+      timeoutMs: options.queryAgentTimeoutMs,
+    }), caseItem.id);
+  }
+
+  if (!["codex", "codex-cli"].includes(queryAgentProvider(options))) {
+    throw new Error(`${caseItem.id}: unknown query agent provider: ${options.queryAgentProvider}`);
+  }
+
   const tmpRoot = mkdtempSync(join(tmpdir(), "aha-query-agent-"));
   const schemaPath = join(tmpRoot, "schema.json");
   const outputPath = join(tmpRoot, "query.json");
@@ -366,6 +413,22 @@ function parseQueryPlanAgentOutput(output, caseItem) {
 }
 
 function generateQueryPlanWithAgent(caseItem, options) {
+  if (queryAgentProvider(options) === "openai") {
+    return parseQueryPlanAgentOutput(runOpenAiJsonSync({
+      baseUrl: options.llmBaseUrl,
+      model: queryAgentModel(options),
+      apiKeyEnv: options.llmApiKeyEnv,
+      prompt: queryPlanAgentPrompt(caseItem),
+      schema: AGENT_QUERY_PLAN_SCHEMA,
+      schemaName: "aha_qmd_query_plan_agent",
+      timeoutMs: options.queryAgentTimeoutMs,
+    }), caseItem);
+  }
+
+  if (!["codex", "codex-cli"].includes(queryAgentProvider(options))) {
+    throw new Error(`${caseItem.id}: unknown query agent provider: ${options.queryAgentProvider}`);
+  }
+
   const tmpRoot = mkdtempSync(join(tmpdir(), "aha-query-plan-agent-"));
   const schemaPath = join(tmpRoot, "schema.json");
   const outputPath = join(tmpRoot, "queries.json");
@@ -589,10 +652,11 @@ export function resolveQmdQueryForCase(caseItem, options = {}) {
     const queryObject = generateQueryObjectWithAgent(caseItem, queryOptions);
     cache.entries[cacheKey] = {
       generated_at: new Date().toISOString(),
-      generator: "codex-exec",
+      generator: queryAgentProvider(queryOptions) === "openai" ? "openai-responses" : "codex-exec",
       prompt_version: QUERY_AGENT_PROMPT_VERSION,
+      agent_provider: queryAgentProvider(queryOptions),
       agent_bin: queryOptions.queryAgentBin,
-      agent_model: queryOptions.queryAgentModel,
+      agent_model: queryAgentModel(queryOptions),
       query: queryObject,
     };
     writeQueryObjectCache(cachePath, cache);
@@ -658,10 +722,11 @@ export function resolveQmdQueriesForCase(caseItem, options = {}) {
     const plan = generateQueryPlanWithAgent(caseItem, queryOptions);
     cache.entries[cacheKey] = {
       generated_at: new Date().toISOString(),
-      generator: "codex-exec",
+      generator: queryAgentProvider(queryOptions) === "openai" ? "openai-responses" : "codex-exec",
       prompt_version: QUERY_PLAN_AGENT_PROMPT_VERSION,
+      agent_provider: queryAgentProvider(queryOptions),
       agent_bin: queryOptions.queryAgentBin,
-      agent_model: queryOptions.queryAgentModel,
+      agent_model: queryAgentModel(queryOptions),
       queries: plan.queries,
     };
     writeQueryObjectCache(cachePath, cache);

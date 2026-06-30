@@ -4,6 +4,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { compactLine } from "./aha-query-generation.mjs";
+import {
+  DEFAULT_OPENAI_API_KEY_ENV,
+  DEFAULT_OPENAI_BASE_URL,
+  DEFAULT_OPENAI_MODEL,
+  runOpenAiJsonSync,
+} from "./openai-json-agent.mjs";
 
 const RERANK_AGENT_PROMPT_VERSION = "aha-agent-rerank-v1";
 
@@ -31,6 +37,11 @@ export function defaultRerankOptions(overrides = {}) {
   );
   return {
     reranker: process.env.AHA_BENCH_RERANKER || "agent",
+    llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "openai",
+    llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_OPENAI_BASE_URL,
+    llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_OPENAI_MODEL,
+    llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_OPENAI_API_KEY_ENV,
+    rerankAgentProvider: process.env.AHA_BENCH_RERANK_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
     rerankAgentBin: process.env.AHA_BENCH_RERANK_AGENT_BIN || "codex",
     rerankAgentModel: process.env.AHA_BENCH_RERANK_AGENT_MODEL || "",
     rerankAgentCache: process.env.AHA_BENCH_RERANK_AGENT_CACHE || "bench/generated/agent-rerank-cache.json",
@@ -56,9 +67,7 @@ function rerankCacheKey(caseItem, candidates, options) {
   const hash = createHash("sha256")
     .update(RERANK_AGENT_PROMPT_VERSION)
     .update("\0")
-    .update(String(options.rerankAgentBin || "codex"))
-    .update("\0")
-    .update(String(options.rerankAgentModel || ""))
+    .update(rerankProviderCacheShape(options))
     .update("\0")
     .update(String(caseItem._resolved_insight_input ?? ""))
     .update("\0")
@@ -71,6 +80,30 @@ function rerankCacheKey(caseItem, candidates, options) {
     .update(JSON.stringify(candidates.map(candidateCacheShape)))
     .digest("hex");
   return `${caseItem.id}:${hash}`;
+}
+
+function rerankAgentProvider(options) {
+  return String(options.rerankAgentProvider || options.llmProvider || "openai").toLowerCase();
+}
+
+function rerankAgentModel(options) {
+  return String(options.rerankAgentModel || options.llmModel || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL;
+}
+
+function rerankProviderCacheShape(options) {
+  const provider = rerankAgentProvider(options);
+  if (provider === "openai") {
+    return JSON.stringify({
+      provider,
+      baseUrl: options.llmBaseUrl || DEFAULT_OPENAI_BASE_URL,
+      model: rerankAgentModel(options),
+    });
+  }
+  return JSON.stringify({
+    provider,
+    bin: options.rerankAgentBin || "codex",
+    model: options.rerankAgentModel || "",
+  });
 }
 
 function readRerankCache(cachePath) {
@@ -187,6 +220,26 @@ function parseRerankAgentOutput(output, validIds, caseId) {
 }
 
 function generateRerankWithAgent(caseItem, candidates, options) {
+  if (rerankAgentProvider(options) === "openai") {
+    return parseRerankAgentOutput(
+      runOpenAiJsonSync({
+        baseUrl: options.llmBaseUrl,
+        model: rerankAgentModel(options),
+        apiKeyEnv: options.llmApiKeyEnv,
+        prompt: rerankAgentPrompt(caseItem, candidates, options.limit ?? 20),
+        schema: RERANK_AGENT_SCHEMA,
+        schemaName: "aha_agent_rerank",
+        timeoutMs: options.rerankAgentTimeoutMs,
+      }),
+      new Set(candidates.map((candidate) => candidate.rerankId)),
+      caseItem.id,
+    );
+  }
+
+  if (!["codex", "codex-cli"].includes(rerankAgentProvider(options))) {
+    throw new Error(`${caseItem.id}: unknown rerank agent provider: ${options.rerankAgentProvider}`);
+  }
+
   const tmpRoot = mkdtempSync(join(tmpdir(), "aha-rerank-agent-"));
   const schemaPath = join(tmpRoot, "schema.json");
   const outputPath = join(tmpRoot, "rerank.json");
@@ -295,10 +348,11 @@ export function rerankCandidatesForCase(caseItem, candidates, options = {}) {
     const rankedIds = generateRerankWithAgent(caseItem, annotated, rerankOptions);
     cache.entries[cacheKey] = {
       generated_at: new Date().toISOString(),
-      generator: "codex-exec",
+      generator: rerankAgentProvider(rerankOptions) === "openai" ? "openai-responses" : "codex-exec",
       prompt_version: RERANK_AGENT_PROMPT_VERSION,
+      agent_provider: rerankAgentProvider(rerankOptions),
       agent_bin: rerankOptions.rerankAgentBin,
-      agent_model: rerankOptions.rerankAgentModel,
+      agent_model: rerankAgentModel(rerankOptions),
       ranked_ids: rankedIds,
     };
     writeRerankCache(cachePath, cache);
