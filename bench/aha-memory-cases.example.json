@@ -1,37 +1,90 @@
 {
-  "description": "Aha Memory Candidate Recall Benchmark",
-  "version": 1,
+  "_说明": {
+    "用途": "这是无隐私的 Aha 主 benchmark v3 示例。真实文件应复制为 bench/aha-memory-cases.json，并保持 Git ignored。",
+    "输入字段": {
+      "input.note": "可选：原始 insight 所在的 Obsidian 笔记路径。",
+      "input.lines": "有 note 时默认填写，1-based inclusive 行号范围，例如 [8, 20]。",
+      "input.whole_note": "仅当整篇 note 就是原始 insight 时显式设为 true。",
+      "input.thought": "真实给 /insight 的想法；有 note 时作为补充，没有 note 时就是完整输入。"
+    },
+    "评分字段": {
+      "gold.must": "必须召回；缺失算硬失败。",
+      "gold.nice": "召回很好；缺失不算硬失败。",
+      "gold.noise": "看似相关但应视为噪声；召回会降低质量。"
+    },
+    "维护字段": {
+      "state": "active 默认计分；draft 候选待确认；off 保留但不使用。",
+      "title": "人类可读短标题，不参与评分。",
+      "why": "标注理由，不参与评分。"
+    }
+  },
+  "description": "Aha Memory Candidate Recall Benchmark - sanitized v3 examples",
+  "version": 3,
   "collection": "obsidian",
   "expected_in_top_k": 10,
   "nice_expected_in_top_k": 20,
+  "expanded_pool_expected_in_top_k": 20,
   "cases": [
     {
       "id": "aha-example-001",
-      "status": "draft",
-      "type": "source-note anchored",
-      "description": "Example path-based case. Copy this file to aha-memory-cases.json and replace all sample paths before running benchmarks.",
-      "source_note_path": "~/Obsidian Notes/path/to/source-note.md",
-      "source_note_start_line": 1,
-      "source_note_end_line": 20,
-      "insight_thought": "Optional fresh thought that you would type after the note.",
-      "must_recall": [
-        "~/Obsidian Notes/path/to/must-recall-note.md"
-      ],
-      "nice_to_have": [
-        "~/Obsidian Notes/path/to/nice-to-have-note.md"
-      ],
-      "annotation_note": "Explain why the must-recall note should appear."
+      "state": "draft",
+      "title": "Source-note excerpt case",
+      "input": {
+        "note": "Sanitized/Source Insight.md",
+        "lines": [
+          1,
+          20
+        ],
+        "thought": "Optional fresh thought that you would type after reading the source excerpt."
+      },
+      "gold": {
+        "must": [
+          "Sanitized/Old Memory That Must Appear.md"
+        ],
+        "nice": [
+          "Sanitized/Useful But Optional Memory.md"
+        ],
+        "noise": [
+          "Sanitized/Looks Similar But Is Noise.md"
+        ]
+      },
+      "why": "Explain why the must memory should appear and why the noise memory is misleading. Keep real reasoning private in the local cases file."
     },
     {
       "id": "aha-example-002",
-      "status": "draft",
-      "type": "semantic",
-      "description": "Example pasted-input case. Keep realistic private cases in aha-memory-cases.json only.",
-      "insight_input": "Paste a sanitized example insight here, or keep real personal text only in the ignored local cases file.",
-      "must_recall": [
-        "path/to/must-recall-note.md"
-      ],
-      "nice_to_have": []
+      "state": "draft",
+      "title": "Standalone thought case",
+      "input": {
+        "thought": "A sanitized realistic standalone insight goes here. Keep real personal text only in ignored local files."
+      },
+      "gold": {
+        "must": [
+          "Sanitized/Semantic Must Recall.md"
+        ],
+        "nice": [],
+        "noise": [
+          "Sanitized/Semantic False Friend.md"
+        ]
+      },
+      "why": "Use standalone input only when there is no source-note excerpt for the original insight."
+    },
+    {
+      "id": "aha-example-003",
+      "state": "draft",
+      "title": "Explicit whole-note case",
+      "input": {
+        "note": "Sanitized/Whole Note Insight.md",
+        "whole_note": true,
+        "thought": "Optional extra focus for /insight."
+      },
+      "gold": {
+        "must": [
+          "Sanitized/Whole Note Must Recall.md"
+        ],
+        "nice": [],
+        "noise": []
+      },
+      "why": "Use whole_note only when the entire note is the intended benchmark input; otherwise prefer input.lines."
     }
   ]
 }
