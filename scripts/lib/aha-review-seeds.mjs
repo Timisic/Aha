@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { expandHome, normalizeSlash, toVaultRelativePath } from "./vault-paths.mjs";
 
 export const DEFAULT_REVIEW_FOLDER = "Aha/Reviews";
 export const DEFAULT_SEED_CASES_PATH = "bench/aha-memory-seed-cases.json";
@@ -39,12 +40,13 @@ export function buildReviewSeedCaseDocument(reviewNotes, options = {}) {
       sourcePath: frontmatterField(content, "source_path"),
       sourceTitle: frontmatterSourceTitle(content),
       reviewNotePath: notePath,
+      vaultRoot: options.vaultRoot,
     };
     const seeds = parseReviewBenchmarkSeedsFromContent(content, fallback);
     for (const seed of seeds) {
       seen += 1;
-      const sourcePath = cleanPath(seed.sourcePath || fallback.sourcePath);
-      const memoryPath = cleanPath(seed.memoryPath || seed.memory);
+      const sourcePath = cleanPath(seed.sourcePath || fallback.sourcePath, options);
+      const memoryPath = cleanPath(seed.memoryPath || seed.memory, options);
       const label = seedLabel(seed);
       if (!sourcePath) {
         warnings.push(`${notePath || "(unknown review note)"}: skipped seed without source path at ${seed.createdAt || "unknown time"}`);
@@ -112,7 +114,7 @@ export function collectReviewSeedCasesFromVault(options = {}) {
     path: relative(vaultRoot, file).replace(/\\/g, "/"),
     content: readFileSync(file, "utf-8"),
   }));
-  const document = buildReviewSeedCaseDocument(notes, options);
+  const document = buildReviewSeedCaseDocument(notes, { ...options, vaultRoot });
   return {
     vaultRoot,
     reviewRoot,
@@ -148,10 +150,10 @@ function parseReviewBenchmarkSeedSection(section, fullContent, fallback) {
     status: "draft",
     seedLabel,
     createdAt,
-    sourcePath: cleanPath(parsedSource?.path || source || fallback.sourcePath || frontmatterField(fullContent, "source_path")),
+    sourcePath: cleanPath(parsedSource?.path || source || fallback.sourcePath || frontmatterField(fullContent, "source_path"), fallback),
     sourceTitle: parsedSource?.title || fallback.sourceTitle || "",
     memory: memory || undefined,
-    memoryPath: cleanPath(parsedMemory?.path || memory),
+    memoryPath: cleanPath(parsedMemory?.path || memory, fallback),
     relation: fields.get("relation") || undefined,
     hit: fields.get("hit") || undefined,
     why: fields.get("why") || undefined,
@@ -327,12 +329,12 @@ function ensureMarkdownExtension(target) {
   return /\.md$/i.test(base) ? `${base}${suffix}` : `${base}.md${suffix}`;
 }
 
-function cleanPath(value) {
+function cleanPath(value, options = {}) {
   const raw = stripWrappingBackticks(String(value ?? "").trim());
   if (!raw) return "";
   const parsed = parseObsidianMarkdownLink(raw);
-  if (parsed) return parsed.path;
-  return raw.replace(/^<|>$/g, "").trim();
+  if (parsed) return toVaultRelativePath(parsed.path, options);
+  return toVaultRelativePath(raw.replace(/^<|>$/g, "").trim(), options);
 }
 
 function canonicalPathKey(value) {
@@ -373,17 +375,6 @@ function slug(value) {
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
-}
-
-function normalizeSlash(value) {
-  return String(value ?? "").replace(/\\/g, "/");
-}
-
-function expandHome(value) {
-  const raw = String(value ?? "");
-  if (raw === "~") return process.env.HOME || raw;
-  if (raw.startsWith("~/")) return resolve(process.env.HOME || ".", raw.slice(2));
-  return raw;
 }
 
 function escapeRegExp(value) {

@@ -18,7 +18,8 @@ function usage() {
     "  --dry-run                 Print JSON to stdout instead of writing the output file.",
     "  -h, --help                Show this help.",
     "",
-    "The output is benchmark-like draft case JSON. It does not modify bench/aha-memory-cases.json.",
+    "The output is benchmark-like draft case JSON with vault-relative note paths.",
+    "It does not modify bench/aha-memory-cases.json.",
   ].join("\n");
 }
 
