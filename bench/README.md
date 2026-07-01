@@ -14,7 +14,21 @@ Start by copying the sanitized template:
 cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json
 ```
 
-Then edit `aha-memory-cases.json` using the v3 primary benchmark schema. The fields you must fill for each real case are:
+Then edit `aha-memory-cases.json` using the v3 primary benchmark schema. Prefer vault-relative note paths, not full local paths. In other words, write:
+
+```json
+"Categories/Evergreen/example-feedback-density.md"
+```
+
+instead of:
+
+```json
+"/path/to/vault/Categories/Evergreen/example-feedback-density.md"
+```
+
+The runner resolves these short paths under `AHA_BENCH_VAULT_ROOT` / `~/Obsidian Notes`.
+
+The fields you must fill for each real case are:
 
 - `id`: a stable short id, such as `aha-001`.
 - `state`: case lifecycle state:
@@ -23,12 +37,12 @@ Then edit `aha-memory-cases.json` using the v3 primary benchmark schema. The fie
   - `off`: retained but excluded even when drafts are included.
 - `title`: short human label for reports and curation. It is not retrieval input and does not affect scoring.
 - `input`: the real material you would give `/insight`:
-  - `input.note`: optional Obsidian note path.
+  - `input.note`: optional Obsidian note path. Prefer a path relative to the vault root.
   - `input.lines`: required by default when `input.note` is present; 1-based inclusive line range, e.g. `[8, 20]`.
   - `input.whole_note`: set to `true` only when the whole note is intentionally the benchmark input. Do not use missing `lines` as an implicit whole-note read.
   - `input.thought`: the real `/insight` thought; with `note` it is extra focus, without `note` it is the complete standalone input.
 - `gold`: human labels used for scoring:
-  - `gold.must`: 1-8 old note paths that must appear in the ten-candidate Review Attention Budget unless `expected_no_recall` is explicitly true.
+  - `gold.must`: 1-8 old note paths, preferably vault-relative, that must appear in the ten-candidate Review Attention Budget unless `expected_no_recall` is explicitly true.
   - `gold.nice`: useful old notes that improve review quality but should not count as hard failures if missing.
   - `gold.noise`: superficially related notes that should be treated as noise if surfaced as useful.
 - `why`: short annotation rationale for future human maintenance. It is not retrieval input and does not affect scoring.
@@ -58,6 +72,14 @@ node scripts/bench/extract-note-excerpt.mjs --case aha-001 --full-input
 ```
 
 The preview script refuses to read a whole note unless `--allow-full-note` is explicit on the CLI or `input.whole_note: true` is explicit in the case. This is a safety check: benchmark inputs should normally expose only the original line range to the LLM, not the entire evolving note.
+
+If a case file has already accumulated full vault paths, normalize it back to the shorter writing style:
+
+```bash
+node scripts/bench/normalize-case-paths.mjs bench/aha-memory-cases.json
+```
+
+With no file arguments, the script normalizes existing local benchmark case files under `bench/`.
 
 Do not hand-write search keywords as the source of truth. The source of truth is the realistic insight input plus the human labels (`gold.must`, `gold.nice`, and `gold.noise`).
 Benchmark queries are generated from the resolved raw input only; they do not read gold labels, `title`, or `why`, and cases should not contain hand-tuned query fields.
@@ -102,10 +124,10 @@ node scripts/bench/run-pipeline-bench.mjs \
 
 Path notes:
 
-- `input.note` can be an absolute path, a path relative to this `bench/` folder, or a path under the Obsidian vault root.
+- `input.note` can still be an absolute path, a path relative to this `bench/` folder, or a path under the Obsidian vault root, but vault-relative paths are the recommended hand-editing format.
 - By default the vault root is the local Obsidian vault, usually `~/Obsidian Notes`.
 - Override it with `AHA_BENCH_VAULT_ROOT=/path/to/vault` if needed.
-- `gold.must` / `gold.nice` / `gold.noise` paths can be absolute or collection-relative, but they must resolve to a unique canonical vault-relative identity. The scorer no longer accepts suffix-only matches because duplicate basenames can create false hits.
+- `gold.must` / `gold.nice` / `gold.noise` paths can be absolute or collection-relative, but vault-relative is preferred and they must resolve to a unique canonical vault-relative identity. The scorer no longer accepts suffix-only matches because duplicate basenames can create false hits.
 
 Minimal source-note excerpt case:
 

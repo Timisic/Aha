@@ -9,6 +9,7 @@ scripts/
   bench/
     build-fixture.mjs       # Build a qmd bench fixture from active cases.
     collect-review-seeds.mjs # Collect Obsidian Review Note seeds into an ignored draft case inbox.
+    normalize-case-paths.mjs # Rewrite vault-absolute case paths to vault-relative paths.
     run-qmd-bench.mjs       # L1: QMD-only retrieval benchmark.
     run-pipeline-bench.mjs  # L2: query agent -> QMD -> backlinks -> rerank benchmark.
     summarize-report.mjs    # Print a compact QMD bench report summary.
@@ -48,6 +49,12 @@ Collect Obsidian Review Note seeds into a private draft case inbox:
 node scripts/bench/collect-review-seeds.mjs \
   --vault-root "$HOME/Obsidian Notes" \
   --output bench/aha-memory-seed-cases.json
+```
+
+Normalize private benchmark case files to the shorter vault-relative path style:
+
+```bash
+node scripts/bench/normalize-case-paths.mjs
 ```
 
 Run the pipeline benchmark:

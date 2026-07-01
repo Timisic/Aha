@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -280,6 +280,55 @@ test("source note line ranges bound benchmark input and preview CLI output", asy
 
   await rm(root, { recursive: true, force: true });
   await rm(vaultRoot, { recursive: true, force: true });
+});
+
+test("normalize-case-paths rewrites vault-absolute case paths to vault-relative paths", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-normalize-case-paths-"));
+  const vaultRoot = path.join(root, "vault");
+  process.env.AHA_BENCH_VAULT_ROOT = vaultRoot;
+  await mkdir(path.join(vaultRoot, "Source"), { recursive: true });
+  await mkdir(path.join(vaultRoot, "Memory"), { recursive: true });
+  await writeFile(path.join(vaultRoot, "Source/Insight.md"), "line one\nline two\n");
+  await writeFile(path.join(vaultRoot, "Memory/Must.md"), "must memory\n");
+  await writeFile(path.join(vaultRoot, "Memory/Nice.md"), "nice memory\n");
+  const casesPath = path.join(root, "cases.json");
+  await writeFile(casesPath, JSON.stringify({
+    collection: "obsidian",
+    cases: [
+      {
+        id: "absolute-case",
+        state: "active",
+        input: {
+          note: path.join(vaultRoot, "Source/Insight.md"),
+          lines: [1, 1],
+        },
+        gold: {
+          must: [path.join(vaultRoot, "Memory/Must.md")],
+          nice: [path.join(vaultRoot, "Memory/Nice.md")],
+          noise: [],
+        },
+      },
+    ],
+  }, null, 2));
+
+  const result = spawnSync("node", [
+    "scripts/bench/normalize-case-paths.mjs",
+    casesPath,
+    "--vault-root", vaultRoot,
+  ], {
+    cwd: repoRoot,
+    encoding: "utf-8",
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const document = JSON.parse(await readFile(casesPath, "utf-8"));
+  assert.equal(document.cases[0].input.note, "Source/Insight.md");
+  assert.deepEqual(document.cases[0].gold.must, ["Memory/Must.md"]);
+  assert.deepEqual(document.cases[0].gold.nice, ["Memory/Nice.md"]);
+  const bench = readBenchmarkCases(casesPath);
+  assert.deepEqual(bench.cases.map((item) => item.id), ["absolute-case"]);
+
+  await rm(root, { recursive: true, force: true });
 });
 
 test("case lifecycle keeps normal runs active-only while includeDraft validates draft and excludes off", async () => {

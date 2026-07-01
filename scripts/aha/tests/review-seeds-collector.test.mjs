@@ -93,6 +93,41 @@ test("collector resolves conflicting labels without emitting duplicate benchmark
   ]);
 });
 
+test("collector writes vault-relative paths when review seeds contain absolute vault paths", async () => {
+  const root = await mkdtempDir("aha-review-seeds-relative-");
+  const vault = path.join(root, "vault");
+  const sourcePath = path.join(vault, "Source/Insight.md");
+  const memoryPath = path.join(vault, "Memory/Missing Must.md");
+  const content = [
+    "---",
+    "aha: review",
+    `source_path: \"${sourcePath}\"`,
+    "status: memory_review",
+    "---",
+    "",
+    "<!-- aha:review-benchmark-seeds:start -->",
+    "### Review Benchmark Seed - 2026-06-30T01:00:00.000Z",
+    "",
+    "- action: `should_have_found`",
+    "- status: draft",
+    "- seed_label: `must_recall`",
+    `- source: ${sourcePath}`,
+    `- memory: ${memoryPath}`,
+    "<!-- aha:review-benchmark-seeds:end -->",
+    "",
+  ].join("\n");
+
+  const document = buildReviewSeedCaseDocument([
+    { path: "Aha/Reviews/Insight.md", content },
+  ], { generatedAt: new Date("2026-06-30T02:00:00Z"), vaultRoot: vault });
+
+  assert.equal(document.cases.length, 1);
+  assert.equal(document.cases[0].input.note, "Source/Insight.md");
+  assert.deepEqual(document.cases[0].gold.must, ["Memory/Missing Must.md"]);
+
+  await rm(root, { recursive: true, force: true });
+});
+
 test("collect-review-seeds CLI writes draft cases that benchmark reader can validate", async () => {
   const root = await mkdtempDir("aha-review-seeds-cli-");
   const vault = path.join(root, "vault");
