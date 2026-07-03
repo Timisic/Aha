@@ -1612,30 +1612,6 @@ function relationJudgeFailureFromRows(args, rows, reason, tool = "codex") {
   };
 }
 
-function fallbackQmdQuery(args, sourceText) {
-  const title = path.basename(args.sourcePath || "source", ".md");
-  const heading = sourceText.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim() || title;
-  const wikiLinks = [...sourceText.matchAll(/\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g)]
-    .map((match) => match[1].trim())
-    .filter(Boolean);
-  const lex = unique([heading, title, ...wikiLinks]).slice(0, 5);
-  const vec = sourceText
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/^---[\s\S]*?---/m, " ")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^#+\s*/, "").trim())
-    .filter((line) => line.length > 12 && line.length < 180)
-    .slice(0, 6)
-    .join(" ");
-
-  return [
-    `intent: 召回与当前 Aha insight/source note 相关的旧判断、反例、边界和相似结构。`,
-    ...lex.map((item) => `lex: ${item}`),
-    `vec: ${(vec || heading).slice(0, 500)}`,
-    `hyde: 一篇旧笔记讨论与「${heading}」相关的经验、判断变化、产品边界或记忆检索线索。`,
-  ].join("\n");
-}
-
 function fallbackCandidate(args, row) {
   const notePath = notePathForObsidian(args, row);
   const noteTitle = typeof row.title === "string" && row.title.trim()
@@ -1705,10 +1681,6 @@ function isGeneratedReviewCandidate(args, notePath, row) {
     const normalized = normalizeNoteIdentity(value);
     return normalized === "aha/reviews" || normalized.startsWith("aha/reviews/");
   });
-}
-
-function safeCaseId(value) {
-  return String(value || "source").replace(/[^a-zA-Z0-9_.-]+/g, "-").slice(0, 80) || "source";
 }
 
 function extractCodexJson(stdout) {

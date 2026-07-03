@@ -5,11 +5,12 @@
 ## 构建验证
 
 ```bash
-cd obsidian-plugin
+npm ci
+npm ci --prefix obsidian-plugin
 npm run verify
 ```
 
-`verify` 会依次运行 TypeScript typecheck、wrapper/review-note 回归测试，以及 production build。
+根目录 `verify` 会依次运行脚本 lint、脚本语法检查、TypeScript typecheck、wrapper/review-note 回归测试，以及 production build。
 
 ## 插件配置
 

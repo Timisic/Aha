@@ -154,7 +154,8 @@ bench/aha-memory-cases.json
 本地验证：
 
 ```bash
-cd obsidian-plugin
+npm ci
+npm ci --prefix obsidian-plugin
 npm run verify
 ```
 
