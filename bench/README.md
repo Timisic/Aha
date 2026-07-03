@@ -243,7 +243,7 @@ qmd --index obsidian bench bench/generated/qmd-fixture.json --json
 and writes the latest report to `bench/reports/latest/qmd.json`.
 Timestamped copies go under `bench/reports/archive/`.
 The report fixture records `query_generated_by`, `query_object`, and any fallback error so query-generation drift is visible.
-The benchmark policy boundary is split by module: `scripts/aha/query-plan.mjs` owns query generation and its `rules` / cached agent adapters; `scripts/aha/relation-judge.mjs` owns quote-backed relation judging and benchmark reranking; `scripts/lib/aha-bench-evaluation.mjs` owns path matching, source-note exclusion, must-recall / nice-to-have scoring, and report summary policy.
+The benchmark policy boundary is split by module: `scripts/aha/query-plan.mjs` owns query generation and its `rules` / cached agent adapters; `scripts/aha/relation-judge.mjs` owns quote-backed relation judging and benchmark reranking; `scripts/lib/bench-scoring.mjs` owns path matching, source-note exclusion, must-recall / nice-to-have scoring, and report summary policy.
 
 L2: Memory pipeline approximation.
 

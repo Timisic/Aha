@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { expandHome, normalizeFailureAttribution, qmdExpectedPath } from "./aha-bench-evaluation.mjs";
+import { expandHome, normalizeFailureAttribution, qmdExpectedPath } from "./bench-scoring.mjs";
 import { normalizeLineRange, parseLineRange, sliceLineRange } from "./note-excerpt.mjs";
 import {
   buildVaultPathResolver,
@@ -35,7 +35,7 @@ export {
   scoreResults,
   sourceNotePathForCase,
   summarizePipelineEvaluation,
-} from "./aha-bench-evaluation.mjs";
+} from "./bench-scoring.mjs";
 
 function sliceSourceNote(content, caseItem) {
   if (!caseItem.source_note_start_line && !caseItem.source_note_end_line && !caseItem.allow_full_note) {

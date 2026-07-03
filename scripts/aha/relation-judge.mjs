@@ -9,7 +9,7 @@ import {
   candidatePath,
   candidateSourceLabel,
   candidateSourceList,
-} from "../lib/aha-candidate-identity.mjs";
+} from "../lib/candidate-fields.mjs";
 import { compactLine } from "./query-plan.mjs";
 import {
   DEFAULT_OPENAI_API_KEY_ENV,

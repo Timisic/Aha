@@ -16,7 +16,7 @@ import {
   scoreResults,
   summarizePipelineEvaluation,
   validateCase,
-} from "../../lib/aha-bench-common.mjs";
+} from "../../lib/bench-cases.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const previousVaultRoot = process.env.AHA_BENCH_VAULT_ROOT;
@@ -645,7 +645,7 @@ test("summarize-report displays pipeline eval-v2 diagnostics", async () => {
 });
 
 test("pipeline benchmark emits structured PipelineTrace artifacts", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "aha-pipeline-trace-"));
+  const root = await mkdtemp(path.join(tmpdir(), "pipeline-trace-"));
   const vaultRoot = path.join(root, "vault");
   const binDir = path.join(root, "bin");
   const casesPath = path.join(root, "cases.json");

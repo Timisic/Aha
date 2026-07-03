@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveQmdQueriesForCase } from "../../lib/aha-bench-common.mjs";
+import { resolveQmdQueriesForCase } from "../../lib/bench-cases.mjs";
 import { relationJudgeCandidatesForCase } from "../../aha/relation-judge.mjs";
 
 const previousKey = process.env.AHA_TEST_OPENAI_KEY;
