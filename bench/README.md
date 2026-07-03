@@ -296,16 +296,6 @@ Use `-- <pipeline options>` to pass options through to every child run, for exam
 node scripts/bench/run-pipeline-ablations.mjs -- --query-generator rules --reranker none
 ```
 
-## L3 Core Loop
-
-Run the scripted human-in-the-loop contract benchmark:
-
-```bash
-node scripts/bench/run-l3-core-loop.mjs
-```
-
-The L3 wrapper runs the deterministic UltraQA extension harness and writes `bench/reports/latest/l3-core-loop.json` plus a timestamped archive. It verifies the tool-level contract around candidate display, user memory review, readiness gating, summary artifact creation, source-note non-mutation, resume, and second memory search.
-
 ## Eval-v2 Metrics
 
 Aha eval-v2 optimizes valuable old-memory concentration under a ten-candidate Review Attention Budget. The main question is not “did any search result look plausible,” but “did the ten items worth reviewing contain the required memories, useful optional memories, and little active noise?”

@@ -1,6 +1,6 @@
 # Aha Obsidian 插件 Smoke
 
-这条 smoke 用来验证第一版 Obsidian 插件 MVP。它不迁移、不删除现有 `insight-package/`；插件只作为 Memory Surface，检索编排和关系判断仍在 `scripts/aha/run-insight-search.mjs`。
+这条 smoke 用来验证第一版 Obsidian 插件 MVP。插件只作为 Memory Surface，检索编排和关系判断在 `scripts/aha/run-insight-search.mjs`。
 
 ## 构建验证
 
