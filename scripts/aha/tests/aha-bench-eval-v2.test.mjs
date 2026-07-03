@@ -656,6 +656,7 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
   await mkdir(binDir, { recursive: true });
   await writeFile(path.join(vaultRoot, "Memory/must.md"), "Must memory body.\n");
   await writeFile(path.join(vaultRoot, "Memory/noise.md"), "Noise memory body.\n");
+  await writeFile(path.join(vaultRoot, "Memory/linked.md"), "Realistic backlink evidence.\n");
   await writeFile(casesPath, JSON.stringify({
     collection: "obsidian",
     expected_in_top_k: 1,
@@ -719,8 +720,8 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
     "#!/usr/bin/env node",
     "const args = process.argv.slice(2);",
     "if (args.includes('--version')) { console.log('obsidian-test 1.0'); process.exit(0); }",
-    "if (args[0] === 'backlinks') { console.log('[]'); process.exit(0); }",
-    "if (args[0] === 'read') { console.log(''); process.exit(0); }",
+    "if (args[0] === 'backlinks') { console.log(JSON.stringify([{ path: 'Memory/linked.md', title: 'Linked realistic memory', count: 1 }])); process.exit(0); }",
+    "if (args[0] === 'read') { console.log('Realistic backlink evidence for the insight.'); process.exit(0); }",
     "console.log('ok');",
     "",
   ].join("\n"));
@@ -767,7 +768,14 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
   assert.equal(trace.case.id, "trace/rerank");
   assert.equal(trace.steps.query_generation.generated_by, "rules");
   assert.equal(trace.steps.qmd_runs[0].results[0].file, "Memory/noise.md");
+  assert.equal(trace.steps.qmd_runs[0].results[0].rerank_id, "c001");
+  assert.equal(trace.steps.qmd_runs[0].results[1].rerank_id, "c002");
+  assert.equal(trace.steps.backlink_expansion.seeds[0].rerank_id, "c001");
+  assert.equal(trace.steps.backlink_expansion.candidates[0].file, "Memory/linked.md");
+  assert.equal(trace.steps.backlink_expansion.candidates[0].rerank_id, "c003");
   assert.equal(trace.steps.pre_rerank_candidates[0].rerank_id, "c001");
+  assert.equal(trace.steps.pre_rerank_candidates[1].rerank_id, "c002");
+  assert.equal(trace.steps.pre_rerank_candidates[2].rerank_id, "c003");
   assert.equal(trace.steps.pre_rerank_candidates[1].content_hash.length, 64);
   assert.equal(trace.steps.pre_rerank_candidates[1].snippet, "Useful old memory evidence.");
   assert.equal(trace.steps.final_candidates[0].file, "Memory/noise.md");

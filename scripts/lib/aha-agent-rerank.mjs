@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import {
+  annotateCandidateRerankIds as annotateCandidates,
+  candidateSourceLabel,
+} from "./aha-candidate-identity.mjs";
 import { compactLine } from "./aha-query-generation.mjs";
 import {
   DEFAULT_OPENAI_API_KEY_ENV,
@@ -136,23 +140,13 @@ function writeRerankCache(cachePath, cache) {
   writeFileSync(resolve(cachePath), `${JSON.stringify(cache, null, 2)}\n`);
 }
 
-function annotateCandidates(candidates) {
-  return candidates.map((candidate, index) => ({
-    ...candidate,
-    rerankId: `c${String(index + 1).padStart(3, "0")}`,
-  }));
-}
-
 function rerankAgentPrompt(caseItem, candidates, finalLimit) {
   const candidateLines = candidates.map((candidate) => {
-    const sourceLabel = Array.isArray(candidate.sources) && candidate.sources.length > 0
-      ? candidate.sources.join("+")
-      : candidate.source;
     return [
       `id: ${candidate.rerankId}`,
       `title: ${compactLine(candidate.title, 120)}`,
       `path: ${compactLine(candidate.file ?? "", 180)}`,
-      `source: ${sourceLabel}`,
+      `source: ${candidateSourceLabel(candidate)}`,
       candidate.expansionFrom ? `linked_from: ${compactLine(candidate.expansionFrom, 180)}` : "",
       `snippet: ${compactLine(candidate.content ?? "", 500)}`,
     ].filter(Boolean).join("\n");

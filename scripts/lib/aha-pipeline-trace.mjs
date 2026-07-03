@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathsMatch } from "./aha-bench-evaluation.mjs";
+import {
+  annotateCandidateRerankIds,
+  candidatePath,
+  candidateSourceLabel,
+  candidateSourceList,
+} from "./aha-candidate-identity.mjs";
 
 const TRACE_SCHEMA = "PipelineTrace";
 const TRACE_VERSION = 1;
@@ -21,24 +27,31 @@ function boundedSnippet(value, maxChars = DEFAULT_SNIPPET_CHARS) {
   return `${compact.slice(0, maxChars).trimEnd()}...`;
 }
 
-function candidatePath(candidate) {
-  return candidate?.file || candidate?.path || candidate?.slug || candidate?.title || "";
+function candidateIdentityKey(candidate) {
+  return candidatePath(candidate).trim().toLowerCase();
 }
 
-function sourceList(candidate) {
-  if (Array.isArray(candidate?.sources) && candidate.sources.length > 0) return candidate.sources;
-  return candidate?.source ? [candidate.source] : [];
+function rerankIdLookup(candidates) {
+  const byKey = new Map();
+  for (const candidate of candidates) {
+    const key = candidateIdentityKey(candidate);
+    if (!key || !candidate?.rerankId || byKey.has(key)) continue;
+    byKey.set(key, candidate.rerankId);
+  }
+  return byKey;
 }
 
-function traceCandidate(candidate, index) {
+function traceCandidate(candidate, index, rerankIdsByKey = new Map()) {
   const content = String(candidate?.content ?? "");
+  const sources = candidateSourceList(candidate);
+  const key = candidateIdentityKey(candidate);
   return {
     rank: index + 1,
-    rerank_id: candidate?.rerankId,
+    rerank_id: candidate?.rerankId ?? rerankIdsByKey.get(key),
     title: candidate?.title,
     file: candidatePath(candidate),
-    source: sourceList(candidate).join("+") || candidate?.source || undefined,
-    sources: sourceList(candidate),
+    source: candidateSourceLabel(candidate),
+    sources,
     expansion_from: candidate?.expansionFrom || undefined,
     query_kind: candidate?.queryKind || undefined,
     query_command: candidate?.queryCommand || undefined,
@@ -56,7 +69,7 @@ function sourceFor(file, candidateGroups) {
   for (const candidates of candidateGroups) {
     const match = candidates.find((candidate) => pathsMatch(candidatePath(candidate), file));
     if (!match) continue;
-    return sourceList(match).join("+") || match.source || "unknown";
+    return candidateSourceLabel(match) || "unknown";
   }
   return "missing";
 }
@@ -138,6 +151,9 @@ export function buildPipelineTrace({
   failureAttribution,
   topK,
 }) {
+  const tracePreRerankCandidates = annotateCandidateRerankIds(preRerankCandidates ?? expandedPool ?? []);
+  const rerankIdsByKey = rerankIdLookup([...tracePreRerankCandidates, ...(finalCandidates ?? [])]);
+  const toTraceCandidate = (candidate, index) => traceCandidate(candidate, index, rerankIdsByKey);
   const positions = {
     must: goldPositions(caseItem.must_recall ?? [], qmdCandidates, expandedPool, finalCandidates, topK),
     nice: goldPositions(caseItem.nice_to_have ?? [], qmdCandidates, expandedPool, finalCandidates, topK),
@@ -184,23 +200,23 @@ export function buildPipelineTrace({
         command: runItem.command,
         query: runItem.query,
         qmd: runItem.qmd,
-        results: runItem.candidates.map(traceCandidate),
+        results: runItem.candidates.map(toTraceCandidate),
         errors: runItem.errors,
       })),
       backlink_expansion: {
         seed_strategy: seedStrategy,
-        seeds: backlinkSeeds.map(traceCandidate),
-        candidates: backlinkResult.candidates.map(traceCandidate),
+        seeds: backlinkSeeds.map(toTraceCandidate),
+        candidates: backlinkResult.candidates.map(toTraceCandidate),
         errors: backlinkResult.errors,
       },
-      pre_rerank_candidates: preRerankCandidates.map(traceCandidate),
+      pre_rerank_candidates: tracePreRerankCandidates.map(toTraceCandidate),
       rerank: {
         generated_by: rerankResult.rerank_generated_by,
         fallback: !!rerankResult.rerank_fallback,
         error: rerankResult.rerank_error ?? null,
         ranked_ids: rerankResult.rerank_ranked_ids ?? [],
       },
-      final_candidates: finalCandidates.map(traceCandidate),
+      final_candidates: finalCandidates.map(toTraceCandidate),
     },
     gold_positions: positions,
     diagnosis,
