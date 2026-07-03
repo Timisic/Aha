@@ -253,6 +253,20 @@ node scripts/bench/run-pipeline-bench.mjs
 
 This reads the same active cases, asks the query-generation agent for 3-5 structured QMD queries, runs QMD for seed candidates, expands backlinks from the top 10 QMD seeds with Obsidian CLI, merges QMD/backlink evidence, asks a rerank agent to rank the combined candidate pool, and writes `bench/reports/latest/pipeline.json`.
 
+Each L2 case also writes a structured `PipelineTrace` JSON artifact under:
+
+```text
+bench/reports/latest/traces/<case-id>-<hash>.json
+```
+
+`PipelineTrace` is the source of truth for process feedback. It is not a Markdown report and should not store full note bodies by default. Each trace records:
+
+- `steps`: query generation, QMD runs, backlink expansion, pre-rerank candidates, rerank metadata, and final candidates.
+- `gold_positions`: where must, nice, and noise labels appeared across QMD, expanded-pool, and final stages.
+- `diagnosis`: the rule-based next optimization target, such as query generation, retrieval, rerank, case labels, or runtime reliability.
+
+Use the trace to separate "the memory was never reached" from "the memory was reached before rerank but missed the Review Attention Budget." The top-level `pipeline.json` links each case to its trace with `trace_json` and summarizes diagnosis counts in `summary.trace_diagnosis_counts`. Timestamped archive reports write their own trace copies under `bench/reports/archive/traces/<archive-report-name>/` so archived evidence is not overwritten by later runs.
+
 L2 answers a different question from L1:
 
 - L1: can QMD directly retrieve the must-recall notes?
