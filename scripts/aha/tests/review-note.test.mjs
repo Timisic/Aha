@@ -333,23 +333,28 @@ test("review note matching allows path drift only for filesystem-backed source_i
 
 test("plugin wrapper validator requires structured failure fields", async () => {
   const schema = await loadTsModule("obsidian-plugin/src/schema.ts");
+  const validator = await import("../lib/result-validator.mjs");
 
-  const incomplete = schema.validateAhaWrapperResult({
+  const incompletePayload = {
     ok: false,
     error: {
       message: "failed without tool or details",
     },
-  });
-  const complete = schema.validateAhaWrapperResult({
+  };
+  const completePayload = {
     ok: false,
     error: {
       message: "Aha retrieval returned no usable candidates.",
       tool: "qmd",
       details: "QMD and Obsidian graph expansion returned no vault-contained candidates.",
     },
-  });
+  };
+  const incomplete = schema.validateAhaWrapperResult(incompletePayload);
+  const complete = schema.validateAhaWrapperResult(completePayload);
+  const sharedIncomplete = validator.validateAhaResult(incompletePayload);
 
   assert.equal(incomplete.ok, false);
+  assert.deepEqual(incomplete.errors, sharedIncomplete.errors);
   assert.ok(incomplete.errors.some((error) => error.includes("error.tool")));
   assert.ok(incomplete.errors.some((error) => error.includes("error.details")));
   assert.equal(complete.ok, true);

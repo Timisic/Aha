@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
-import { validateAhaResult } from "../lib/aha-result-schema.mjs";
+import { validateAhaResult } from "../lib/result-validator.mjs";
 import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "../lib/note-identity.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
