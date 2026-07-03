@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { validateAhaResult } from "./lib/aha-result-schema.mjs";
+import { validateAhaResult } from "./lib/result-validator.mjs";
 import {
   annotateCandidateRerankIds as annotateCandidates,
   candidatePath,

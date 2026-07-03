@@ -9,7 +9,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { validateAhaResult } from "./lib/aha-result-schema.mjs";
+import { validateAhaResult } from "./lib/result-validator.mjs";
 import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "./lib/note-identity.mjs";
 import {
   fallbackQmdObject as sharedFallbackQmdObject,
