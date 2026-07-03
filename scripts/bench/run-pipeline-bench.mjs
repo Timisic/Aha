@@ -27,6 +27,11 @@ import {
   writePipelineTraceForReport,
 } from "../lib/aha-pipeline-trace.mjs";
 import {
+  candidatePath,
+  candidateSourceLabel as sourceLabel,
+  candidateSourceList as sourceList,
+} from "../lib/aha-candidate-identity.mjs";
+import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
   resolveVaultPath as sharedResolveVaultPath,
 } from "../../insight-package/src/path-resolver.js";
@@ -337,10 +342,6 @@ function fileLabel(path) {
   return basename(value).replace(/\.md$/i, "") || value;
 }
 
-function candidatePath(candidate) {
-  return candidate.file || candidate.path || candidate.slug || candidate.title;
-}
-
 function stripPathDecorations(path) {
   return String(path ?? "")
     .trim()
@@ -620,25 +621,6 @@ function mergeCandidates(candidates, limit) {
     if (merged.length >= limit) break;
   }
   return merged;
-}
-
-function annotateRerankInputCandidates(candidates) {
-  return candidates.map((candidate, index) => ({
-    ...candidate,
-    rerankId: `c${String(index + 1).padStart(3, "0")}`,
-  }));
-}
-
-function sourceList(candidate) {
-  if (Array.isArray(candidate.sources) && candidate.sources.length > 0) {
-    return candidate.sources;
-  }
-  return candidate.source ? [candidate.source] : [];
-}
-
-function sourceLabel(candidate) {
-  const sources = sourceList(candidate);
-  return sources.length > 0 ? sources.join("+") : candidate.source;
 }
 
 function mergeCandidateEvidence(candidates) {
@@ -1185,7 +1167,7 @@ function main() {
       backlinkResult,
       seedStrategy: options.seedStrategy,
       expandedPool,
-      preRerankCandidates: annotateRerankInputCandidates(expandedPool),
+      preRerankCandidates: expandedPool,
       rerankResult,
       finalCandidates,
       failureAttribution,
