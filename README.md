@@ -1,10 +1,10 @@
 # Aha
 
-一个用于 Insight-to-Judgment 的 Pi Extension。
+一个用于 Obsidian 旧笔记召回与 insight grounding 的本地工具。
 
 把突然出现的想法，带着旧笔记一起走到一份可回看的判断草稿。
 
-Aha 提供一条 `/insight` 工作流：你把当前想法、背景和可选的原始笔记贴进去，Agent 会帮你检索相关旧笔记、组织回看顺序、提出追问，并在你确认后输出 summary draft。
+Aha 现在的主路径是 Obsidian 插件 + 本地 search runner：你从当前笔记触发 Aha search，runner 生成多条 QMD 查询、召回旧笔记、读取候选正文，并用 bounded Relation Judge 给出关系判断。
 
 它重点降低的是这段认知阻力：从“我感觉这个想法很重要”，到“我能说清它连接了哪些旧经验、改变了什么判断、应该怎样沉淀下来”。
 
@@ -14,23 +14,16 @@ Aha 提供一条 `/insight` 工作流：你把当前想法、背景和可选的�
 
 ## 快速开始
 
-在 Pi 中输入：
+在 Obsidian 插件设置里配置本地 Aha workspace 后，从命令面板运行：
 
 ```text
-/insight
+Aha: Search from current note
 ```
 
-然后粘贴这几类内容：
-
-- 当前想法：一句让你感觉需要更新理解的话。
-- 背景：它来自哪里，正在回应什么问题。
-- 原始笔记：可选，可以贴 Obsidian 原文或片段。
-- 旧笔记线索：可选，如果你已经想到某些相关旧内容，可以写上标题或关键词。
-
-也可以直接行内启动：
+插件会为当前笔记生成或复用一份 Aha Review Note，并把检索结果写入其中：
 
 ```text
-/insight 这里写当前想法和背景
+Aha/Reviews/
 ```
 
 ## 它帮你完成什么
@@ -84,61 +77,47 @@ Agent 会围绕候选判断追问你：你接受哪部分，拒绝哪部分，�
 -> 输出草稿
 ```
 
-中间会形成一个小循环：你在 Review 旧笔记，Agent 在 Grill 你的判断。过程中如果出现新的重要想法，可以再次触发 memory search，继续找相关旧内容。
+中间会形成一个小循环：你在 Review Note 里勾选、拒绝或记录应该找到的旧记忆；Aha 把这些可见反馈保存成 benchmark seed，后续可以用来改进召回质量。
 
 ## 命令
 
 ```text
-/insight
+Aha: Search from current note
 ```
 
-没有 active insight mode 时，打开编辑器并创建新 session。已经处在 insight mode 时，取消当前模式并清掉待注入上下文。
+从当前 Markdown note 触发一轮检索，并打开或更新对应的 Aha Review Note。
 
 ```text
-/insight list
+Aha: Open current review note
 ```
 
-列出近期 session。
+打开当前 source note 对应的 Review Note。
 
 ```text
-/insight resume <session>
+Aha: Open Aha Review Panel
 ```
 
-恢复某个旧 session。`<session>` 可以是 session id 或目录名片段。
+打开 Review Panel，快速同步 selected memories 和 handoff。
 
 ```text
-/insight current
+Aha: Open candidate under cursor in new tab
 ```
 
-查看当前 active session。
+在 Review Note 中从光标所在的 Obsidian link 打开候选旧笔记。
 
 ## 文件位置
 
-session 默认保存在 Pi agent 的全局目录：
+Review Note 默认保存在当前 vault：
 
 ```text
-~/.pi/agent/insights/
+Aha/Reviews/
 ```
 
-如果设置了 `PI_CODING_AGENT_DIR`，则保存在：
+私有 benchmark case 默认保存在本地 gitignored 文件：
 
 ```text
-$PI_CODING_AGENT_DIR/insights/
+bench/aha-memory-cases.json
 ```
-
-目录结构：
-
-```text
-insights/
-  index.json
-  sessions/
-    yyyy-mm-dd-short-slug-sessionid/
-      state.json
-      grill-context.md
-      summary-draft.md
-```
-
-每个想法都有独立 session 目录。`state.json` 会记录启动路径 `originCwd`，所以你可以知道这次 session 从哪里开始；session 本身集中保存在全局 insight storage 中，方便从不同项目路径继续使用。
 
 ## 设计原则
 
@@ -146,23 +125,20 @@ insights/
 - 旧笔记是 memory candidates，需要用户 Review 后才进入最终判断。
 - Summary 由用户明确触发，Agent 不自动跳到完成。
 - 原始 Obsidian 笔记由用户掌控，扩展只输出建议和 draft。
-- Pi core 保持不变，Aha 的产品能力放在 extension 层。
-- 本地 JSON 记录 session state，让多阶段认知过程不会丢。
+- Obsidian 插件保持薄层：触发、写 Review Note、打开候选。
+- 检索编排与关系判断放在本地 search runner 和共享脚本模块里。
 
 ## 当前状态
 
 已经支持：
 
-- `/insight` 启动和恢复 session；
-- QMD 结构化检索；
-- QMD top10 seed backlink 扩展；
-- QMD/backlink 候选合并和 agent rerank；
-- memory candidate 表格；
-- review-grill 过程记录；
-- summary draft 保存；
-- 跨路径 list / resume；
-- QMD 超时后的进程组清理。
-- Obsidian 插件 MVP：从当前笔记触发 Aha search，生成/复用 Aha Review Note，通过 wrapper 调用 OpenAI-compatible LLM、QMD SDK/CLI fallback 与 Obsidian CLI，并在 review note 中追加每一轮检索结果。
+- Obsidian 插件 MVP：从当前笔记触发 Aha search，生成/复用 Aha Review Note，通过 search runner 调用 OpenAI-compatible LLM、QMD SDK/CLI fallback 与 Obsidian CLI，并在 review note 中追加每一轮检索结果。
+- QMD 结构化 query plan；
+- QMD/Obsidian graph 候选合并和 runner-side rerank；
+- bounded Relation Judge，强关系需要 quote-backed evidence；
+- Review Note candidate 表格、Selected Memories、Grill Handoff；
+- Review Benchmark Seed 显式保存；
+- Eval-v2 benchmark 和 PipelineTrace 诊断。
 - search runner 默认 `pipeline`：LLM 生成 3-5 条结构化 QMD query，runner 混合 QMD 与 Obsidian graph 检索、评分重排候选、读取 vault 内候选正文，再用 bounded Relation Judge 给出关系判断。
 
 暂时还没有：
@@ -173,7 +149,7 @@ insights/
 
 ## Obsidian 插件 MVP
 
-插件代码位于 `obsidian-plugin/`，search runner 位于 `scripts/aha/run-insight-search.mjs`。这部分不迁移、不修改现有 `insight-package/`，只把 Obsidian 当作 Memory Surface：负责触发、生成 review note、打开候选笔记；检索编排与关系判断仍由 runner/LLM/QMD 侧负责。
+插件代码位于 `obsidian-plugin/`，search runner 位于 `scripts/aha/run-insight-search.mjs`。Obsidian 只作为 Memory Surface：负责触发、生成 review note、打开候选笔记；检索编排与关系判断仍由 runner/LLM/QMD 侧负责。
 
 本地验证：
 
@@ -185,20 +161,20 @@ npm run verify
 关键运行约束：
 
 - Relation Judge、QMD、search runner 传输或超时失败不会伪装成成功轮次；runner 会保留结构化 `{ ok:false, error:{ message, tool, details } }`，插件会把它写成 failed search record。
-- Obsidian 桌面 App 的 PATH 可能没有 Node；插件会优先用设置里的 Node command，其次自动探测常见桌面安装路径，并用 Node 显式执行 wrapper，不再依赖 `#!/usr/bin/env node`。
+- Obsidian 桌面 App 的 PATH 可能没有 Node；插件会优先用设置里的 Node command，其次自动探测常见桌面安装路径，并用 Node 显式执行 search runner，不再依赖 `#!/usr/bin/env node`。
 - 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径，避免把 vault 外文件内容带入 Relation Judge prompt。
 - search runner 会过滤当前 Aha Review Note 和 `Aha/Reviews/` 生成物，避免 Obsidian backlink 把 review shell 当成旧记忆候选。
 - LLM 生成的多条 QMD plan query 会逐条执行，避免多个 QMD 检索争用 QMD/SQLite runtime；单条默认 30 秒超时。SDK runner 默认关闭 QMD 内部 rerank；CLI fallback 会给 QMD 传 `-C 20` 限制内部候选数。某条 QMD 慢或卡住时会作为 warning 保留，不会自动降级到 `qmd vsearch`。
 - CLI 和插件侧外部进程都关闭 stdin、设置超时，并限制 stdout/stderr 缓冲大小。
 - 搜索开始时插件会立即把 running record 写入 Review Note 的 Search Results 区块；成功或失败退出后替换为最新结果，避免后台状态不可见，同时不把 review note 变成追加式审计日志。
-- `--target-candidates` 在 wrapper CLI 层也会限制到 15-20，和插件 UI slider 保持一致。
+- `--target-candidates` 在 search runner CLI 层也会限制到 15-20，和插件 UI slider 保持一致。
 - Obsidian 插件默认使用 OpenAI-compatible API 做 query plan 与 Relation Judge：`provider=openai`、`baseUrl=https://api.openai.com/v1`、`model=gpt-5.5`。OpenAI API key 可直接填在插件设置里，插件会把它注入 wrapper 子进程环境；如果该字段留空，则回退读取本地环境变量，默认变量名是 `OPENAI_API_KEY`。
 - 直接填写在插件里的 API key 会保存在当前 vault 的 Obsidian 插件数据中，只用于本机运行；不要把 `.obsidian/plugins/.../data.json` 或相关插件数据提交到仓库。
 - OpenAI HTTPS 请求优先走 Node 内置请求；如果本地代理导致 Node TLS 握手被 reset，search runner 会读取 `HTTPS_PROXY` / macOS 系统代理并用 curl fallback 发起同一请求，避免 Obsidian GUI 进程没有 shell 环境变量时失败。
 - QMD 默认走 SDK runner，并关闭 QMD 内部 rerank；Aha 仍会执行多 query 混合召回、wrapper scoring、候选正文读取和 Relation Judge 重排。`qmdCommand` 仍保留，用于 SDK module 推导和 CLI fallback。
 - Aha Review Note 会在 frontmatter 写入 `source_id`；桌面本地文件系统可用时使用 inode 级身份，因此 source note 改名、编辑大小或 mtime 变化后仍可复用同一个 review note。若只能降级到 ctime 身份，插件会要求 `source_path` 同时匹配，避免同时间戳碰撞污染别的 review note。
 - Aha Review Note 的生成区块采用 marker-backed 替换语义；重新运行只保留最新 Search Results / Selected Memories / Grill Handoff，marker 外的人工记录不会被删除。
-- wrapper 的 note identity 默认大小写不敏感，匹配当前 macOS/Obsidian vault 常用行为；测试里保留了大小写敏感选项，便于未来支持严格区分大小写的 vault。
+- note identity 默认大小写不敏感，匹配当前 macOS/Obsidian vault 常用行为；测试里保留了大小写敏感选项，便于未来支持严格区分大小写的 vault。
 
 ## 评测
 
@@ -313,7 +289,7 @@ raw insight input
 -> 逐条调用 QMD SDK/CLI
 -> 用 QMD top10 作为 backlink seeds
 -> 合并 QMD/backlink 候选
--> rerank agent 排序
+-> Relation Judge 判断关系并排序
 -> 计算 eval-v2 primary metrics + diagnostics
 ```
 
@@ -330,49 +306,8 @@ bench/reports/latest/pipeline.json
 bench/reports/archive/
 ```
 
-Eval-v2 代码/文档变更的最小验证路径：
+Eval-v2 代码/文档变更的最小验证路径目前是：
 
 ```bash
-node --test scripts/aha/tests/aha-bench-eval-v2.test.mjs
-node --test scripts/aha/tests/review-note.test.mjs
-node --test scripts/aha/tests/review-seeds-collector.test.mjs
-node --check scripts/bench/collect-review-seeds.mjs
-node --check scripts/bench/run-pipeline-bench.mjs
-node --check scripts/bench/summarize-report.mjs
-cd obsidian-plugin && npm run verify
-```
-
-## 开发与验证
-
-标准回归测试：
-
-```bash
-INSIGHT_EXTENSION_PATH=/Users/hong/Downloads/Pi/insight-package/extensions/insight.ts bun scripts/insight/test-extension.mjs
-```
-
-对抗式 QA：
-
-```bash
-INSIGHT_EXTENSION_PATH=/Users/hong/Downloads/Pi/insight-package/extensions/insight.ts bun scripts/insight/ultraqa-extension.mjs
-```
-
-Package 内部回归：
-
-```bash
-cd insight-package
-bun run build
-bun run test
-bun run test:ultraqa
-```
-
-构建检查 Aha extension：
-
-```bash
-bun build /Users/hong/Downloads/Pi/insight-package/extensions/insight.ts --target=node --outfile=/tmp/insight-extension-build.js
-```
-
-Pi 加载烟测：
-
-```bash
-pi --verbose --offline --no-tools --print ""
+npm --prefix obsidian-plugin run verify
 ```

@@ -11,30 +11,17 @@ scripts/
     collect-review-seeds.mjs # Collect Obsidian Review Note seeds into an ignored draft case inbox.
     normalize-case-paths.mjs # Rewrite vault-absolute case paths to vault-relative paths.
     run-qmd-bench.mjs       # L1: QMD-only retrieval benchmark.
-    run-pipeline-bench.mjs  # L2: query agent -> QMD -> backlinks -> rerank benchmark.
+    run-pipeline-bench.mjs  # L2: query plan -> QMD -> backlinks -> Relation Judge benchmark.
     summarize-report.mjs    # Print a compact QMD bench report summary.
-  insight/
-    test-extension.mjs      # Standard /insight extension regression test.
-    ultraqa-extension.mjs   # Adversarial /insight regression matrix.
   lib/
-    aha-*.mjs               # Shared benchmark query, scoring, and rerank helpers.
+    *.mjs                   # Shared benchmark scoring, trace, and helper modules.
+  aha/
+    run-insight-search.mjs  # Obsidian plugin search runner.
+    query-plan.mjs          # Shared query-plan generation.
+    relation-judge.mjs      # Shared quote-backed relation judging.
 ```
 
 ## Common Commands
-
-Run the extension regression suite against the package source:
-
-```bash
-INSIGHT_EXTENSION_PATH=/Users/hong/Downloads/Pi/insight-package/extensions/insight.ts \
-  bun scripts/insight/test-extension.mjs
-```
-
-Run adversarial extension checks:
-
-```bash
-INSIGHT_EXTENSION_PATH=/Users/hong/Downloads/Pi/insight-package/extensions/insight.ts \
-  bun scripts/insight/ultraqa-extension.mjs
-```
 
 Run the QMD-only benchmark:
 
