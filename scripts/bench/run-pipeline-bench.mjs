@@ -20,7 +20,11 @@ import {
   summarizePipelineEvaluation,
   textFromUnknown,
 } from "../lib/aha-bench-common.mjs";
-import { rerankCandidatesForCase } from "../lib/aha-agent-rerank.mjs";
+import {
+  RELATION_JUDGE_PROMPT_VERSION,
+  relationJudgeCandidatesForCase,
+} from "../aha/relation-judge.mjs";
+import { QUERY_PLAN_PROMPT_VERSION } from "../aha/query-plan.mjs";
 import {
   buildPipelineTrace,
   summarizeTraceDiagnoses,
@@ -34,7 +38,7 @@ import {
 import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
   resolveVaultPath as sharedResolveVaultPath,
-} from "../../insight-package/src/path-resolver.js";
+} from "../aha/lib/note-identity.mjs";
 import {
   DEFAULT_OPENAI_API_KEY_ENV,
   DEFAULT_OPENAI_BASE_URL,
@@ -862,8 +866,9 @@ function reportMetadata(options) {
     git_commit: commandOutput("git", ["rev-parse", "HEAD"]),
     git_status_short: commandOutput("git", ["status", "--short"]),
     pipeline_version: "aha-pipeline-bench-v2",
-    query_prompt_version: "aha-qmd-query-plan-agent-v1",
-    rerank_prompt_version: "aha-agent-rerank-v1",
+    query_prompt_version: QUERY_PLAN_PROMPT_VERSION,
+    relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
+    rerank_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
     llm_provider: options.llmProvider,
     llm_base_url: options.llmBaseUrl,
     llm_model: options.llmModel,
@@ -981,7 +986,7 @@ function main() {
       ? expandBacklinkCandidates(backlinkSeeds, caseItem, queryText, options, resolver)
       : { candidates: [], errors: [] };
     const expandedPool = mergeCandidateEvidence([...qmdCandidates, ...backlinkResult.candidates]);
-    const rerankResult = rerankCandidatesForCase(
+    const rerankResult = relationJudgeCandidatesForCase(
       {
         ...caseItem,
         query_object: generatedQuery.query_object,
@@ -1072,6 +1077,7 @@ function main() {
       query_generated_by: generatedQuery.query_generated_by,
       query_generation_fallback: generatedQuery.query_generation_fallback,
       query_generation_error: generatedQuery.query_generation_error,
+      query_plan_prompt_version: generatedQuery.query_plan_prompt_version,
       query_mode: options.queryMode,
       expected_files: caseItem.must_recall,
       expected_in_top_k: topK,
@@ -1105,6 +1111,11 @@ function main() {
         rerank_fallback: rerankResult.rerank_fallback,
         rerank_error: rerankResult.rerank_error,
         rerank_ranked_ids: rerankResult.rerank_ranked_ids,
+        relation_judge_generated_by: rerankResult.relation_judge_generated_by,
+        relation_judge_fallback: rerankResult.relation_judge_fallback,
+        relation_judge_error: rerankResult.relation_judge_error,
+        relation_judge_ranked_ids: rerankResult.relation_judge_ranked_ids,
+        relation_judge_prompt_version: rerankResult.relation_judge_prompt_version,
         top_candidates: finalCandidates.map((candidate) => ({
           rerankId: candidate.rerankId,
           title: candidate.title,
@@ -1112,6 +1123,10 @@ function main() {
           source: sourceLabel(candidate),
           sources: sourceList(candidate),
           expansionFrom: candidate.expansionFrom,
+          relation: candidate.relation,
+          hit: candidate.hit,
+          why: candidate.why,
+          quotes: candidate.quotes,
         })),
         errors: [...qmdErrors, ...backlinkResult.errors],
       },

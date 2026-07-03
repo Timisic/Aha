@@ -44,7 +44,7 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   qmdSdkModule: "",
   qmdRerank: false,
   obsidianCommand: "obsidian",
-  wrapperRelativePath: "scripts/aha/aha-wrapper.mjs",
+  wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
   targetCandidates: 20,
   useFixtureResult: false,
 };
@@ -63,7 +63,7 @@ export class AhaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Aha workspace")
-      .setDesc("Absolute path to the local Aha repository that contains scripts/aha/aha-wrapper.mjs.")
+      .setDesc("Absolute path to the local Aha repository that contains scripts/aha/run-insight-search.mjs.")
       .addText((text) => text
         .setPlaceholder("/path/to/Aha")
         .setValue(this.plugin.settings.ahaWorkspace)
@@ -268,8 +268,8 @@ export class AhaSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Wrapper script")
-      .setDesc("Path relative to the Aha workspace.")
+      .setName("Search runner script")
+      .setDesc("Path to the local retrieval and relation-judging runner, relative to the Aha workspace.")
       .addText((text) => text
         .setPlaceholder(DEFAULT_SETTINGS.wrapperRelativePath)
         .setValue(this.plugin.settings.wrapperRelativePath)

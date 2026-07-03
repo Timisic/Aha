@@ -37,7 +37,7 @@ Created: 2026-06-27
 
 ### Obsidian CLI
 
-- Preferred CLI path for the wrapper: `/Applications/Obsidian.app/Contents/MacOS/obsidian-cli`
+- Preferred CLI path for the search runner's Obsidian integration: `/Applications/Obsidian.app/Contents/MacOS/obsidian-cli`
 - Smoke command: `files total`
 - Result: 396 files
 
@@ -49,7 +49,7 @@ Note: `~/.local/bin/obsidian` also returned the CLI result, but emitted Electron
 - Base URL: `https://api.openai.com/v1`
 - Model: `gpt-5.5`
 - API key source: plugin setting first; if empty, local environment variable, default `OPENAI_API_KEY`
-- Readiness behavior: checks the configured OpenAI key source. A direct plugin key is injected only into the wrapper child process environment and is not passed as a CLI argument.
+- Readiness behavior: checks the configured OpenAI key source. A direct plugin key is injected only into the search runner child process environment and is not passed as a CLI argument.
 
 ### Codex CLI Fallback
 

@@ -5,7 +5,7 @@ import { normalizeLineRange, parseLineRange, sliceLineRange } from "./note-excer
 import {
   buildVaultPathResolver,
   resolveVaultPath,
-} from "../../insight-package/src/path-resolver.js";
+} from "../aha/lib/note-identity.mjs";
 
 export {
   compactLine,
@@ -17,7 +17,7 @@ export {
   resolveQmdQueryForCase,
   splitLexCandidates,
   unique,
-} from "./aha-query-generation.mjs";
+} from "../aha/query-plan.mjs";
 
 export {
   applyBenchEvaluationPolicy,
