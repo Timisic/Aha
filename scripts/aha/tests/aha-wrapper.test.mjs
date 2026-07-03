@@ -9,7 +9,7 @@ import { validateAhaResult } from "../lib/aha-result-schema.mjs";
 import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "../lib/note-identity.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
-const wrapper = path.join(repoRoot, "scripts/aha/aha-wrapper.mjs");
+const wrapper = path.join(repoRoot, "scripts/aha/run-insight-search.mjs");
 
 test("fixture result passes schema validation", async () => {
   const fixture = JSON.parse(await readFixture("stub-result.json"));

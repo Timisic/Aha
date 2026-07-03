@@ -1,6 +1,6 @@
 # Aha Obsidian 插件 Smoke
 
-这条 smoke 用来验证第一版 Obsidian 插件 MVP。它不迁移、不删除现有 `insight-package/`；插件只作为 Memory Surface，检索编排和关系判断仍在 `scripts/aha/aha-wrapper.mjs`。
+这条 smoke 用来验证第一版 Obsidian 插件 MVP。它不迁移、不删除现有 `insight-package/`；插件只作为 Memory Surface，检索编排和关系判断仍在 `scripts/aha/run-insight-search.mjs`。
 
 ## 构建验证
 
@@ -20,7 +20,7 @@ npm run verify
 - Node command：可留空自动探测；如果 Obsidian 内运行时报 `env: node: No such file or directory`，填 `/opt/homebrew/bin/node`。
 - LLM provider：默认 `OpenAI API`；Base URL 默认 `https://api.openai.com/v1`，Model 默认 `gpt-5.5`。
 - OpenAI API key：可直接填在插件设置里；插件会把它注入 wrapper 子进程环境，不作为 CLI 参数传递。该值保存在当前 vault 的 Obsidian 插件数据中。
-- OpenAI key env：默认 `OPENAI_API_KEY`。如果 OpenAI API key 字段留空，wrapper 会回退读取这个环境变量。
+- OpenAI key env：默认 `OPENAI_API_KEY`。如果 OpenAI API key 字段留空，search runner 会回退读取这个环境变量。
 - OpenAI 网络：wrapper 优先用 Node HTTPS；如果本机代理让 Node TLS 握手失败，会回退到 curl，并可在 macOS GUI 环境中读取系统 HTTPS 代理。
 - Codex command：本机 Codex CLI 命令或绝对路径，仅在 LLM provider 设为 `Codex CLI` 时使用。
 - QMD runner：默认 `SDK`；`CLI` 保留为诊断和 fallback。
@@ -32,11 +32,11 @@ npm run verify
 
 ## 默认 pipeline 语义
 
-wrapper 默认使用 bounded `pipeline`：
+search runner 默认使用 bounded `pipeline`：
 
 ```text
 OpenAI/Codex 生成 3-5 条 QMD query
--> wrapper 通过 QMD SDK/CLI 混合语义检索与 Obsidian links/backlinks
+-> search runner 通过 QMD SDK/CLI 混合语义检索与 Obsidian links/backlinks
 -> 合并、去 source self-hit、按分数/排名/跨 query 多样性重排
 -> 只读取 qmd://obsidian 或 vault 内候选正文
 -> bounded Relation Judge 判断 supports/challenges/resembles/bounds/weak
@@ -46,8 +46,8 @@ OpenAI/Codex 生成 3-5 条 QMD query
 
 - Relation Judge、QMD、wrapper 传输或超时失败会返回结构化 `{ ok:false, error:{ message, tool, details } }`，不会伪装成成功搜索轮次。
 - Obsidian 桌面 App 的 PATH 往往比终端更窄；插件会用显式 Node command 或常见 Node 路径来执行 wrapper，不再直接依赖 wrapper shebang。
-- wrapper 会过滤当前 Aha Review Note 和 `Aha/Reviews/` 生成物；如果 QMD 全部失败，搜索应该失败并保留诊断，而不是把 review shell 当成成功候选。
-- QMD plan queries 逐条执行，避免多个 QMD 检索争用 QMD/SQLite runtime；单条默认 30 秒超时。SDK runner 默认不启用 QMD 内部 rerank，CLI fallback 会给 QMD 传 `-C 20` 限制内部候选数。慢查询会出现在 warning 中，避免旧版多条 120 秒 timeout 累积；wrapper 不会自动降级到 `qmd vsearch`。
+- search runner 会过滤当前 Aha Review Note 和 `Aha/Reviews/` 生成物；如果 QMD 全部失败，搜索应该失败并保留诊断，而不是把 review shell 当成成功候选。
+- QMD plan queries 逐条执行，避免多个 QMD 检索争用 QMD/SQLite runtime；单条默认 30 秒超时。SDK runner 默认不启用 QMD 内部 rerank，CLI fallback 会给 QMD 传 `-C 20` 限制内部候选数。慢查询会出现在 warning 中，避免旧版多条 120 秒 timeout 累积；search runner 不会自动降级到 `qmd vsearch`。
 - QMD / Obsidian / Codex fallback 子进程都会关闭 stdin、设置超时，并限制 stdout/stderr 缓冲。
 - 搜索开始时，Review Note 的 `## 搜索结果` 会马上出现 `正在检索` 记录。成功或失败后，同一个 marker 区块会被替换为最新结果，不保留旧搜索轮次作为审计日志。
 - `--target-candidates` 在 CLI 层限制到 15-20，和插件 UI slider 保持一致。

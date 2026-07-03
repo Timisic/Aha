@@ -11,11 +11,15 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { validateAhaResult } from "./lib/aha-result-schema.mjs";
 import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "./lib/note-identity.mjs";
+import {
+  fallbackQmdObject as sharedFallbackQmdObject,
+  generateQueryPlanWithAdapter,
+  qmdQueryFromObject as sharedQmdQueryFromObject,
+} from "./query-plan.mjs";
+import { judgeCandidateRelations } from "./relation-judge.mjs";
 
 const JSON_BEGIN = "AHA_RESULT_JSON_BEGIN";
 const JSON_END = "AHA_RESULT_JSON_END";
-const QUERY_PLAN_KINDS = ["raw", "abstracted_judgment", "contextual", "explicit_cue", "bounds"];
-const QUERY_PLAN_COMMANDS = ["qmd query", "qmd search"];
 const MIN_TARGET_CANDIDATES = 15;
 const MAX_TARGET_CANDIDATES = 20;
 const DEFAULT_MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
@@ -40,11 +44,6 @@ const COMMON_COMMAND_DIRS = [
   "/Users/hong/.npm-global/bin",
   "/Users/hong/.bun/bin",
 ];
-const MAX_QMD_LEX_TERMS = 4;
-const MAX_QMD_LEX_CHARS = 32;
-const MAX_QMD_INTENT_CHARS = 180;
-const MAX_QMD_VEC_CHARS = 360;
-const MAX_QMD_HYDE_CHARS = 320;
 
 main().catch((error) => {
   emitJson(failedAhaResult({
@@ -801,8 +800,8 @@ async function codexOrchestrationFailure(args, sourceText, reason) {
 }
 
 async function qmdRecall(args, sourceText) {
-  const qmd = fallbackQmdObject(args, sourceText);
-  const query = qmdQueryFromObject(qmd);
+  const qmd = sharedFallbackQmdObject(args, sourceText);
+  const query = sharedQmdQueryFromObject(qmd);
   const result = await runQmdPlanQuery(args, {
     kind: "fallback",
     command: "qmd query",
@@ -1012,12 +1011,56 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
     };
   }
 
-  const prompt = buildPipelineRelationJudgePrompt(args, sourceText, candidateInputs);
-  try {
+  const result = await judgeCandidateRelations({
+    sourcePath: args.sourcePath,
+    sourceText,
+    candidates,
+    candidateInputs,
+    adapterName: llmToolName(args),
+    preserveOrder: true,
+    adapter: async ({ prompt, outputFileName, timeoutMs }) => {
+      const llmOutput = await runLlm(args, prompt, {
+        schemaPath: path.join(args.workspace, "scripts/aha/aha-result.schema.json"),
+        outputFileName,
+        timeoutMs: Math.min(Number(args.timeoutMs || 300_000), timeoutMs),
+        sandbox: "read-only",
+        isolateCwd: true,
+        ignoreRules: true,
+        skipGitRepoCheck: true,
+      });
+      if (llmOutput.code !== 0) {
+        throw new Error(firstLine(llmOutput.stderr || llmOutput.stdout) || `${llmDisplayName(args)} exited ${llmOutput.code}`);
+      }
+      return extractCodexJson(llmOutput.stdout);
+    },
+  });
+  return {
+    ...result,
+    warnings: [
+      ...excerptWarnings,
+      ...(result.warnings ?? []),
+    ],
+  };
+}
+
+async function generateQueryPlan(args, sourceText) {
+  return generateQueryPlanWithAdapter({
+    sourcePath: args.sourcePath,
+    sourceText,
+    primaryName: llmToolName(args),
+    fallbackName: "codex",
+    displayName: llmDisplayName(args),
+    adapter: queryPlanAdapter(args),
+    fallbackAdapter: args.llmProvider === "openai" ? queryPlanAdapter({ ...args, llmProvider: "codex-cli" }) : null,
+  });
+}
+
+function queryPlanAdapter(args) {
+  return async ({ prompt, outputFileName, timeoutMs }) => {
     const llmOutput = await runLlm(args, prompt, {
-      schemaPath: path.join(args.workspace, "scripts/aha/aha-result.schema.json"),
-      outputFileName: "relation-judge.json",
-      timeoutMs: Math.min(Number(args.timeoutMs || 300_000), 120_000),
+      schemaPath: path.join(args.workspace, "scripts/aha/aha-query-plan.schema.json"),
+      outputFileName,
+      timeoutMs: Math.min(Number(args.timeoutMs || 300_000), timeoutMs),
       sandbox: "read-only",
       isolateCwd: true,
       ignoreRules: true,
@@ -1026,338 +1069,8 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
     if (llmOutput.code !== 0) {
       throw new Error(firstLine(llmOutput.stderr || llmOutput.stdout) || `${llmDisplayName(args)} exited ${llmOutput.code}`);
     }
-    const parsed = normalizeStructuredResult(extractCodexJson(llmOutput.stdout));
-    const validation = validateAhaResult(parsed);
-    if (!validation.ok) {
-      throw new Error(validation.errors.join("; "));
-    }
-    const judged = mergeJudgedCandidates(candidates, parsed.candidates ?? [], candidateInputs);
-    return {
-      ok: true,
-      reviewedCount: candidateInputs.length,
-      warnings: [
-        ...excerptWarnings,
-        ...((parsed.warnings ?? []).map((warning) => `Relation Judge: ${warning}`)),
-      ],
-      candidates: judged,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      reviewedCount: candidateInputs.length,
-      warnings: excerptWarnings,
-      tool: llmToolName(args),
-      error: error.message,
-      candidates,
-    };
-  }
-}
-
-function buildPipelineRelationJudgePrompt(args, sourceText, candidateInputs) {
-  return [
-    "You are the bounded Aha Relation Judge.",
-    "Do not read files, run tools, or use external knowledge. Judge only from the source summary and candidate excerpts below.",
-    "Return JSON only. It must match the output schema.",
-    "",
-    "Relation rules:",
-    "- Use supports, challenges, resembles, or bounds only when the candidate excerpt contains a concrete quote that justifies the label.",
-    "- Use weak when the excerpt is only topically similar, too thin, or lacks quote evidence.",
-    "- hit must be a short quote or exact snippet from the candidate excerpt.",
-    "- why must explain why this old note matters for the current source insight, not just restate retrieval score.",
-    "- why and summary should be written primarily in Chinese when the source or candidate excerpt is Chinese. Keep JSON keys and relation labels in English.",
-    "- Write why as a compact, note-like bridge: lead with the concrete idea or tension, not with a generic phrase about the candidate.",
-    "- Avoid formulaic openings such as “这条旧笔记…”, “这条笔记…”, “这条候选…”, or “直接支撑当前 source…”. Do not reuse the same sentence frame across candidates.",
-    "- Preserve the candidate notePath values exactly.",
-    "",
-    `sourcePath: ${args.sourcePath}`,
-    "sourceSummary:",
-    queryPlanSourceSummary(args, sourceText).slice(0, 3500),
-    "",
-    "candidates:",
-    JSON.stringify(candidateInputs, null, 2),
-    "",
-    "Return this JSON shape:",
-    JSON.stringify({
-      ok: true,
-      sourcePath: args.sourcePath,
-      generatedAt: null,
-      summary: "简短说明这一轮关系判断的结果",
-      warnings: [],
-      error: null,
-      candidates: [
-        {
-          notePath: "same candidate notePath",
-          noteTitle: "candidate title",
-          relation: "weak",
-          hit: "short quote/snippet from excerpt",
-          why: "用自然中文点出旧判断和当前 insight 的具体连接，或说明为什么只能算 weak。",
-          quotes: ["optional exact quote from excerpt"],
-          selected: true,
-        },
-      ],
-    }, null, 2),
-  ].join("\n");
-}
-
-function mergeJudgedCandidates(retrievalCandidates, judgedCandidates, candidateInputs) {
-  const excerpts = new Map(candidateInputs.map((candidate) => [
-    candidate.notePath,
-    `${candidate.excerpt}\n${candidate.retrievalHit}`,
-  ]));
-  const judgedByPath = new Map();
-  for (const candidate of judgedCandidates) {
-    if (!candidate?.notePath) continue;
-    judgedByPath.set(candidate.notePath, candidate);
-  }
-
-  return retrievalCandidates.map((retrievalCandidate) => {
-    const judged = judgedByPath.get(retrievalCandidate.notePath);
-    if (!judged) return retrievalCandidate;
-    const merged = {
-      ...retrievalCandidate,
-      ...judged,
-      notePath: retrievalCandidate.notePath,
-      noteTitle: judged.noteTitle || retrievalCandidate.noteTitle,
-      selected: judged.selected ?? true,
-      quotes: Array.isArray(judged.quotes) ? judged.quotes : [],
-    };
-    return enforceQuoteBackedRelation(merged, excerpts.get(retrievalCandidate.notePath) || "");
-  });
-}
-
-function enforceQuoteBackedRelation(candidate, excerpt) {
-  if (candidate.relation === "weak") return candidate;
-  if (hasQuoteEvidence(candidate, excerpt)) return candidate;
-  return {
-    ...candidate,
-    relation: "weak",
-    why: `${candidate.why} Downgraded to weak because the bounded excerpt did not contain the returned quote evidence.`,
-    quotes: [],
+    return extractCodexJson(llmOutput.stdout);
   };
-}
-
-function hasQuoteEvidence(candidate, excerpt) {
-  const haystack = normalizeEvidenceText(excerpt);
-  const haystackFingerprint = evidenceFingerprint(excerpt);
-  const needles = [
-    candidate.hit,
-    ...(Array.isArray(candidate.quotes) ? candidate.quotes : []),
-  ]
-    .map((value) => normalizeEvidenceText(value).replace(/^["'“”‘’]+|["'“”‘’]+$/g, ""))
-    .filter((value) => value.length >= 8);
-  return needles.some((needle) => {
-    if (haystack.includes(needle)) return true;
-    const fingerprint = evidenceFingerprint(needle);
-    return fingerprint.length >= 8 && haystackFingerprint.includes(fingerprint);
-  });
-}
-
-function normalizeEvidenceText(value) {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
-}
-
-function evidenceFingerprint(value) {
-  return String(value ?? "").replace(/[\s\p{P}\p{S}]+/gu, "");
-}
-
-async function generateQueryPlan(args, sourceText) {
-  const schemaPath = path.join(args.workspace, "scripts/aha/aha-query-plan.schema.json");
-  const prompt = buildQueryPlanPrompt(args, sourceText);
-  try {
-    const plan = await runQueryPlanLlm(args, prompt, schemaPath, sourceText);
-    return {
-      ...plan,
-      query_generated_by: llmToolName(args),
-      query_generation_fallback: false,
-      query_generation_error: null,
-    };
-  } catch (primaryError) {
-    if (args.llmProvider !== "openai") {
-      throw new Error(`${llmDisplayName(args)} query plan failed: ${primaryError.message}`);
-    }
-
-    try {
-      const codexArgs = { ...args, llmProvider: "codex-cli" };
-      const plan = await runQueryPlanLlm(codexArgs, prompt, schemaPath, sourceText);
-      return {
-        ...plan,
-        query_generated_by: "codex",
-        query_generation_fallback: true,
-        query_generation_error: `OpenAI query plan failed: ${primaryError.message}; Codex CLI fallback used.`,
-      };
-    } catch (fallbackError) {
-      throw new Error(`OpenAI query plan failed: ${primaryError.message}; Codex CLI fallback failed: ${fallbackError.message}`);
-    }
-  }
-}
-
-async function runQueryPlanLlm(args, prompt, schemaPath, sourceText) {
-  const llmOutput = await runLlm(args, prompt, {
-    schemaPath,
-    outputFileName: "query-plan.json",
-    timeoutMs: Math.min(Number(args.timeoutMs || 300_000), 60_000),
-    sandbox: "read-only",
-    isolateCwd: true,
-    ignoreRules: true,
-    skipGitRepoCheck: true,
-  });
-  if (llmOutput.code !== 0) {
-    throw new Error(firstLine(llmOutput.stderr || llmOutput.stdout) || `${llmDisplayName(args)} exited ${llmOutput.code}`);
-  }
-  return normalizeQueryPlan(extractCodexJson(llmOutput.stdout), args, sourceText);
-}
-
-function buildQueryPlanPrompt(args, sourceText) {
-  const sourceSummary = queryPlanSourceSummary(args, sourceText);
-  return [
-    "你是 Aha/Pi /insight 的检索查询生成子 agent。",
-    "只根据下面 source summary 生成 3-5 条 QMD 检索查询计划；不要读取文件、不要运行命令、不要搜索外部资料、不要检查仓库。",
-    "",
-    "目标：让 wrapper 后续用 QMD 混合召回旧笔记中的旧判断、反例、边界条件、相似结构和明确线索。",
-    "",
-    "查询形态：",
-    "- raw: 贴近原文的语义检索。",
-    "- abstracted_judgment: 抽象出判断结构、关系模式、反例或边界。",
-    "- contextual: 保留具体语境，但不引入 source note 之外的新事实。",
-    "- explicit_cue: source note 里有明确实体、概念、短语时可用。",
-    "- bounds: 主动找不成立、限制条件、相反经验。",
-    "",
-    "command 选择：",
-    "- 默认使用 qmd query，并填写 qmd.intent / qmd.lex / qmd.vec / qmd.hyde。",
-    "- raw、abstracted_judgment、contextual、bounds 都使用 qmd query。",
-    "- qmd search 只用于非常明确的短实体、概念、原句线索；text 必须是实际搜索短语。",
-    "",
-    "QMD 字段长度约束：",
-    "- lex 最多 4 条，每条是短词或短短语，不要写整句。",
-    "- intent 不超过 180 字；vec 不超过 360 字；hyde 不超过 320 字。",
-    "- 字段里不要包含换行、项目符号、Markdown 引号或额外的 intent:/lex:/vec:/hyde: 前缀。",
-    "",
-    "输出必须是 JSON，只包含 queries 字段，并匹配 output schema。",
-    `source path: ${args.sourcePath}`,
-    "",
-    "<source_summary>",
-    sourceSummary,
-    "</source_summary>",
-  ].join("\n");
-}
-
-function queryPlanSourceSummary(args, sourceText) {
-  const title = path.basename(args.sourcePath || "source", ".md");
-  const headings = [...sourceText.matchAll(/^#{1,4}\s+(.+)$/gm)]
-    .map((match) => compactLine(match[1], 120))
-    .slice(0, 12);
-  const wikiLinks = [...sourceText.matchAll(/\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g)]
-    .map((match) => compactLine(match[1], 80))
-    .slice(0, 20);
-  const bodyLines = sourceText
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/^---[\s\S]*?---/m, " ")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^[-*]\s+/, "").replace(/^\d+\.\s+/, "").trim())
-    .filter((line) => line.length >= 12 && line.length <= 220)
-    .slice(0, 60);
-  return [
-    `title: ${title}`,
-    headings.length > 0 ? `headings: ${headings.join(" | ")}` : "",
-    wikiLinks.length > 0 ? `wiki links: ${wikiLinks.join(" | ")}` : "",
-    "salient lines:",
-    ...bodyLines.map((line) => `- ${line}`),
-  ].filter(Boolean).join("\n").slice(0, 5_000);
-}
-
-function normalizeQueryPlan(value, args, sourceText) {
-  const rawQueries = Array.isArray(value?.queries) ? value.queries : [];
-  const queries = [];
-  const seen = new Set();
-  for (const item of rawQueries) {
-    const query = normalizeQueryPlanItem(item, args, sourceText, queries.length);
-    const key = `${query.command}\0${query.query}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    queries.push(query);
-    if (queries.length >= 5) break;
-  }
-  if (queries.length < 3) {
-    throw new Error(`${llmDisplayName(args)} query plan returned fewer than 3 usable queries.`);
-  }
-  return { queries };
-}
-
-function normalizeQueryPlanItem(item, args, sourceText, index) {
-  const kind = QUERY_PLAN_KINDS.includes(item?.kind) ? item.kind : QUERY_PLAN_KINDS[index] ?? "contextual";
-  const command = QUERY_PLAN_COMMANDS.includes(item?.command)
-    ? item.command
-    : kind === "explicit_cue" ? "qmd search" : "qmd query";
-  const qmd = normalizeQmdObject(item?.qmd, args, sourceText);
-  const text = compactLine(item?.text || qmd.vec || qmd.lex.join(" "), 300);
-  const query = queryTextForCommand(command, text, qmd);
-  return {
-    kind,
-    command,
-    text,
-    query,
-    qmd,
-  };
-}
-
-function queryTextForCommand(command, text, qmd) {
-  if (command === "qmd search") return compactLine(text || qmd.lex.join(" "), 300);
-  return qmdQueryFromObject(qmd);
-}
-
-function normalizeQmdObject(value, args, sourceText) {
-  const fallback = fallbackQmdObject(args, sourceText);
-  const lex = unique(Array.isArray(value?.lex) ? [...value.lex, ...fallback.lex] : fallback.lex)
-    .map((item) => sanitizeQmdLine(item, MAX_QMD_LEX_CHARS))
-    .filter((item) => item.length >= 2)
-    .slice(0, MAX_QMD_LEX_TERMS);
-  return {
-    intent: sanitizeQmdLine(value?.intent || fallback.intent, MAX_QMD_INTENT_CHARS),
-    lex: lex.length > 0 ? lex : fallback.lex.slice(0, MAX_QMD_LEX_TERMS),
-    vec: sanitizeQmdLine(value?.vec || fallback.vec, MAX_QMD_VEC_CHARS),
-    hyde: sanitizeQmdLine(value?.hyde || fallback.hyde, MAX_QMD_HYDE_CHARS),
-  };
-}
-
-function fallbackQmdObject(args, sourceText) {
-  const title = path.basename(args.sourcePath || "source", ".md");
-  const heading = sourceText.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim() || title;
-  const wikiLinks = [...sourceText.matchAll(/\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g)]
-    .map((match) => match[1].trim())
-    .filter(Boolean);
-  const lineSignals = sourceText
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/^---[\s\S]*?---/m, " ")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^#+\s*/, "").trim())
-    .filter((line) => line.length > 12 && line.length < 180);
-  const lex = unique([heading, title, ...wikiLinks, ...lineSignals.flatMap((line) => line.split(/[，。；;、,.!?！？|/（）()【】\[\]《》<>：:\s]+/).slice(0, 2))])
-    .filter((item) => item.length >= 2 && item.length <= 48)
-    .slice(0, 7);
-  const vec = lineSignals.slice(0, 6).join(" ") || heading;
-  return {
-    intent: "召回与当前 Aha insight/source note 相关的旧判断、反例、边界和相似结构。",
-    lex: lex.slice(0, MAX_QMD_LEX_TERMS),
-    vec: compactLine(vec, MAX_QMD_VEC_CHARS),
-    hyde: `一篇旧笔记讨论与「${heading}」相关的经验、判断变化、产品边界或记忆检索线索。`,
-  };
-}
-
-function sanitizeQmdLine(value, maxLength) {
-  return compactLine(value, maxLength)
-    .replace(/^(?:intent|lex|vec|hyde)\s*:\s*/i, "")
-    .replace(/["`]+/g, "'")
-    .replace(/^[*-]\s+/, "")
-    .trim();
-}
-
-function qmdQueryFromObject(qmd) {
-  return [
-    `intent: ${qmd.intent}`,
-    ...qmd.lex.map((item) => `lex: ${item}`),
-    `vec: ${qmd.vec}`,
-    `hyde: ${qmd.hyde}`,
-  ].join("\n");
 }
 
 async function runQmdPlanQuery(args, query) {
