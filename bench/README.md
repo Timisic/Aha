@@ -341,18 +341,15 @@ L2 reports also include the configured query mode, backlink seed strategy, sourc
 Use deterministic tests first; they do not call live QMD, Obsidian, model APIs, or private benchmark cases:
 
 ```bash
-node --test scripts/aha/tests/aha-bench-eval-v2.test.mjs
-node --test scripts/aha/tests/review-note.test.mjs
-node --test scripts/aha/tests/review-seeds-collector.test.mjs
-node --check scripts/bench/collect-review-seeds.mjs
-node --check scripts/bench/run-pipeline-bench.mjs
-node --check scripts/bench/summarize-report.mjs
+npm run verify
 ```
 
-For plugin-facing review seed changes, also run:
+For focused benchmark or review-note changes, the deterministic subset is:
 
 ```bash
-cd obsidian-plugin && npm run verify
+node --test scripts/aha/tests/bench-scoring.test.mjs
+node --test scripts/aha/tests/review-note.test.mjs
+node --test scripts/aha/tests/review-seeds-collector.test.mjs
 ```
 
 For a live local benchmark smoke, run the L2 pipeline only after confirming `bench/aha-memory-cases.json` is the ignored private file you intend to use:
