@@ -4,7 +4,7 @@ import {
   DEFAULT_SEED_CASES_PATH,
   collectReviewSeedCasesFromVault,
   writeReviewSeedCaseDocument,
-} from "../lib/aha-review-seeds.mjs";
+} from "../lib/review-seeds.mjs";
 
 function usage() {
   return [

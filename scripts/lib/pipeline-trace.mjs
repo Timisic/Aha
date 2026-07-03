@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { pathsMatch } from "./aha-bench-evaluation.mjs";
+import { pathsMatch } from "./bench-scoring.mjs";
 import {
   annotateCandidateRerankIds,
   candidatePath,
   candidateSourceLabel,
   candidateSourceList,
-} from "./aha-candidate-identity.mjs";
+} from "./candidate-fields.mjs";
 
 const TRACE_SCHEMA = "PipelineTrace";
 const TRACE_VERSION = 1;

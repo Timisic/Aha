@@ -19,7 +19,7 @@ import {
   sourceNotePathForCase,
   summarizePipelineEvaluation,
   textFromUnknown,
-} from "../lib/aha-bench-common.mjs";
+} from "../lib/bench-cases.mjs";
 import {
   RELATION_JUDGE_PROMPT_VERSION,
   relationJudgeCandidatesForCase,
@@ -29,12 +29,12 @@ import {
   buildPipelineTrace,
   summarizeTraceDiagnoses,
   writePipelineTraceForReport,
-} from "../lib/aha-pipeline-trace.mjs";
+} from "../lib/pipeline-trace.mjs";
 import {
   candidatePath,
   candidateSourceLabel as sourceLabel,
   candidateSourceList as sourceList,
-} from "../lib/aha-candidate-identity.mjs";
+} from "../lib/candidate-fields.mjs";
 import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
   resolveVaultPath as sharedResolveVaultPath,
