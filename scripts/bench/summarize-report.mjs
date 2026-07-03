@@ -114,6 +114,9 @@ function printPipelineSummary(report) {
   for (const [group, count] of Object.entries(summary.failure_attribution_counts ?? {})) {
     console.log(`| Failure Attribution: ${group} | ${count} |`);
   }
+  for (const [group, count] of Object.entries(summary.trace_diagnosis_counts ?? {})) {
+    console.log(`| Trace Diagnosis: ${group} | ${count} |`);
+  }
 }
 
 function main() {

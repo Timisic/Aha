@@ -176,6 +176,22 @@ _Avoid_: full Aha quality evaluation, final-answer evaluation, summary quality s
 A benchmark that approximates the Memory Stage retrieval pipeline by running structured QMD retrieval, expanding QMD seed candidates through Obsidian backlinks, merging candidates, and scoring whether must-recall memories appear in the final candidate list.
 _Avoid_: QMD-only benchmark, final summary evaluation, human judgment quality score
 
+**Pipeline Trace**:
+A structured evidence record for one Memory Pipeline Benchmark case. It shows the retrieval path from benchmark input through query generation, QMD retrieval, backlink expansion, the pre-rerank candidate pool, final ranking, gold-memory positions, and diagnosis. Its purpose is to explain where the case succeeded or failed so the next product optimization target is clear.
+_Avoid_: agent runtime log, Markdown report, complete note backup, generic debug dump
+
+**Pre-Rerank Candidate Pool**:
+The merged candidate set available to the reranker after QMD retrieval and backlink expansion but before final ranking. It is the key boundary for separating retrieval failures from rerank failures.
+_Avoid_: final candidate list, expanded score only, hidden reranker input
+
+**Gold Position**:
+The observed stage and rank of a Required Gold Memory, Helpful Gold Memory, or Noise Gold Memory within a Pipeline Trace. Gold Position should make it clear whether a gold memory was missing entirely, present before rerank but dropped later, or surfaced inside the Review Attention Budget.
+_Avoid_: score-only hit, vague match, manual postmortem
+
+**Trace Diagnosis**:
+The rule-based optimization signal attached to a Pipeline Trace. It names the primary next target, such as query generation, retrieval, backlink expansion, reranking, case labeling, or runtime reliability, using the trace evidence rather than a free-form narrative.
+_Avoid_: long explanation, LLM-only summary, unsupported blame
+
 **Core Loop Benchmark**:
 A scripted benchmark for the human-in-the-loop contract across candidate display, memory review, readiness gating, summary save, source-note non-mutation, resume, and second memory search.
 _Avoid_: retrieval benchmark, summary quality score

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -622,6 +622,9 @@ test("summarize-report displays pipeline eval-v2 diagnostics", async () => {
         retrieval_failure: 1,
         rerank_failure: 1,
       },
+      trace_diagnosis_counts: {
+        rerank_failure: 1,
+      },
     },
   }, null, 2));
 
@@ -637,5 +640,166 @@ test("summarize-report displays pipeline eval-v2 diagnostics", async () => {
   assert.match(result.stdout, /Dropped Must Count/);
   assert.match(result.stdout, /Stability@10/);
   assert.match(result.stdout, /Failure Attribution: retrieval_failure/);
+  assert.match(result.stdout, /Trace Diagnosis: rerank_failure/);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("pipeline benchmark emits structured PipelineTrace artifacts", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-pipeline-trace-"));
+  const vaultRoot = path.join(root, "vault");
+  const binDir = path.join(root, "bin");
+  const casesPath = path.join(root, "cases.json");
+  const reportPath = path.join(root, "bench/reports/latest/pipeline.json");
+  const qmdBin = path.join(binDir, "qmd");
+  const obsidianBin = path.join(binDir, "obsidian");
+  await mkdir(path.join(vaultRoot, "Memory"), { recursive: true });
+  await mkdir(binDir, { recursive: true });
+  await writeFile(path.join(vaultRoot, "Memory/must.md"), "Must memory body.\n");
+  await writeFile(path.join(vaultRoot, "Memory/noise.md"), "Noise memory body.\n");
+  await writeFile(casesPath, JSON.stringify({
+    collection: "obsidian",
+    expected_in_top_k: 1,
+    cases: [
+      {
+        id: "trace/rerank",
+        state: "active",
+        title: "Trace rerank miss",
+        input: {
+          thought: "A realistic insight where the useful old memory is not ranked first.",
+        },
+        gold: {
+          must: ["Memory/must.md"],
+          nice: [],
+          noise: ["Memory/noise.md"],
+        },
+        why: "The must memory is present before rerank but outside the top review slot.",
+      },
+      {
+        id: "trace:rerank",
+        state: "active",
+        title: "Trace rerank miss with colliding safe name",
+        input: {
+          thought: "A second case whose id sanitizes to the same base filename.",
+        },
+        gold: {
+          must: ["Memory/must.md"],
+          nice: [],
+          noise: ["Memory/noise.md"],
+        },
+        why: "The trace artifact name must not collide with trace/rerank.",
+      },
+      {
+        id: "trace-no-must",
+        state: "draft",
+        expected_no_recall: true,
+        title: "Trace expected no recall",
+        input: {
+          thought: "A draft seed inbox case without required gold memories.",
+        },
+        gold: {
+          must: [],
+          nice: [],
+          noise: [],
+        },
+        why: "No-must cases should not claim all required memories were recalled.",
+      },
+    ],
+  }, null, 2));
+  await writeFile(qmdBin, [
+    "#!/usr/bin/env node",
+    "const args = process.argv.slice(2);",
+    "if (args.includes('--version')) { console.log('qmd-test 1.0'); process.exit(0); }",
+    "console.log(JSON.stringify([",
+    "  { file: 'Memory/noise.md', title: 'Noise memory', snippet: 'Noisy but tempting candidate.' },",
+    "  { file: 'Memory/must.md', title: 'Must memory', snippet: 'Useful old memory evidence.' }",
+    "]));",
+    "",
+  ].join("\n"));
+  await writeFile(obsidianBin, [
+    "#!/usr/bin/env node",
+    "const args = process.argv.slice(2);",
+    "if (args.includes('--version')) { console.log('obsidian-test 1.0'); process.exit(0); }",
+    "if (args[0] === 'backlinks') { console.log('[]'); process.exit(0); }",
+    "if (args[0] === 'read') { console.log(''); process.exit(0); }",
+    "console.log('ok');",
+    "",
+  ].join("\n"));
+  await chmod(qmdBin, 0o755);
+  await chmod(obsidianBin, 0o755);
+
+  const result = spawnSync("node", [
+    path.join(repoRoot, "scripts/bench/run-pipeline-bench.mjs"),
+    "--cases",
+    casesPath,
+    "--report",
+    reportPath,
+    "--qmd",
+    qmdBin,
+    "--obsidian",
+    obsidianBin,
+    "--query-generator",
+    "rules",
+    "--query-mode",
+    "raw-only",
+    "--reranker",
+    "none",
+    "--include-draft",
+  ], {
+    cwd: root,
+    encoding: "utf-8",
+    env: {
+      ...process.env,
+      AHA_BENCH_VAULT_ROOT: vaultRoot,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(await readFile(reportPath, "utf-8"));
+  const [caseResult, collidingCaseResult, noMustCaseResult] = report.results;
+  assert.match(caseResult.trace_json, /^bench\/reports\/latest\/traces\/trace-rerank-[a-f0-9]{8}\.json$/);
+  assert.match(collidingCaseResult.trace_json, /^bench\/reports\/latest\/traces\/trace-rerank-[a-f0-9]{8}\.json$/);
+  assert.notEqual(caseResult.trace_json, collidingCaseResult.trace_json);
+  assert.equal(report.summary.trace_diagnosis_counts.rerank_failure, 2);
+  assert.equal(report.summary.trace_diagnosis_counts.none, 1);
+
+  const trace = JSON.parse(await readFile(path.join(root, caseResult.trace_json), "utf-8"));
+  assert.equal(trace.schema, "PipelineTrace");
+  assert.equal(trace.case.id, "trace/rerank");
+  assert.equal(trace.steps.query_generation.generated_by, "rules");
+  assert.equal(trace.steps.qmd_runs[0].results[0].file, "Memory/noise.md");
+  assert.equal(trace.steps.pre_rerank_candidates[0].rerank_id, "c001");
+  assert.equal(trace.steps.pre_rerank_candidates[1].content_hash.length, 64);
+  assert.equal(trace.steps.pre_rerank_candidates[1].snippet, "Useful old memory evidence.");
+  assert.equal(trace.steps.final_candidates[0].file, "Memory/noise.md");
+  assert.deepEqual(trace.gold_positions.must[0], {
+    file: "Memory/must.md",
+    qmd_rank: 2,
+    expanded_pool_rank: 2,
+    final_rank: 2,
+    in_review_budget: false,
+    source: "qmd_query",
+  });
+  assert.equal(trace.gold_positions.noise[0].in_review_budget, true);
+  assert.equal(trace.diagnosis.primary, "rerank_failure");
+  assert.equal(trace.diagnosis.next_target, "rerank");
+  assert.ok(trace.diagnosis.signals.includes("Required gold memory reached pre-rerank pool but missed the review attention budget."));
+
+  const noMustTrace = JSON.parse(await readFile(path.join(root, noMustCaseResult.trace_json), "utf-8"));
+  assert.equal(noMustTrace.diagnosis.primary, null);
+  assert.ok(!noMustTrace.diagnosis.signals.includes("All required gold memories are inside the review attention budget."));
+
+  const archiveFiles = (await readdir(path.join(root, "bench/reports/archive")))
+    .filter((name) => name.endsWith(".json"));
+  assert.equal(archiveFiles.length, 1);
+  const archiveReportFile = archiveFiles[0];
+  const archiveReport = JSON.parse(await readFile(path.join(root, "bench/reports/archive", archiveReportFile), "utf-8"));
+  const archiveStem = path.basename(archiveReportFile, ".json");
+  assert.match(
+    archiveReport.results[0].trace_json,
+    new RegExp(`^bench/reports/archive/traces/${archiveStem}/trace-rerank-[a-f0-9]{8}\\.json$`),
+  );
+  assert.notEqual(archiveReport.results[0].trace_json, report.results[0].trace_json);
+  await readFile(path.join(root, archiveReport.results[0].trace_json), "utf-8");
+
   await rm(root, { recursive: true, force: true });
 });

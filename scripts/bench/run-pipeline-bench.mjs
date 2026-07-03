@@ -22,6 +22,11 @@ import {
 } from "../lib/aha-bench-common.mjs";
 import { rerankCandidatesForCase } from "../lib/aha-agent-rerank.mjs";
 import {
+  buildPipelineTrace,
+  summarizeTraceDiagnoses,
+  writePipelineTraceForReport,
+} from "../lib/aha-pipeline-trace.mjs";
+import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
   resolveVaultPath as sharedResolveVaultPath,
 } from "../../insight-package/src/path-resolver.js";
@@ -617,6 +622,13 @@ function mergeCandidates(candidates, limit) {
   return merged;
 }
 
+function annotateRerankInputCandidates(candidates) {
+  return candidates.map((candidate, index) => ({
+    ...candidate,
+    rerankId: `c${String(index + 1).padStart(3, "0")}`,
+  }));
+}
+
 function sourceList(candidate) {
   if (Array.isArray(candidate.sources) && candidate.sources.length > 0) {
     return candidate.sources;
@@ -787,6 +799,9 @@ function printSummary(report) {
   for (const [group, count] of Object.entries(report.summary.failure_attribution_counts ?? {})) {
     console.log(`| Failure Attribution: ${group} | ${count} |`);
   }
+  for (const [group, count] of Object.entries(report.summary.trace_diagnosis_counts ?? {})) {
+    console.log(`| Trace Diagnosis: ${group} | ${count} |`);
+  }
   console.log(`| QMD direct must-recall matches | ${report.summary.qmd_direct_matches} |`);
   console.log(`| backlink must-recall matches | ${report.summary.backlink_matches} |`);
   console.log(`| missing must-recall matches | ${report.summary.missing_matches} |`);
@@ -945,6 +960,21 @@ function reportDiagnostics(results) {
   };
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function writeReportWithTraces(report, reportPath, traces) {
+  const reportCopy = cloneJson(report);
+  reportCopy.report = reportPath;
+  reportCopy.results.forEach((result, index) => {
+    result.trace_json = writePipelineTraceForReport(traces[index], reportPath);
+  });
+  mkdirSync(dirname(resolve(reportPath)), { recursive: true });
+  writeFileSync(resolve(reportPath), `${JSON.stringify(reportCopy, null, 2)}\n`);
+  return reportCopy;
+}
+
 function main() {
   const options = parseArgs();
   const { cases, collection: defaultCollection, expectedInTopK, expectedNiceInTopK } = readBenchmarkCases(options.cases, {
@@ -953,6 +983,7 @@ function main() {
   const collection = options.collection || defaultCollection;
   const resolver = buildVaultResolver();
   const results = [];
+  const traces = [];
 
   for (const caseItem of cases) {
     const startedAt = Date.now();
@@ -1039,7 +1070,7 @@ function main() {
       rerankFallback: !!rerankResult.rerank_fallback,
     });
 
-    results.push({
+    const caseResult = {
       id: caseItem.id,
       state: caseItem.state,
       title: caseItem.title || caseItem.id,
@@ -1143,7 +1174,26 @@ function main() {
         in_expanded_pool: sourceForExpected(item.file, expandedPool) !== "missing",
       })),
       latency_ms: Date.now() - startedAt,
+    };
+    const trace = buildPipelineTrace({
+      caseItem,
+      generatedQuery,
+      querySpecs,
+      qmdRuns,
+      qmdCandidates,
+      backlinkSeeds,
+      backlinkResult,
+      seedStrategy: options.seedStrategy,
+      expandedPool,
+      preRerankCandidates: annotateRerankInputCandidates(expandedPool),
+      rerankResult,
+      finalCandidates,
+      failureAttribution,
+      topK,
     });
+    caseResult.trace_diagnosis = trace.diagnosis;
+    results.push(caseResult);
+    traces.push(trace);
   }
 
   const report = {
@@ -1164,15 +1214,16 @@ function main() {
     reranker: options.reranker,
     results,
     diagnostics: reportDiagnostics(results),
-    summary: summarizePipelineEvaluation(results),
+    summary: {
+      ...summarizePipelineEvaluation(results),
+      trace_diagnosis_counts: summarizeTraceDiagnoses(results),
+    },
   };
 
-  mkdirSync(dirname(resolve(options.report)), { recursive: true });
-  writeFileSync(resolve(options.report), `${JSON.stringify(report, null, 2)}\n`);
+  const latestReport = writeReportWithTraces(report, options.report, traces);
   const stampedReport = archiveReportPath(options.report);
-  mkdirSync(dirname(stampedReport), { recursive: true });
-  writeFileSync(stampedReport, `${JSON.stringify(report, null, 2)}\n`);
-  printSummary(report);
+  writeReportWithTraces(report, stampedReport, traces);
+  printSummary(latestReport);
 }
 
 main();
