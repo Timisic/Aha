@@ -1,314 +1,96 @@
 # Aha
 
-一个用于 Obsidian 旧笔记召回与 insight grounding 的本地工具。
+**个人长期笔记的 AI 召回与判断辅助工具。**
 
-把突然出现的想法，带着旧笔记一起走到一份可回看的判断草稿。
-
-Aha 现在的主路径是 Obsidian 插件 + 本地 search runner：你从当前笔记触发 Aha search，runner 生成多条 QMD 查询、召回旧笔记、读取候选正文，并用 bounded Relation Judge 给出关系判断。
-
-它重点降低的是这段认知阻力：从“我感觉这个想法很重要”，到“我能说清它连接了哪些旧经验、改变了什么判断、应该怎样沉淀下来”。
+当你形成一个新的想法（insight）时，Aha 从你的 Obsidian 笔记库里找回相关的旧笔记，并回答一个比"相关"更进一步的问题：**这条旧笔记是在支持、挑战、类比还是限定你现在的判断？**
 
 <p align="center">
   <img src="./docs/assets/insight-flowchart.png" alt="Aha Insight-to-Judgment workflow" width="560" />
 </p>
 
+## 为什么做这个
+
+长期记笔记的人都会遇到同一个问题：旧笔记里沉淀过判断、教训、反例和边界，但在新问题出现时，它们很难被重新调用。
+
+语义搜索类工具（如 Smart Connections）已经把"浮现相关笔记"做得很好，但相似度是**对称、无立场**的信号——它答不了"所以呢"。一条旧笔记对当前判断的价值，取决于它对这个判断做了什么：
+
+| 关系 | 含义 |
+|---|---|
+| `supports` | 旧内容强化了当前想法 |
+| `challenges` | 旧内容让当前想法需要修正 |
+| `resembles` | 旧内容来自别的领域，但结构相同 |
+| `bounds` | 旧内容说明这个想法适用于哪里、停在哪里 |
+| `weak` | 只是主题相近，证据不足 |
+
+Aha 的每个强关系标签都必须附带**候选原文中的引句**，引句经代码校验不存在则机械降级为 `weak`——模型提出关系假设，确定性代码验证证据。
+
+人机边界始终是：**human-authored, agent-retrieved**。人写笔记、人判断、人落笔；AI 负责召回、解释关系、提供追问，绝不改写原文。
+
+## 架构
+
+```text
+┌─ Obsidian Plugin（Memory Surface）────────────────┐
+│  从当前笔记触发搜索 · 生成/复用 Review Note        │
+│  展示候选与关系理由 · 打开旧笔记 · 记录反馈动作     │
+└──────────────────┬───────────────────────────────┘
+                   │ 调用
+┌─ scripts/aha wrapper（机械连接层）────────────────┐
+│  环境检查 · QMD SDK/CLI · 代理与重试 · 候选过滤    │
+│  正文读取 · JSON schema 校验 · 结构化失败记录      │
+└──────────────────┬───────────────────────────────┘
+                   │ 编排
+┌─ LLM + QMD（Reasoning Workflow）─────────────────┐
+│  多路结构化查询生成 · 混合召回 + 链接图扩展        │
+│  候选原文阅读 · Relation Judge（引句校验）· 重排   │
+└──────────────────────────────────────────────────┘
+```
+
+设计取舍：插件不做第二个 Agent runtime，只做低摩擦的 review 表面；推理全部在 wrapper/LLM 侧。Review Note（Markdown）是持久状态与审计轨迹，不藏隐藏状态。
+
+检索层组合多路信号：LLM 生成的多条结构化 QMD 查询（含结构抽象、反例导向、同义扩展、外文关键词）、确定性的原文/thought 补充查询（不依赖 LLM 措辞的召回底线）、源笔记的链接/反链邻域、QMD top-10 种子的反链扩展。
+
 ## 快速开始
 
-在 Obsidian 插件设置里配置本地 Aha workspace 后，从命令面板运行：
-
-```text
-Aha: Search from current note
-```
-
-插件会为当前笔记生成或复用一份 Aha Review Note，并把检索结果写入其中：
-
-```text
-Aha/Reviews/
-```
-
-## 它帮你完成什么
-
-### 找回旧记忆
-
-很多想法出现时，只能隐约感觉它和过去某些笔记、项目、场景有关。Aha 会把当前想法交给 agent 生成多条结构化 QMD 查询，再用 QMD 和 Obsidian backlink 找回本地旧笔记。
-
-### 降低重新翻找成本
-
-你不用先在知识库里自己翻一轮。Aha 会先给出一张 agent rerank 后的候选表，让你从几个最可能相关的旧笔记开始看。
-
-### 显影相似、反例和边界
-
-旧笔记和当前想法的关系可能有几种：
-
-- 支持：旧内容强化了当前想法。
-- 挑战：旧内容让当前想法需要修正。
-- 相似：旧内容来自别的领域，但结构很像。
-- 边界：旧内容说明这个想法适用于哪里，停在哪里。
-
-这一步的目的，是让你更快看到“这个想法到底改变了什么”。
-
-### 保留追问过程
-
-Agent 会围绕候选判断追问你：你接受哪部分，拒绝哪部分，哪里需要补充，是否真的形成了新判断。中间过程会保存在 `grill-context.md`，方便回看。
-
-### 输出判断草稿
-
-当你明确表示可以总结时，Agent 会输出一份 summary draft。它可以包括：
-
-- 原始想法；
-- 被更新的旧理解；
-- 新形成的判断；
-- 参与判断的旧笔记；
-- 适用边界；
-- 可能影响的行动；
-- 仍未解决的问题。
-
-## 工作流
-
-```text
-输入想法和背景
--> agent 生成多条 QMD 查询
--> QMD 检索旧笔记
--> 用 QMD top10 扩展 Obsidian backlinks
--> 合并候选并 agent rerank
--> 回看候选内容
--> 接受追问
--> 形成判断
--> 输出草稿
-```
-
-中间会形成一个小循环：你在 Review Note 里勾选、拒绝或记录应该找到的旧记忆；Aha 把这些可见反馈保存成 benchmark seed，后续可以用来改进召回质量。
-
-## 命令
-
-```text
-Aha: Search from current note
-```
-
-从当前 Markdown note 触发一轮检索，并打开或更新对应的 Aha Review Note。
-
-```text
-Aha: Open current review note
-```
-
-打开当前 source note 对应的 Review Note。
-
-```text
-Aha: Open Aha Review Panel
-```
-
-打开 Review Panel，快速同步 selected memories 和 handoff。
-
-```text
-Aha: Open candidate under cursor in new tab
-```
-
-在 Review Note 中从光标所在的 Obsidian link 打开候选旧笔记。
-
-## 文件位置
-
-Review Note 默认保存在当前 vault：
-
-```text
-Aha/Reviews/
-```
-
-私有 benchmark case 默认保存在本地 gitignored 文件：
-
-```text
-bench/aha-memory-cases.json
-```
-
-## 设计原则
-
-- 用户确认判断，Agent 提供检索、追问和草稿。
-- 旧笔记是 memory candidates，需要用户 Review 后才进入最终判断。
-- Summary 由用户明确触发，Agent 不自动跳到完成。
-- 原始 Obsidian 笔记由用户掌控，扩展只输出建议和 draft。
-- Obsidian 插件保持薄层：触发、写 Review Note、打开候选。
-- 检索编排与关系判断放在本地 search runner 和共享脚本模块里。
-
-## 当前状态
-
-已经支持：
-
-- Obsidian 插件 MVP：从当前笔记触发 Aha search，生成/复用 Aha Review Note，通过 search runner 调用 OpenAI-compatible LLM、QMD SDK/CLI fallback 与 Obsidian CLI，并在 review note 中追加每一轮检索结果。
-- QMD 结构化 query plan；
-- QMD/Obsidian graph 候选合并和 runner-side rerank；
-- bounded Relation Judge，强关系需要 quote-backed evidence；
-- Review Note candidate 表格、Selected Memories、Grill Handoff；
-- Review Benchmark Seed 显式保存；
-- Eval-v2 benchmark 和 PipelineTrace 诊断。
-- search runner 默认 `pipeline`：LLM 生成 3-5 条结构化 QMD query，runner 混合 QMD 与 Obsidian graph 检索、评分重排候选、读取 vault 内候选正文，再用 bounded Relation Judge 给出关系判断。
-
-暂时还没有：
-
-- 独立 Web UI；
-- 自动修改 Obsidian 原文；
-- 多 Agent 分发。
-
-## Obsidian 插件 MVP
-
-插件代码位于 `obsidian-plugin/`，search runner 位于 `scripts/aha/run-insight-search.mjs`。Obsidian 只作为 Memory Surface：负责触发、生成 review note、打开候选笔记；检索编排与关系判断仍由 runner/LLM/QMD 侧负责。
-
-本地验证：
+前置：Obsidian 桌面版、Node、[QMD](https://github.com/tobi/qmd)（本地混合检索）、OpenAI-compatible API key（或 Codex CLI 作为 fallback）。
 
 ```bash
-npm ci
-npm ci --prefix obsidian-plugin
-npm run verify
+cd obsidian-plugin
+npm run verify   # 构建 + 测试
 ```
 
-关键运行约束：
+把插件装入 vault 后，在设置里填 API key，打开任意笔记，命令面板执行 **Aha: Search**。结果写入 `Aha/Reviews/` 下的 Review Note：候选表、关系理由、引句、Grill Handoff，候选笔记在独立分页打开、不打断当前写作。
 
-- Relation Judge、QMD、search runner 传输或超时失败不会伪装成成功轮次；runner 会保留结构化 `{ ok:false, error:{ message, tool, details } }`，插件会把它写成 failed search record。
-- Obsidian 桌面 App 的 PATH 可能没有 Node；插件会优先用设置里的 Node command，其次自动探测常见桌面安装路径，并用 Node 显式执行 search runner，不再依赖 `#!/usr/bin/env node`。
-- 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径，避免把 vault 外文件内容带入 Relation Judge prompt。
-- search runner 会过滤当前 Aha Review Note 和 `Aha/Reviews/` 生成物，避免 Obsidian backlink 把 review shell 当成旧记忆候选。
-- LLM 生成的多条 QMD plan query 会逐条执行，避免多个 QMD 检索争用 QMD/SQLite runtime；单条默认 30 秒超时。SDK runner 默认关闭 QMD 内部 rerank；CLI fallback 会给 QMD 传 `-C 20` 限制内部候选数。某条 QMD 慢或卡住时会作为 warning 保留，不会自动降级到 `qmd vsearch`。
-- CLI 和插件侧外部进程都关闭 stdin、设置超时，并限制 stdout/stderr 缓冲大小。
-- 搜索开始时插件会立即把 running record 写入 Review Note 的 Search Results 区块；成功或失败退出后替换为最新结果，避免后台状态不可见，同时不把 review note 变成追加式审计日志。
-- `--target-candidates` 在 search runner CLI 层也会限制到 15-20，和插件 UI slider 保持一致。
-- Obsidian 插件默认使用 OpenAI-compatible API 做 query plan 与 Relation Judge：`provider=openai`、`baseUrl=https://api.openai.com/v1`、`model=gpt-5.5`。OpenAI API key 可直接填在插件设置里，插件会把它注入 wrapper 子进程环境；如果该字段留空，则回退读取本地环境变量，默认变量名是 `OPENAI_API_KEY`。
-- 直接填写在插件里的 API key 会保存在当前 vault 的 Obsidian 插件数据中，只用于本机运行；不要把 `.obsidian/plugins/.../data.json` 或相关插件数据提交到仓库。
-- OpenAI HTTPS 请求优先走 Node 内置请求；如果本地代理导致 Node TLS 握手被 reset，search runner 会读取 `HTTPS_PROXY` / macOS 系统代理并用 curl fallback 发起同一请求，避免 Obsidian GUI 进程没有 shell 环境变量时失败。
-- QMD 默认走 SDK runner，并关闭 QMD 内部 rerank；Aha 仍会执行多 query 混合召回、wrapper scoring、候选正文读取和 Relation Judge 重排。`qmdCommand` 仍保留，用于 SDK module 推导和 CLI fallback。
-- Aha Review Note 会在 frontmatter 写入 `source_id`；桌面本地文件系统可用时使用 inode 级身份，因此 source note 改名、编辑大小或 mtime 变化后仍可复用同一个 review note。若只能降级到 ctime 身份，插件会要求 `source_path` 同时匹配，避免同时间戳碰撞污染别的 review note。
-- Aha Review Note 的生成区块采用 marker-backed 替换语义；重新运行只保留最新 Search Results / Selected Memories / Grill Handoff，marker 外的人工记录不会被删除。
-- note identity 默认大小写不敏感，匹配当前 macOS/Obsidian vault 常用行为；测试里保留了大小写敏感选项，便于未来支持严格区分大小写的 vault。
+运行细节（失败可见性、代理与重试、候选安全、身份幂等）见 [docs/obsidian-plugin-operations.md](./docs/obsidian-plugin-operations.md)。最初的 Pi Extension 形态（`/insight` 会话流）保留在 `insight-package/`，作为历史参考。
 
-## 评测
+## 评估：个人记忆空间怎么衡量"找得准"
 
-小评测集使用本地私有文件 `bench/aha-memory-cases.json`。每条 case 保存真实会输入 `/insight` 的原始内容来源，以及人工标注的 `gold.must` / `gold.nice` / `gold.noise` 笔记；这个文件默认被 Git ignore，不应提交。仓库只保留无隐私内容的 `bench/aha-memory-cases.example.json`。
+个人笔记库没有标准答案——同一条旧笔记对不同 insight 的关系不同，"该召回什么"只有笔记的主人知道。所以 Aha 不照搬通用 RAG benchmark，而是把评估设计成**正常使用的副产品**：
 
-第一次使用时，从模板复制一份：
+1. **反馈即标注**：在 Review Note 里对候选点 `accept` / `reject_as_noise` / `should_have_found`，动作被收集为 benchmark seed（`scripts/bench/collect-review-seeds.mjs`），人工确认后进入私有评测集（`gold.must` / `nice` / `noise`，本地文件不入库）。
+2. **围绕注意力预算计分**：一次 review 只读得动 ~10 条候选，主指标全部 @10——`Must Recall@10`、`Useful Precision@10`、`nDCG@10`、`Negative Rate@10`。
+3. **失败归因**：每个 case 自动归因到 query / retrieval / rerank / relation / 标注 / 输入表示六类，诊断指标（`Expanded Pool Recall@20`、`Dropped Must Count`）区分"没找到"和"找到了但排丢了"——决定下一步优化哪一层。
 
 ```bash
-cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json
+node scripts/bench/run-pipeline-bench.mjs                 # 全量评测
+node scripts/bench/run-pipeline-bench.mjs --only aha-002  # 单 case 快速迭代
+node scripts/bench/summarize-report.mjs bench/reports/latest/pipeline.json
 ```
 
-case v3 结构：
+每个 case 产出结构化 PipelineTrace（查询、逐路召回、池、重排、gold 位置、归因），细节见 [bench/README.md](./bench/README.md)。
 
-- `state`：`active` 默认计分；`draft` 候选待确认；`off` 保留但不使用。
-- `title`：报告里的短标题，不参与评分。
-- `input`：真实会给 `/insight` 的输入：
-  - `input.note`：可选，原始 insight 所在笔记。
-  - `input.lines`：有 note 时默认填写，1-based inclusive 行号范围。
-  - `input.whole_note`：仅当整篇 note 就是原始输入时显式设为 `true`。
-  - `input.thought`：真实想法；有 note 时作为补充，没有 note 时就是完整输入。
-- `gold`：评分标签：
-  - `gold.must`：必须召回，缺失算硬失败。
-  - `gold.nice`：召回很好，缺失不算硬失败。
-  - `gold.noise`：看似相关但应视为噪声。
-- `why`：标注理由，不参与 query 生成、rerank 或最终分数。
-
-旧字段 `status` / `source_note_path` / `insight_input` / `must_recall` / `nice_to_have` / `negative` 仍可被读取用于迁移，但新文件应使用 v3。
-
-主 benchmark 只放真实 insight case；路径解析、重复文件名、missing cue、source-note self-hit 等技术回归 case 不进入主分，可以放在 ignored 的 `bench/aha-memory-regression-cases.json`。
-
-如果 case 来自笔记片段，优先用 `input.note + input.lines`；benchmark runner 只会把这段行号切片交给后续 query/rerank 流程。可以先预览精确片段，避免整篇 note 污染输入：
+## 开发与验证
 
 ```bash
-node scripts/bench/extract-note-excerpt.mjs \
-  --note "Projects/path/to/source.md" \
-  --lines 8:20 \
-  --vault-root "$HOME/Obsidian Notes"
+node --test scripts/aha/tests/*.test.mjs   # wrapper/检索/judge/评分单测
+cd obsidian-plugin && npm run verify       # 插件构建 + 测试
 ```
 
-按 case 预览：
+模块共享：查询生成（`scripts/aha/query-plan.mjs`）与 Relation Judge（`scripts/aha/relation-judge.mjs`）同时服务产品 wrapper 和评测管线，评测中验证的改进直接作用于产品。
 
-```bash
-node scripts/bench/extract-note-excerpt.mjs --case aha-001 --full-input
-```
+## 状态与边界
 
-Review Note 里的反馈动作会先生成可见 seed，不会直接写入正式私有 benchmark：
+已支持：Obsidian 插件 MVP（触发、Review Note、候选跳转、反馈按钮）、多路混合召回、引句校验的关系判断、分批 judge 与检索先验保底排序、eval-v2 评测闭环与失败归因、review 反馈到 benchmark seed 的收集链路。
 
-- `accept` -> 草稿 `gold.nice` seed。
-- `reject_as_noise` -> 草稿 `gold.noise` seed。
-- `should_have_found` -> 草稿 `gold.must` seed。
+刻意不做：自动修改 Obsidian 原文、自动沉淀总结、把候选自动写入知识库。
 
-为了避免手工从 Markdown 复制字段，可以把这些 Review Note seeds 聚合成一个 ignored 的 benchmark-like inbox：
-
-```bash
-node scripts/bench/collect-review-seeds.mjs \
-  --vault-root "$HOME/Obsidian Notes" \
-  --output bench/aha-memory-seed-cases.json
-```
-
-`bench/aha-memory-seed-cases.json` 同样被 Git ignore。它按 source note 聚合成 `state: draft` v3 cases：
-
-- `accept` 聚合进 `gold.nice`。
-- `reject_as_noise` 聚合进 `gold.noise`。
-- `should_have_found` 聚合进 `gold.must`。
-- 如果某个 source 只有 `accept` / `reject_as_noise`，collector 会加 `expected_no_recall: true`，让它仍然是合法 draft case。
-- 如果同一条 memory 被标成多个 label，collector 会按 `must > noise > nice` 保留一个标签，并写入 `seed_label_conflicts`，提醒人工检查。
-- 由于当前 Review Note 不记录 source line range，seed inbox 会显式写 `input.whole_note: true`；提升到 active 前最好替换成 `input.lines`。
-
-你需要人工决定的是：哪些 draft case 值得进入 `bench/aha-memory-cases.json`，以及何时把 `state` 从 `draft` 改成 `active`。collector 不会自动修改 `bench/aha-memory-cases.json`。
-
-想单独 smoke 这些 draft seed cases，可以显式指定 seed inbox：
-
-```bash
-node scripts/bench/run-pipeline-bench.mjs \
-  --cases bench/aha-memory-seed-cases.json \
-  --include-draft
-```
-
-Aha eval-v2 的产品目标是：在十条候选的 Review Attention Budget 里，提高有价值旧记忆的浓度，同时降低噪声泄漏。
-
-主要指标（默认 `@10`）：
-
-- `Must Recall@10`：必须召回的旧笔记有多少进入最终前 10。
-- `Useful Precision@10`：前 10 中 `must_recall + nice_to_have` 的有效命中比例。
-- `nDCG@10`：排序质量；`must_recall` 权重大于 `nice_to_have`，`negative` 单独计噪声。
-- `Negative Rate@10`：前 10 中主动负例/噪声命中的比例。
-
-诊断指标：
-
-- `Expanded Pool Recall@20`：QMD + backlink 合并池在更宽的 20 条诊断预算里是否已经触达答案。
-- `Dropped Must Count`：expanded pool 已触达、但最终前 10 没保住的 must-recall 数量；包括最终排在第 11 名之后的情况。
-- `Stability@10`：确定性报告里最终前 10 顺序的稳定性/指纹。
-- `Failure Attribution`：失败/低质量 case 的单一主因分组：`case_label_failure`、`input_representation_failure`、`query_failure`、`retrieval_failure`、`rerank_failure`、`relation_failure`；可附加 secondary flags。
-
-L1 只测 QMD 直接召回：
-
-```bash
-node scripts/bench/run-qmd-bench.mjs
-```
-
-L2 近似真实 `/insight` retrieval：
-
-```bash
-node scripts/bench/run-pipeline-bench.mjs
-```
-
-L2 流程是：
-
-```text
-raw insight input
--> query-generation agent 生成 3-5 条 intent/lex/vec/hyde 查询
--> 逐条调用 QMD SDK/CLI
--> 用 QMD top10 作为 backlink seeds
--> 合并 QMD/backlink 候选
--> Relation Judge 判断关系并排序
--> 计算 eval-v2 primary metrics + diagnostics
-```
-
-最新报告写到：
-
-```text
-bench/reports/latest/qmd.json
-bench/reports/latest/pipeline.json
-```
-
-时间戳历史报告写到：
-
-```text
-bench/reports/archive/
-```
-
-Eval-v2 代码/文档变更的最小验证路径目前是：
-
-```bash
-npm --prefix obsidian-plugin run verify
-```
+诚实边界：这是自用驱动的深度产品实验，评估基于真实个人 review 行为；检索层的 must 入池率已通过确定性手段做到 ~97%，top-10 排序质量仍在通过用户反馈判例持续校准。
