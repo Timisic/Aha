@@ -9,8 +9,8 @@ import test from "node:test";
 import {
   buildReviewSeedCaseDocument,
   parseReviewBenchmarkSeedsFromContent,
-} from "../../lib/aha-review-seeds.mjs";
-import { readBenchmarkCases } from "../../lib/aha-bench-common.mjs";
+} from "../../lib/review-seeds.mjs";
+import { readBenchmarkCases } from "../../lib/bench-cases.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const previousVaultRoot = process.env.AHA_BENCH_VAULT_ROOT;
@@ -94,7 +94,7 @@ test("collector resolves conflicting labels without emitting duplicate benchmark
 });
 
 test("collector writes vault-relative paths when review seeds contain absolute vault paths", async () => {
-  const root = await mkdtempDir("aha-review-seeds-relative-");
+  const root = await mkdtempDir("review-seeds-relative-");
   const vault = path.join(root, "vault");
   const sourcePath = path.join(vault, "Source/Insight.md");
   const memoryPath = path.join(vault, "Memory/Missing Must.md");
@@ -129,7 +129,7 @@ test("collector writes vault-relative paths when review seeds contain absolute v
 });
 
 test("collect-review-seeds CLI writes draft cases that benchmark reader can validate", async () => {
-  const root = await mkdtempDir("aha-review-seeds-cli-");
+  const root = await mkdtempDir("review-seeds-cli-");
   const vault = path.join(root, "vault");
   const output = path.join(root, "aha-memory-seed-cases.json");
   await mkdir(path.join(vault, "Aha/Reviews"), { recursive: true });
@@ -166,7 +166,7 @@ test("collect-review-seeds CLI writes draft cases that benchmark reader can vali
 });
 
 test("collector accepts an absolute review folder path", async () => {
-  const root = await mkdtempDir("aha-review-seeds-absolute-");
+  const root = await mkdtempDir("review-seeds-absolute-");
   const vault = path.join(root, "vault");
   const reviewFolder = path.join(root, "external-reviews");
   await mkdir(reviewFolder, { recursive: true });

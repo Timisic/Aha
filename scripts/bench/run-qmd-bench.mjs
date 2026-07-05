@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import {
   applyBenchEvaluationPolicy,
   sourceNotePathForCase,
-} from "../lib/aha-bench-common.mjs";
+} from "../lib/bench-cases.mjs";
 
 function parseArgs() {
   const defaults = {

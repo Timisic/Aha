@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveQmdQueriesForCase } from "../../lib/aha-bench-common.mjs";
-import { rerankCandidatesForCase } from "../../lib/aha-agent-rerank.mjs";
+import { resolveQmdQueriesForCase } from "../../lib/bench-cases.mjs";
+import { relationJudgeCandidatesForCase } from "../../aha/relation-judge.mjs";
 
 const previousKey = process.env.AHA_TEST_OPENAI_KEY;
 
@@ -50,7 +50,7 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
     assert.equal(queryPlan.queries.length, 3);
     assert.match(queryPlan.queries[0].query, /intent:/);
 
-    const reranked = rerankCandidatesForCase({
+    const reranked = await relationJudgeCandidatesForCase({
       ...caseItem,
       query_object: queryPlan.query_object,
       queries: queryPlan.queries,
@@ -67,8 +67,12 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
 
     assert.equal(reranked.rerank_generated_by, "agent");
     assert.equal(reranked.rerank_fallback, false);
-    assert.deepEqual(reranked.rerank_ranked_ids, ["c002", "c001"]);
-    assert.deepEqual(reranked.candidates.map((item) => item.file), ["Memory/Noise.md", "Memory/Feedback.md"]);
+    // Equal-strength relations fall back to retrieval pool order (c001 before c002).
+    assert.deepEqual(reranked.rerank_ranked_ids, ["c001", "c002"]);
+    assert.deepEqual(reranked.candidates.map((item) => item.file), ["Memory/Feedback.md", "Memory/Noise.md"]);
+    assert.deepEqual(reranked.candidates.map((item) => item.relation), ["supports", "challenges"]);
+    assert.match(reranked.candidates[1].hit, /Noise candidate/);
+    assert.match(reranked.candidates[0].why, /feedback/i);
 
     const recordedRequests = await server.requests();
     assert.equal(recordedRequests.length, 2);
@@ -77,7 +81,7 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
     assert.ok(recordedRequests.every((request) => request.body.text?.format?.type === "json_schema"));
     assert.deepEqual(recordedRequests.map((request) => request.body.text.format.name), [
       "aha_qmd_query_plan_agent",
-      "aha_agent_rerank",
+      "aha_relation_judge",
     ]);
   } finally {
     await server.close();
@@ -125,8 +129,35 @@ const server = createServer((req, res) => {
           }
         }))
       };
-    } else if (schemaName === "aha_agent_rerank") {
-      output = { ranked_ids: ["c002", "c001"] };
+    } else if (schemaName === "aha_relation_judge") {
+      output = {
+        ok: true,
+        sourcePath: "openai-case",
+        generatedAt: null,
+        summary: "Relation judge fixture result.",
+        warnings: [],
+        error: null,
+        candidates: [
+          {
+            notePath: "Memory/Noise.md",
+            noteTitle: "Noise",
+            relation: "challenges",
+            hit: "\\"Noise candidate excerpt\\"",
+            why: "Noise candidate challenges whether every feedback loop improves judgment.",
+            quotes: ["Noise candidate excerpt"],
+            selected: true
+          },
+          {
+            notePath: "Memory/Feedback.md",
+            noteTitle: "Feedback",
+            relation: "supports",
+            hit: "\\"Feedback candidate excerpt\\"",
+            why: "Feedback candidate supports the current feedback loop improvement insight.",
+            quotes: ["Feedback candidate excerpt"],
+            selected: true
+          }
+        ]
+      };
     } else {
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "unexpected schema " + schemaName }));

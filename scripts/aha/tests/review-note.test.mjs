@@ -10,6 +10,48 @@ const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const requireFromPlugin = createRequire(path.join(repoRoot, "obsidian-plugin/package.json"));
 const esbuild = requireFromPlugin("esbuild");
 
+test("generated block helper replaces marker body and exposes body content", async () => {
+  const generatedBlock = await loadTsModule("obsidian-plugin/src/generated-block.ts");
+  const original = [
+    "# Review",
+    "",
+    "## Search",
+    "",
+    "<!-- aha:search-results:start -->",
+    "old",
+    "<!-- aha:search-results:end -->",
+    "",
+    "manual note",
+  ].join("\n");
+
+  const next = generatedBlock.replaceGeneratedBlock(original, "search-results", "Search", "new body");
+  const body = generatedBlock.generatedBlockBody(next, "search-results");
+
+  assert.match(next, /manual note/);
+  assert.equal(body?.value.trim(), "new body");
+});
+
+test("generated block helper returns the latest matching round section", async () => {
+  const generatedBlock = await loadTsModule("obsidian-plugin/src/generated-block.ts");
+  const content = [
+    "<!-- aha:selected-memories:start -->",
+    "### Selected Memories - 2026-06-28T01:00:00Z",
+    "",
+    "old",
+    "",
+    "### 纳入 Handoff 的记忆 - 2026-06-28T02:00:00Z",
+    "",
+    "new",
+    "<!-- aha:selected-memories:end -->",
+  ].join("\n");
+
+  const latest = generatedBlock.latestRoundSectionInGeneratedBlock(content, "selected-memories", ["纳入 Handoff 的记忆", "Selected Memories"]);
+
+  assert.equal(latest?.generatedAt, "2026-06-28T02:00:00Z");
+  assert.match(latest?.text ?? "", /new/);
+  assert.doesNotMatch(latest?.text ?? "", /old/);
+});
+
 test("successful search rounds replace generated blocks without deleting surrounding review content", async () => {
   const reviewNote = await loadReviewNoteModule();
   const initial = reviewNote.makeReviewNoteContent({
@@ -333,23 +375,28 @@ test("review note matching allows path drift only for filesystem-backed source_i
 
 test("plugin wrapper validator requires structured failure fields", async () => {
   const schema = await loadTsModule("obsidian-plugin/src/schema.ts");
+  const validator = await import("../lib/result-validator.mjs");
 
-  const incomplete = schema.validateAhaWrapperResult({
+  const incompletePayload = {
     ok: false,
     error: {
       message: "failed without tool or details",
     },
-  });
-  const complete = schema.validateAhaWrapperResult({
+  };
+  const completePayload = {
     ok: false,
     error: {
       message: "Aha retrieval returned no usable candidates.",
       tool: "qmd",
       details: "QMD and Obsidian graph expansion returned no vault-contained candidates.",
     },
-  });
+  };
+  const incomplete = schema.validateAhaWrapperResult(incompletePayload);
+  const complete = schema.validateAhaWrapperResult(completePayload);
+  const sharedIncomplete = validator.validateAhaResult(incompletePayload);
 
   assert.equal(incomplete.ok, false);
+  assert.deepEqual(incomplete.errors, sharedIncomplete.errors);
   assert.ok(incomplete.errors.some((error) => error.includes("error.tool")));
   assert.ok(incomplete.errors.some((error) => error.includes("error.details")));
   assert.equal(complete.ok, true);

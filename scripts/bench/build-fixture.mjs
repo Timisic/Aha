@@ -6,7 +6,7 @@ import {
   qmdExpectedPath,
   readBenchmarkCases,
   resolveQmdQueryForCase,
-} from "../lib/aha-bench-common.mjs";
+} from "../lib/bench-cases.mjs";
 
 const USAGE = [
   "Usage:",

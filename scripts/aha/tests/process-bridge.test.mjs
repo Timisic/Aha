@@ -46,7 +46,7 @@ test("process bridge runs wrapper through explicit Node when PATH lacks node", a
       qmdSdkModule: "",
       qmdRerank: false,
       obsidianCommand: helper,
-      wrapperRelativePath: "scripts/aha/aha-wrapper.mjs",
+      wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
       targetCandidates: 20,
       useFixtureResult: false,
     });

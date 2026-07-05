@@ -243,7 +243,7 @@ qmd --index obsidian bench bench/generated/qmd-fixture.json --json
 and writes the latest report to `bench/reports/latest/qmd.json`.
 Timestamped copies go under `bench/reports/archive/`.
 The report fixture records `query_generated_by`, `query_object`, and any fallback error so query-generation drift is visible.
-The benchmark policy boundary is split by module: `scripts/lib/aha-query-generation.mjs` owns query generation and its `rules` / cached Codex exec adapters; `scripts/lib/aha-bench-evaluation.mjs` owns path matching, source-note exclusion, must-recall / nice-to-have scoring, and report summary policy.
+The benchmark policy boundary is split by module: `scripts/aha/query-plan.mjs` owns query generation and its `rules` / cached agent adapters; `scripts/aha/relation-judge.mjs` owns quote-backed relation judging and benchmark reranking; `scripts/lib/bench-scoring.mjs` owns path matching, source-note exclusion, must-recall / nice-to-have scoring, and report summary policy.
 
 L2: Memory pipeline approximation.
 
@@ -296,16 +296,6 @@ Use `-- <pipeline options>` to pass options through to every child run, for exam
 node scripts/bench/run-pipeline-ablations.mjs -- --query-generator rules --reranker none
 ```
 
-## L3 Core Loop
-
-Run the scripted human-in-the-loop contract benchmark:
-
-```bash
-node scripts/bench/run-l3-core-loop.mjs
-```
-
-The L3 wrapper runs the deterministic UltraQA extension harness and writes `bench/reports/latest/l3-core-loop.json` plus a timestamped archive. It verifies the tool-level contract around candidate display, user memory review, readiness gating, summary artifact creation, source-note non-mutation, resume, and second memory search.
-
 ## Eval-v2 Metrics
 
 Aha eval-v2 optimizes valuable old-memory concentration under a ten-candidate Review Attention Budget. The main question is not “did any search result look plausible,” but “did the ten items worth reviewing contain the required memories, useful optional memories, and little active noise?”
@@ -351,18 +341,15 @@ L2 reports also include the configured query mode, backlink seed strategy, sourc
 Use deterministic tests first; they do not call live QMD, Obsidian, model APIs, or private benchmark cases:
 
 ```bash
-node --test scripts/aha/tests/aha-bench-eval-v2.test.mjs
-node --test scripts/aha/tests/review-note.test.mjs
-node --test scripts/aha/tests/review-seeds-collector.test.mjs
-node --check scripts/bench/collect-review-seeds.mjs
-node --check scripts/bench/run-pipeline-bench.mjs
-node --check scripts/bench/summarize-report.mjs
+npm run verify
 ```
 
-For plugin-facing review seed changes, also run:
+For focused benchmark or review-note changes, the deterministic subset is:
 
 ```bash
-cd obsidian-plugin && npm run verify
+node --test scripts/aha/tests/bench-scoring.test.mjs
+node --test scripts/aha/tests/review-note.test.mjs
+node --test scripts/aha/tests/review-seeds-collector.test.mjs
 ```
 
 For a live local benchmark smoke, run the L2 pipeline only after confirming `bench/aha-memory-cases.json` is the ignored private file you intend to use:
