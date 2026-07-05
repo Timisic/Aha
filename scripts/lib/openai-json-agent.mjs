@@ -2,10 +2,14 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { httpsProxyUrlFor } from "./https-proxy.mjs";
 
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
 export const DEFAULT_OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
+export const DEFAULT_OPENAI_MAX_ATTEMPTS = 3;
+
+const RETRY_BACKOFF_MS = [500, 1500];
 
 export function runOpenAiJsonSync(options) {
   const apiKeyEnv = String(options.apiKeyEnv || DEFAULT_OPENAI_API_KEY_ENV).trim() || DEFAULT_OPENAI_API_KEY_ENV;
@@ -28,40 +32,73 @@ export function runOpenAiJsonSync(options) {
     };
   }
 
+  const url = openAiResponsesUrl(options.baseUrl);
+  const proxyUrl = httpsProxyUrlFor(url);
+  const maxAttempts = Math.max(1, Number(options.maxAttempts || DEFAULT_OPENAI_MAX_ATTEMPTS));
+
   const tmpRoot = mkdtempSync(join(tmpdir(), "aha-openai-json-agent-"));
   const bodyPath = join(tmpRoot, "request.json");
   try {
     writeFileSync(bodyPath, `${JSON.stringify(body)}\n`);
-    const result = spawnSync("curl", [
-      "--silent",
-      "--show-error",
-      "--fail-with-body",
-      "--max-time",
-      String(Math.max(1, Math.ceil(Number(options.timeoutMs || 120_000) / 1000))),
-      "-X",
-      "POST",
-      openAiResponsesUrl(options.baseUrl),
-      "-H",
-      "Content-Type: application/json",
-      "-H",
-      `Authorization: Bearer ${apiKey}`,
-      "--data-binary",
-      `@${bodyPath}`,
-    ], {
-      encoding: "utf-8",
-      timeout: Number(options.timeoutMs || 120_000) + 5_000,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
+    let lastFailure = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const result = spawnSync("curl", [
+        "--silent",
+        "--show-error",
+        "--fail-with-body",
+        "--max-time",
+        String(Math.max(1, Math.ceil(Number(options.timeoutMs || 120_000) / 1000))),
+        ...(proxyUrl ? ["--proxy", proxyUrl] : ["--noproxy", "*"]),
+        "-X",
+        "POST",
+        url,
+        "-H",
+        "Content-Type: application/json",
+        "-H",
+        `Authorization: Bearer ${apiKey}`,
+        "--data-binary",
+        `@${bodyPath}`,
+      ], {
+        encoding: "utf-8",
+        timeout: Number(options.timeoutMs || 120_000) + 5_000,
+      });
+      if (result.error && result.error.code !== "ETIMEDOUT") throw result.error;
+      if (!result.error && result.status === 0) {
+        const payload = JSON.parse(String(result.stdout || "{}"));
+        return extractOpenAiOutputText(payload);
+      }
       const stderr = String(result.stderr ?? "").trim();
       const stdout = String(result.stdout ?? "").trim();
-      throw new Error(stderr || stdout || `OpenAI API exited with ${result.status}`);
+      lastFailure = result.error?.message
+        || stderr
+        || stdout
+        || `OpenAI API exited with ${result.status}`;
+      if (!shouldRetryCurlFailure(result)) break;
+      if (attempt < maxAttempts) {
+        const backoff = RETRY_BACKOFF_MS[Math.min(attempt - 1, RETRY_BACKOFF_MS.length - 1)];
+        sleepSync(backoff);
+      }
     }
-    const payload = JSON.parse(String(result.stdout || "{}"));
-    return extractOpenAiOutputText(payload);
+    throw new Error(`${lastFailure} (after ${maxAttempts} attempt${maxAttempts > 1 ? "s" : ""}${proxyUrl ? `, proxy ${proxyUrl}` : ", no proxy"})`);
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
+}
+
+export function shouldRetryCurlFailure(result) {
+  if (result.error) return result.error.code === "ETIMEDOUT";
+  if (result.status === 0) return false;
+  // curl exit 22 (--fail-with-body) is an HTTP error: only transient statuses heal on retry.
+  if (result.status === 22) {
+    const match = String(result.stderr ?? "").match(/returned error:\s*(\d{3})/);
+    const httpStatus = match ? Number(match[1]) : 0;
+    return httpStatus === 408 || httpStatus === 429 || httpStatus >= 500;
+  }
+  return true;
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 export function openAiResponsesUrl(baseUrl) {
