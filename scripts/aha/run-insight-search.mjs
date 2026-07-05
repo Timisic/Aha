@@ -11,6 +11,8 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { validateAhaResult } from "./lib/result-validator.mjs";
 import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "./lib/note-identity.mjs";
+import { isExcludedCandidatePath } from "../lib/candidate-fields.mjs";
+import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
 import {
   fallbackQmdObject as sharedFallbackQmdObject,
   generateQueryPlanWithAdapter,
@@ -1341,6 +1343,7 @@ async function rerankPipelineCandidates(args, queryResults) {
       if (!(await isCandidatePathAllowed(args, notePath, row))) continue;
       if (isSourceCandidate(args, notePath, row)) continue;
       if (isGeneratedReviewCandidate(args, notePath, row)) continue;
+      if (isExcludedCandidatePath(notePath)) continue;
       const existing = byPath.get(notePath) ?? {
         notePath,
         noteTitle: typeof row.title === "string" && row.title.trim()
@@ -1568,15 +1571,7 @@ function stripInternalCandidateFields(candidate) {
 }
 
 function excerptMarkdown(markdown) {
-  return String(markdown ?? "")
-    .replace(/^qmd:\/\/[^\n]+\n(?:Folder Context:[^\n]*\n)?---\n?/m, "")
-    .replace(/^---[\s\S]*?---\s*/m, "")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^\d+:\s?/, "").trimEnd())
-    .filter((line) => line.trim() && !/^(create|cssclasses|tags|categories|emotion):\s*/.test(line.trim()))
-    .slice(0, 60)
-    .join("\n")
-    .slice(0, 1800);
+  return excerptNoteMarkdown(markdown);
 }
 
 function weakFallbackFromRows(args, rows, reason) {

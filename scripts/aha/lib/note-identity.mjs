@@ -49,7 +49,7 @@ export function slugPath(value) {
     .map((segment) =>
       segment
         .replace(/\.md$/i, "")
-        .replace(/[\s，。；;、：:（）()【】\[\]《》<>!?！？]+/g, "-")
+        .replace(/[\s，。；;、：:（）()【】\[\]《》<>!?！？“”‘’「」『』'—–]+/g, "-")
         .replace(/-+/g, "-")
         .replace(/^-+|-+$/g, "")
         .toLowerCase(),
