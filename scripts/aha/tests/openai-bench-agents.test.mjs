@@ -67,11 +67,12 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
 
     assert.equal(reranked.rerank_generated_by, "agent");
     assert.equal(reranked.rerank_fallback, false);
-    assert.deepEqual(reranked.rerank_ranked_ids, ["c002", "c001"]);
-    assert.deepEqual(reranked.candidates.map((item) => item.file), ["Memory/Noise.md", "Memory/Feedback.md"]);
-    assert.deepEqual(reranked.candidates.map((item) => item.relation), ["challenges", "supports"]);
-    assert.match(reranked.candidates[0].hit, /Noise candidate/);
-    assert.match(reranked.candidates[1].why, /feedback/i);
+    // Equal-strength relations fall back to retrieval pool order (c001 before c002).
+    assert.deepEqual(reranked.rerank_ranked_ids, ["c001", "c002"]);
+    assert.deepEqual(reranked.candidates.map((item) => item.file), ["Memory/Feedback.md", "Memory/Noise.md"]);
+    assert.deepEqual(reranked.candidates.map((item) => item.relation), ["supports", "challenges"]);
+    assert.match(reranked.candidates[1].hit, /Noise candidate/);
+    assert.match(reranked.candidates[0].why, /feedback/i);
 
     const recordedRequests = await server.requests();
     assert.equal(recordedRequests.length, 2);
