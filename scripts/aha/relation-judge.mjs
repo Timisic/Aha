@@ -15,12 +15,14 @@ import {
   DEFAULT_OPENAI_API_KEY_ENV,
   DEFAULT_OPENAI_BASE_URL,
   DEFAULT_OPENAI_MODEL,
+  runOpenAiJsonAsync,
   runOpenAiJsonSync,
 } from "../lib/openai-json-agent.mjs";
 
 export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v4";
 export const RELATION_JUDGE_SCHEMA_NAME = "aha_relation_judge";
 export const DEFAULT_RELATION_JUDGE_CHUNK_SIZE = 20;
+export const DEFAULT_RELATION_JUDGE_CONCURRENCY = 3;
 
 const RELATION_STRENGTH = {
   supports: 3,
@@ -236,7 +238,7 @@ export function hasQuoteEvidence(candidate, excerpt) {
   });
 }
 
-export function relationJudgeCandidatesForCase(caseItem, candidates, options = {}) {
+export async function relationJudgeCandidatesForCase(caseItem, candidates, options = {}) {
   const judgeOptions = defaultRelationJudgeOptions(options);
   const annotated = annotateCandidates(candidates).map(ensureBenchmarkCandidateShape);
   const reranker = String(judgeOptions.reranker || "agent").toLowerCase();
@@ -270,10 +272,16 @@ export function relationJudgeCandidatesForCase(caseItem, candidates, options = {
   try {
     const chunkSize = Math.max(4, Number(process.env.AHA_RELATION_JUDGE_CHUNK_SIZE || DEFAULT_RELATION_JUDGE_CHUNK_SIZE));
     const chunkCount = Math.ceil(candidateInputs.length / chunkSize);
-    const judgedChunks = [];
+    const chunks = [];
     for (let start = 0; start < candidateInputs.length; start += chunkSize) {
-      judgedChunks.push(...generateRelationJudgeWithAgent(caseItem, candidateInputs.slice(start, start + chunkSize), judgeOptions));
+      chunks.push(candidateInputs.slice(start, start + chunkSize));
     }
+    const chunkResults = await mapWithBoundedConcurrency(
+      chunks,
+      relationJudgeConcurrency(judgeOptions),
+      (chunk) => generateRelationJudgeWithAgentAsync(caseItem, chunk, judgeOptions),
+    );
+    const judgedChunks = chunkResults.flat();
     let judgedCandidates = orderJudgedCandidates(judgedChunks, annotated);
     // Chunked judging grades on per-chunk curves; when several chunks each promote
     // many candidates, a final single-batch pass re-compares the strong ones globally.
@@ -285,7 +293,7 @@ export function relationJudgeCandidatesForCase(caseItem, candidates, options = {
         .filter(Boolean)
         .slice(0, 2 * chunkSize);
       if (strongInputs.length > 0) {
-        const rejudged = generateRelationJudgeWithAgent(caseItem, strongInputs, judgeOptions);
+        const rejudged = await generateRelationJudgeWithAgentAsync(caseItem, strongInputs, judgeOptions);
         const rejudgedPaths = new Set(rejudged.map((candidate) => candidate.notePath));
         const rest = judgedCandidates.filter((candidate) => !rejudgedPaths.has(candidate.notePath));
         judgedCandidates = [
@@ -434,6 +442,61 @@ function relationJudgeResult({ candidates, generatedBy, fallback, error }) {
     rerank_error: error,
     rerank_ranked_ids: rankedIds,
   };
+}
+
+function relationJudgeConcurrency(options) {
+  // Concurrency only helps the async OpenAI transport; the Codex CLI path
+  // shells out synchronously, so keep it at one lane.
+  if (relationJudgeProvider(options) !== "openai") return 1;
+  return Math.max(1, Number(process.env.AHA_RELATION_JUDGE_CONCURRENCY || DEFAULT_RELATION_JUDGE_CONCURRENCY));
+}
+
+// Runs the worker over items with at most `limit` in flight. Results keep
+// item order. All lanes settle before an error is rethrown, so a failing
+// chunk cannot leave unhandled rejections behind.
+export async function mapWithBoundedConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  const errors = [];
+  let nextIndex = 0;
+  const lanes = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      try {
+        results[index] = await worker(items[index], index);
+      } catch (error) {
+        errors.push({ index, error });
+        return;
+      }
+    }
+  });
+  await Promise.all(lanes);
+  if (errors.length > 0) {
+    errors.sort((left, right) => left.index - right.index);
+    throw errors[0].error;
+  }
+  return results;
+}
+
+async function generateRelationJudgeWithAgentAsync(caseItem, candidateInputs, options) {
+  if (relationJudgeProvider(options) === "openai") {
+    const prompt = buildRelationJudgePrompt({
+      sourcePath: caseItem.source_note_path || caseItem.id,
+      sourceText: caseItem._resolved_insight_input,
+      candidateInputs,
+    });
+    return parseRelationJudgeOutput(await runOpenAiJsonAsync({
+      baseUrl: options.llmBaseUrl,
+      model: relationJudgeModel(options),
+      apiKeyEnv: options.llmApiKeyEnv,
+      prompt,
+      schema: RESULT_SCHEMA,
+      schemaName: RELATION_JUDGE_SCHEMA_NAME,
+      timeoutMs: options.rerankAgentTimeoutMs,
+    }), caseItem.id);
+  }
+  return generateRelationJudgeWithAgent(caseItem, candidateInputs, options);
 }
 
 function generateRelationJudgeWithAgent(caseItem, candidateInputs, options) {
