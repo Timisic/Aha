@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative, resolve } from "node:path";
 import {
   collectResultItems,
@@ -25,6 +25,7 @@ import {
   relationJudgeCandidatesForCase,
 } from "../aha/relation-judge.mjs";
 import { QUERY_PLAN_PROMPT_VERSION } from "../aha/query-plan.mjs";
+import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
 import {
   buildPipelineTrace,
   summarizeTraceDiagnoses,
@@ -34,6 +35,7 @@ import {
   candidatePath,
   candidateSourceLabel as sourceLabel,
   candidateSourceList as sourceList,
+  isExcludedCandidatePath,
 } from "../lib/candidate-fields.mjs";
 import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
@@ -77,6 +79,7 @@ const DEFAULTS = {
   rerankAgentFallback: true,
   rerankAgentTimeoutMs: 300_000,
   includeDraft: false,
+  only: [],
   backlinks: true,
   queryMode: "multi",
   seedStrategy: "fair",
@@ -121,6 +124,7 @@ function usage() {
     "  --rerank-agent-timeout-ms <n>   Default: 300000",
     "  --no-rerank-agent-cache",
     "  --no-rerank-agent-fallback",
+    "  --only <id[,id...]>            Run only the listed case ids (fast iteration)",
     "  --include-draft                Include draft cases",
     "  --no-backlinks                 Disable Obsidian backlink expansion",
     "  --query-mode <multi|raw-only>   Default: multi",
@@ -135,6 +139,14 @@ function parseArgs() {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--only") {
+      options.only = [
+        ...options.only,
+        ...String(args[index + 1] ?? "").split(",").map((value) => value.trim()).filter(Boolean),
+      ];
+      index += 1;
+      continue;
+    }
     if (arg === "--include-draft") {
       options.includeDraft = true;
       continue;
@@ -517,6 +529,62 @@ function readObsidianNote(backlink, options) {
   return output;
 }
 
+function expandSourceNeighborCandidates(caseItem, options, resolver) {
+  const sourcePath = sourceNotePathForCase(caseItem);
+  if (!sourcePath) return { candidates: [], errors: [] };
+  const relativePath = candidateVaultRelativePath(sourcePath, resolver) || sourcePath;
+  const candidates = [];
+  const errors = [];
+  const seen = new Set();
+  const specs = [
+    { args: ["links", `path=${relativePath}`], source: "source_link" },
+    { args: ["backlinks", `path=${relativePath}`, "format=json"], source: "source_backlink" },
+  ];
+  for (const spec of specs) {
+    const result = run(options.obsidian, spec.args, { timeoutMs: options.obsidianTimeoutMs });
+    if (result.error || result.timedOut) {
+      errors.push(`source neighbors (${spec.source}): ${result.error || "timed out"}`);
+      continue;
+    }
+    if (result.code !== 0 || !result.stdout.trim()) continue;
+    const paths = spec.source === "source_backlink"
+      ? parseBacklinksOutput(result.stdout, { file: relativePath, title: basename(relativePath, ".md") })
+          .map((backlink) => backlink.path)
+      : parseSourceLinkPaths(result.stdout);
+    for (const notePath of paths) {
+      if (!notePath || !notePath.endsWith(".md") || seen.has(notePath)) continue;
+      seen.add(notePath);
+      candidates.push({
+        id: notePath,
+        title: basename(notePath, ".md"),
+        file: notePath,
+        content: "",
+        rank: 1,
+        queryText: `source-neighbors:${relativePath}`,
+        source: spec.source,
+        expansionFrom: relativePath,
+      });
+    }
+  }
+  return { candidates, errors };
+}
+
+function parseSourceLinkPaths(output) {
+  const trimmed = output.trim();
+  if (!trimmed || /^Error:\s+/i.test(trimmed)) return [];
+  try {
+    const parsed = JSON.parse(trimmed);
+    return collectResultItems(parsed)
+      .map((item) => pickFirstString(item && typeof item === "object" ? item : {}, ["path", "file", "linkpath"]))
+      .filter(Boolean);
+  } catch {
+    return trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !/^\[\d+\//.test(line));
+  }
+}
+
 function backlinkArgSets(seed, resolver) {
   const argSets = [];
   const relativePath = candidateVaultRelativePath(seed.file, resolver);
@@ -585,6 +653,33 @@ function selectQuerySpecs(querySpecs, options) {
   return [rawQuery ?? querySpecs[0]].filter(Boolean);
 }
 
+// Agent-generated query plans vary run to run; a deterministic raw-slice query
+// keeps a recall floor that does not depend on LLM query phrasing.
+function withDeterministicRawQuery(querySpecs, caseItem) {
+  const supplements = [];
+  const rawText = compactInsightQueryText(caseItem._resolved_insight_input);
+  if (rawText) {
+    supplements.push({ kind: "raw_supplement", command: "qmd query", text: rawText, query: rawText });
+  }
+  // The thought field is the user's own distilled phrasing of the insight —
+  // usually a sharper retrieval query than the note slice's narrative opening.
+  const thoughtText = compactInsightQueryText(caseItem.input?.thought ?? caseItem.insight_input?.thought ?? "");
+  if (thoughtText && (!rawText || !rawText.startsWith(thoughtText.slice(0, 80)))) {
+    supplements.push({ kind: "thought_supplement", command: "qmd query", text: thoughtText, query: thoughtText });
+  }
+  return supplements.length > 0 ? [...querySpecs, ...supplements] : querySpecs;
+}
+
+function compactInsightQueryText(value) {
+  const text = String(value ?? "")
+    .replace(/^---[\s\S]*?---\s*/m, " ")
+    .replace(/\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g, "$1")
+    .replace(/[#>*`\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.slice(0, 360);
+}
+
 function seedGroup(candidate) {
   return candidate.queryKind || candidate.queryCommand || candidate.source || "unknown";
 }
@@ -625,6 +720,27 @@ function mergeCandidates(candidates, limit) {
     if (merged.length >= limit) break;
   }
   return merged;
+}
+
+function dropExcludedCandidates(candidates) {
+  return (candidates ?? []).filter((candidate) => !isExcludedCandidatePath(candidatePath(candidate)));
+}
+
+function enrichCandidateBodies(candidates, resolver) {
+  return (candidates ?? []).map((candidate) => {
+    const resolved = sharedResolveVaultPath(candidatePath(candidate), resolver);
+    if (resolved.status !== "resolved") return candidate;
+    // Canonicalize to the vault-relative real path so duplicate path forms
+    // (qmd URI / absolute / relative) merge into one pool entry.
+    const canonical = { ...candidate, file: resolved.path, raw_file: candidate.file };
+    try {
+      const body = excerptNoteMarkdown(readFileSync(resolve(resolver.root, resolved.path), "utf-8"));
+      if (!body) return canonical;
+      return { ...canonical, content: body, excerpt_source: "note_body" };
+    } catch {
+      return canonical;
+    }
+  });
 }
 
 function mergeCandidateEvidence(candidates) {
@@ -964,9 +1080,15 @@ function writeReportWithTraces(report, reportPath, traces) {
 
 function main() {
   const options = parseArgs();
-  const { cases, collection: defaultCollection, expectedInTopK, expectedNiceInTopK } = readBenchmarkCases(options.cases, {
+  const { cases: allCases, collection: defaultCollection, expectedInTopK, expectedNiceInTopK } = readBenchmarkCases(options.cases, {
     includeDraft: options.includeDraft,
   });
+  const cases = options.only.length > 0
+    ? allCases.filter((caseItem) => options.only.includes(caseItem.id))
+    : allCases;
+  if (options.only.length > 0 && cases.length === 0) {
+    throw new Error(`--only matched no cases: ${options.only.join(", ")}`);
+  }
   const collection = options.collection || defaultCollection;
   const resolver = buildVaultResolver();
   const results = [];
@@ -975,17 +1097,34 @@ function main() {
   for (const caseItem of cases) {
     const startedAt = Date.now();
     const generatedQuery = resolveQmdQueriesForCase(caseItem, options);
-    const querySpecs = selectQuerySpecs(generatedQuery.queries, options);
+    const querySpecs = withDeterministicRawQuery(selectQuerySpecs(generatedQuery.queries, options), caseItem);
     const queryText = querySpecs.map((query) => query.query || query.text || "").join("\n\n---\n\n");
     const qmdRuns = runQmdQueries(querySpecs, collection, options);
-    const qmdCandidates = mergeCandidateEvidence(qmdRuns.flatMap((runItem) => runItem.candidates));
+    const qmdCandidates = dropExcludedCandidates(
+      mergeCandidateEvidence(qmdRuns.flatMap((runItem) => runItem.candidates)),
+    );
     const qmdErrors = qmdRuns.flatMap((runItem) => runItem.errors);
     const backlinkSeeds = selectBacklinkSeeds(qmdCandidates, options);
 
     const backlinkResult = options.backlinks
       ? expandBacklinkCandidates(backlinkSeeds, caseItem, queryText, options, resolver)
       : { candidates: [], errors: [] };
-    const expandedPool = mergeCandidateEvidence([...qmdCandidates, ...backlinkResult.candidates]);
+    if (options.backlinks) {
+      const neighborResult = expandSourceNeighborCandidates(caseItem, options, resolver);
+      const seenPaths = new Set(backlinkResult.candidates.map((candidate) => candidatePath(candidate)));
+      for (const candidate of neighborResult.candidates) {
+        if (seenPaths.has(candidatePath(candidate))) continue;
+        seenPaths.add(candidatePath(candidate));
+        backlinkResult.candidates.push(candidate);
+      }
+      backlinkResult.errors.push(...neighborResult.errors);
+    }
+    const expandedPool = mergeCandidateEvidence(
+      enrichCandidateBodies(
+        [...qmdCandidates, ...dropExcludedCandidates(backlinkResult.candidates)],
+        resolver,
+      ),
+    );
     const rerankResult = relationJudgeCandidatesForCase(
       {
         ...caseItem,

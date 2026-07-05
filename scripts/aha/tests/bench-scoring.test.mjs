@@ -777,7 +777,7 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
   assert.equal(trace.steps.pre_rerank_candidates[1].rerank_id, "c002");
   assert.equal(trace.steps.pre_rerank_candidates[2].rerank_id, "c003");
   assert.equal(trace.steps.pre_rerank_candidates[1].content_hash.length, 64);
-  assert.equal(trace.steps.pre_rerank_candidates[1].snippet, "Useful old memory evidence.");
+  assert.equal(trace.steps.pre_rerank_candidates[1].snippet, "Must memory body.");
   assert.equal(trace.steps.final_candidates[0].file, "Memory/noise.md");
   assert.deepEqual(trace.gold_positions.must[0], {
     file: "Memory/must.md",
