@@ -18,8 +18,17 @@ import {
   runOpenAiJsonSync,
 } from "../lib/openai-json-agent.mjs";
 
-export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v1";
+export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v4";
 export const RELATION_JUDGE_SCHEMA_NAME = "aha_relation_judge";
+export const DEFAULT_RELATION_JUDGE_CHUNK_SIZE = 20;
+
+const RELATION_STRENGTH = {
+  supports: 3,
+  challenges: 3,
+  bounds: 2.5,
+  resembles: 2.5,
+  weak: 1,
+};
 
 const RESULT_SCHEMA = JSON.parse(readFileSync(
   new URL("./aha-result.schema.json", import.meta.url),
@@ -115,6 +124,9 @@ export function buildRelationJudgePrompt({ sourcePath, sourceText, candidateInpu
     "",
     "Relation rules:",
     "- Use supports, challenges, resembles, or bounds only when the candidate excerpt contains a concrete quote that justifies the label.",
+    "- A strong label means the quoted evidence acts on the current insight's judgment: supports it, challenges it, bounds it, or maps its structure. Topical closeness with no such action is weak.",
+    "- Counter-material is first-class: when the source insight is looking for its own patterns, lessons, or things to improve, old notes recording failures, conflicts, or opposite experiences act on that judgment directly — label them challenges or bounds, not weak.",
+    "- When ranking candidates, prefer notes that deposit durable judgments, lessons, patterns, or boundaries over notes that merely log events, market moves, or daily happenings on the same topic.",
     "- Use weak when the excerpt is only topically similar, too thin, or lacks quote evidence.",
     "- hit must be a short quote or exact snippet from the candidate excerpt.",
     "- why must explain why this old note matters for the current source insight, not just restate retrieval score.",
@@ -256,7 +268,36 @@ export function relationJudgeCandidatesForCase(caseItem, candidates, options = {
   }
 
   try {
-    const judgedCandidates = generateRelationJudgeWithAgent(caseItem, candidateInputs, judgeOptions);
+    const chunkSize = Math.max(4, Number(process.env.AHA_RELATION_JUDGE_CHUNK_SIZE || DEFAULT_RELATION_JUDGE_CHUNK_SIZE));
+    const chunkCount = Math.ceil(candidateInputs.length / chunkSize);
+    const judgedChunks = [];
+    for (let start = 0; start < candidateInputs.length; start += chunkSize) {
+      judgedChunks.push(...generateRelationJudgeWithAgent(caseItem, candidateInputs.slice(start, start + chunkSize), judgeOptions));
+    }
+    let judgedCandidates = orderJudgedCandidates(judgedChunks, annotated);
+    // Chunked judging grades on per-chunk curves; when several chunks each promote
+    // many candidates, a final single-batch pass re-compares the strong ones globally.
+    const strong = judgedCandidates.filter((candidate) => candidate.relation && candidate.relation !== "weak");
+    if (chunkCount > 1 && strong.length > 10) {
+      const inputByPath = new Map(candidateInputs.map((input) => [input.notePath, input]));
+      const strongInputs = strong
+        .map((candidate) => inputByPath.get(candidate.notePath))
+        .filter(Boolean)
+        .slice(0, 2 * chunkSize);
+      if (strongInputs.length > 0) {
+        const rejudged = generateRelationJudgeWithAgent(caseItem, strongInputs, judgeOptions);
+        const rejudgedPaths = new Set(rejudged.map((candidate) => candidate.notePath));
+        const rest = judgedCandidates.filter((candidate) => !rejudgedPaths.has(candidate.notePath));
+        judgedCandidates = [
+          ...rejudged.filter((candidate) => candidate.relation && candidate.relation !== "weak"),
+          ...orderJudgedCandidates([
+            ...rejudged.filter((candidate) => !candidate.relation || candidate.relation === "weak"),
+            ...rest,
+          ], annotated),
+        ];
+      }
+    }
+    judgedCandidates = composeFinalSlate(judgedCandidates, annotated);
     cache.entries[cacheKey] = {
       generated_at: new Date().toISOString(),
       generator: relationJudgeProvider(judgeOptions) === "openai" ? "openai-responses" : "codex-exec",
@@ -282,6 +323,75 @@ export function relationJudgeCandidatesForCase(caseItem, candidates, options = {
       error: error.message,
     });
   }
+}
+
+// The judge can misread a genuinely relevant note; retrieval rank is an
+// independent signal. Reserve a couple of slots per block of ten for the
+// best remaining retrieval-ranked candidates so a judge false-weak on a
+// pool-top note cannot exile it from the review budget.
+export function composeFinalSlate(judgedOrdered, retrievalCandidates, options = {}) {
+  const reserve = Math.max(0, options.reservedPoolSlots ?? Number(process.env.AHA_SLATE_POOL_RESERVE ?? 2));
+  const blockSize = 10;
+  if (reserve === 0) return judgedOrdered;
+  const poolOrder = (retrievalCandidates ?? []).map((candidate) => candidate.notePath).filter(Boolean);
+  const judgedByPath = new Map(judgedOrdered.map((candidate) => [candidate.notePath, candidate]));
+  const placed = new Set();
+  const slate = [];
+  let judgedIdx = 0;
+  let poolIdx = 0;
+  const nextJudged = () => {
+    while (judgedIdx < judgedOrdered.length) {
+      const candidate = judgedOrdered[judgedIdx];
+      judgedIdx += 1;
+      if (!placed.has(candidate.notePath)) return candidate;
+    }
+    return null;
+  };
+  const nextPool = () => {
+    while (poolIdx < poolOrder.length) {
+      const notePath = poolOrder[poolIdx];
+      poolIdx += 1;
+      if (!placed.has(notePath) && judgedByPath.has(notePath)) return judgedByPath.get(notePath);
+    }
+    return null;
+  };
+  while (slate.length < judgedOrdered.length) {
+    const blockStart = slate.length;
+    for (let i = 0; i < blockSize - reserve && slate.length < judgedOrdered.length; i += 1) {
+      const candidate = nextJudged();
+      if (!candidate) break;
+      placed.add(candidate.notePath);
+      slate.push(candidate);
+    }
+    for (let i = 0; i < reserve && slate.length < judgedOrdered.length; i += 1) {
+      const candidate = nextPool() ?? nextJudged();
+      if (!candidate) break;
+      placed.add(candidate.notePath);
+      slate.push(candidate);
+    }
+    if (slate.length === blockStart) break;
+  }
+  return slate;
+}
+
+export function orderJudgedCandidates(judgedCandidates, retrievalCandidates) {
+  const poolRank = new Map((retrievalCandidates ?? []).map((candidate, index) => [candidate.notePath, index]));
+  return (judgedCandidates ?? [])
+    .filter((candidate) => candidate?.notePath)
+    .map((candidate, judgedIndex) => ({ candidate, judgedIndex }))
+    .sort((left, right) => {
+      const strengthDiff = relationStrength(right.candidate) - relationStrength(left.candidate);
+      if (strengthDiff !== 0) return strengthDiff;
+      const leftRank = poolRank.get(left.candidate.notePath) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = poolRank.get(right.candidate.notePath) ?? Number.MAX_SAFE_INTEGER;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return left.judgedIndex - right.judgedIndex;
+    })
+    .map((entry) => entry.candidate);
+}
+
+function relationStrength(candidate) {
+  return RELATION_STRENGTH[candidate?.relation] ?? RELATION_STRENGTH.weak;
 }
 
 function relationJudgeInputsForCase(caseItem, candidates) {
