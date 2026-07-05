@@ -75,6 +75,18 @@ export function readNoteExcerpt(notePath, range = {}, options = {}) {
   };
 }
 
+export function excerptNoteMarkdown(markdown) {
+  return String(markdown ?? "")
+    .replace(/^qmd:\/\/[^\n]+\n(?:Folder Context:[^\n]*\n)?---\n?/m, "")
+    .replace(/^---[\s\S]*?---\s*/m, "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\d+:\s?/, "").trimEnd())
+    .filter((line) => line.trim() && !/^(create|cssclasses|tags|categories|emotion):\s*/.test(line.trim()))
+    .slice(0, 60)
+    .join("\n")
+    .slice(0, 1800);
+}
+
 export function expandHome(value) {
   const raw = String(value ?? "");
   if (raw === "~") return process.env.HOME || raw;

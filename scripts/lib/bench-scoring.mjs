@@ -31,7 +31,8 @@ function slugPath(path) {
     .split("/")
     .map((segment) =>
       segment
-        .replace(/[\s，。；;、：:（）()【】\[\]《》<>!?！？]+/g, "-")
+        .replace(/\.md$/i, "")
+        .replace(/[\s，。；;、：:（）()【】\[\]《》<>!?！？“”‘’「」『』'—–]+/g, "-")
         .replace(/-+/g, "-")
         .replace(/^-+|-+$/g, ""),
     )
