@@ -433,6 +433,9 @@ async function runOpenAi(args, prompt, options = {}) {
     throw new Error(`OpenAI API exited ${response.statusCode}: ${compactLine(response.body, 500) || response.statusMessage}`);
   }
   const payload = JSON.parse(response.body);
+  if (process.env.AHA_LOG_USAGE === "1" && payload?.usage) {
+    process.stderr.write(`AHA_USAGE ${JSON.stringify({ model: payload.model, usage: payload.usage })}\n`);
+  }
   return {
     code: 0,
     stdout: extractOpenAiOutputText(payload),
