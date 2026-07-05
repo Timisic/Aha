@@ -1,13 +1,14 @@
-import { ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import { App, ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf } from "obsidian";
 import {
   appendReviewBenchmarkSeed,
   latestSelectedMemoriesRound,
-  noteDisplayTitleFromPath,
+  reviewStatusFromContent,
   syncLatestSelectedMemoriesAndHandoff,
   type ReviewBenchmarkSeedAction,
   type ReviewPanelCandidate,
   type SyncReviewSelectionResult,
 } from "./review-note";
+import { markdownFilePathForLink, noteDisplayTitleFromPath } from "./wikilink";
 
 export const AHA_REVIEW_PANEL_VIEW_TYPE = "aha-review-panel";
 
@@ -25,6 +26,7 @@ export class AhaReviewPanelView extends ItemView {
   private context: AhaReviewPanelContext | null = null;
   private candidates: ReviewPanelCandidate[] = [];
   private handoff = "";
+  private status = "";
   private countEl?: HTMLElement;
   private copyButton?: HTMLButtonElement;
 
@@ -53,6 +55,7 @@ export class AhaReviewPanelView extends ItemView {
     }
 
     const content = await this.app.vault.read(this.context.reviewFile);
+    this.status = reviewStatusFromContent(content) ?? "";
     const latest = latestSelectedMemoriesRound(content);
     if (!latest || latest.candidates.length === 0) {
       this.candidates = [];
@@ -82,7 +85,7 @@ export class AhaReviewPanelView extends ItemView {
   private renderEmpty(message: string): void {
     this.contentEl.empty();
     const root = this.contentEl.createDiv({ cls: "aha-review-panel" });
-    root.createEl("h2", { text: "Aha Review" });
+    this.renderHeader(root);
     root.createDiv({ cls: "aha-review-panel-empty", text: message });
     if (!this.context) return;
 
@@ -90,17 +93,35 @@ export class AhaReviewPanelView extends ItemView {
     this.renderMissingMemorySeedButton(footer);
   }
 
+  private renderHeader(root: HTMLElement): void {
+    const header = root.createDiv({ cls: "aha-review-panel-header" });
+    const title = header.createDiv({ cls: "aha-review-panel-title" });
+    title.createEl("h2", { text: "Aha Review" });
+    if (this.context) {
+      const sourcePath = this.context.sourcePath;
+      const sourceLink = title.createEl("a", {
+        text: this.context.sourceTitle,
+        href: "#",
+        title: sourcePath,
+        cls: "aha-review-panel-source-link",
+      });
+      sourceLink.addEventListener("click", (event) => {
+        event.preventDefault();
+        void this.host.openCandidateInNewTab(sourcePath);
+      });
+    }
+    this.countEl = header.createDiv({ cls: "aha-review-panel-count" });
+    this.updateCount();
+  }
+
   private renderCandidates(): void {
     this.contentEl.empty();
     const root = this.contentEl.createDiv({ cls: "aha-review-panel" });
-    const header = root.createDiv({ cls: "aha-review-panel-header" });
-    header.createEl("h2", { text: "Aha Review" });
-    this.countEl = header.createDiv({ cls: "aha-review-panel-count" });
-    this.updateCount();
+    this.renderHeader(root);
 
     const table = root.createDiv({ cls: "aha-review-panel-table", attr: { role: "table" } });
     const headerRow = table.createDiv({ cls: "aha-review-panel-row aha-review-panel-head", attr: { role: "row" } });
-    for (const heading of ["纳入", "旧笔记", "理由"]) {
+    for (const heading of ["纳入", "旧笔记", "关系", "理由"]) {
       headerRow.createDiv({ text: heading, cls: "aha-review-panel-cell aha-review-panel-heading", attr: { role: "columnheader" } });
     }
 
@@ -109,6 +130,7 @@ export class AhaReviewPanelView extends ItemView {
       const row = body.createDiv({ cls: "aha-review-panel-row", attr: { role: "row" } });
       this.renderSelectionCell(row, candidate);
       this.renderMemoryCell(row, candidate);
+      this.renderRelationCell(row, candidate);
       this.renderReasonCell(row, candidate);
     }
 
@@ -116,7 +138,7 @@ export class AhaReviewPanelView extends ItemView {
     this.renderMissingMemorySeedButton(footer);
 
     this.copyButton = footer.createEl("button", {
-      text: "复制 handoff",
+      text: "复制 Grill Handoff",
       cls: "aha-review-panel-copy",
       title: "复制当前勾选候选组成的 Grill Handoff",
     });
@@ -166,7 +188,11 @@ export class AhaReviewPanelView extends ItemView {
       event.preventDefault();
       void this.host.openCandidateInNewTab(candidate.notePath);
     });
-    cell.createDiv({ text: candidate.relation, cls: "aha-review-panel-relation" });
+  }
+
+  private renderRelationCell(row: HTMLElement, candidate: ReviewPanelCandidate): void {
+    const cell = row.createDiv({ cls: "aha-review-panel-cell aha-review-panel-relation", attr: { role: "cell" } });
+    cell.setText(candidate.relation);
   }
 
   private renderReasonCell(row: HTMLElement, candidate: ReviewPanelCandidate): void {
@@ -218,11 +244,16 @@ export class AhaReviewPanelView extends ItemView {
     }
   }
 
-  private async recordMissingMemorySeed(): Promise<void> {
+  private recordMissingMemorySeed(): void {
     if (!this.context) return;
-    const missingMemory = window.prompt("应该找到哪条旧记忆？输入 Obsidian 路径或 [[链接]]：")?.trim();
-    if (!missingMemory) return;
+    new MissingMemoryPromptModal(this.app, (missingMemory) => {
+      if (!missingMemory) return;
+      void this.appendMissingMemorySeed(missingMemory);
+    }).open();
+  }
 
+  private async appendMissingMemorySeed(missingMemory: string): Promise<void> {
+    if (!this.context) return;
     try {
       const content = await this.app.vault.read(this.context.reviewFile);
       const nextContent = appendReviewBenchmarkSeed(content, {
@@ -287,17 +318,54 @@ export class AhaReviewPanelView extends ItemView {
   private updateCount(): void {
     if (!this.countEl) return;
     const selected = this.candidates.filter((candidate) => candidate.selected).length;
-    this.countEl.setText(`${selected} / ${this.candidates.length} 纳入`);
+    const statusPrefix = this.status ? `${this.status} · ` : "";
+    this.countEl.setText(`${statusPrefix}${selected} / ${this.candidates.length} 纳入`);
   }
 
   private displayTitleFor(candidate: ReviewPanelCandidate): string {
-    const filePath = candidateFilePathForLookup(candidate.notePath);
+    const filePath = markdownFilePathForLink(candidate.notePath);
     const file = this.app.vault.getAbstractFileByPath(filePath);
     return file instanceof TFile ? file.basename : noteDisplayTitleFromPath(candidate.notePath);
   }
 }
 
-function candidateFilePathForLookup(notePath: string): string {
-  const base = notePath.replace(/^\[\[|\]\]$/g, "").split("|")[0].match(/^([^#^]+)/)?.[1]?.trim() || notePath.trim();
-  return /\.md$/i.test(base) ? base : `${base}.md`;
+class MissingMemoryPromptModal extends Modal {
+  private value = "";
+
+  constructor(app: App, private readonly onSubmit: (value: string) => void) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.titleEl.setText("记录 should-have-found");
+    new Setting(this.contentEl)
+      .setName("应该找到哪条旧记忆？")
+      .setDesc("输入 Obsidian 路径或 [[链接]]。")
+      .addText((text) => {
+        text.onChange((value) => {
+          this.value = value;
+        });
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            this.submit();
+          }
+        });
+        text.inputEl.focus();
+      });
+    new Setting(this.contentEl)
+      .addButton((button) => button
+        .setButtonText("保存")
+        .setCta()
+        .onClick(() => this.submit()));
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private submit(): void {
+    this.close();
+    this.onSubmit(this.value.trim());
+  }
 }

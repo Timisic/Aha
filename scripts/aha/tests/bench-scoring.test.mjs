@@ -742,7 +742,7 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
     "rules",
     "--query-mode",
     "raw-only",
-    "--reranker",
+    "--relation-judge",
     "none",
     "--include-draft",
   ], {

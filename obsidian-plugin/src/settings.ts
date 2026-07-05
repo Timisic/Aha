@@ -49,6 +49,10 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   useFixtureResult: false,
 };
 
+type StringSettingKey = {
+  [K in keyof AhaPluginSettings]: AhaPluginSettings[K] extends string ? K : never;
+}[keyof AhaPluginSettings];
+
 export class AhaSettingTab extends PluginSettingTab {
   plugin: AhaPlugin;
 
@@ -57,42 +61,28 @@ export class AhaSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  // Trimmed text setting; empty input falls back to the default unless keepEmpty is set.
+  private textSetting(key: StringSettingKey, name: string, desc: string, options: { placeholder?: string; keepEmpty?: boolean } = {}): void {
+    new Setting(this.containerEl)
+      .setName(name)
+      .setDesc(desc)
+      .addText((text) => text
+        .setPlaceholder(options.placeholder ?? DEFAULT_SETTINGS[key])
+        .setValue(this.plugin.settings[key])
+        .onChange(async (value) => {
+          const trimmed = value.trim();
+          this.plugin.settings[key] = options.keepEmpty ? trimmed : trimmed || DEFAULT_SETTINGS[key];
+          await this.plugin.saveSettings();
+        }));
+  }
+
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl)
-      .setName("Aha workspace")
-      .setDesc("Absolute path to the local Aha repository that contains scripts/aha/run-insight-search.mjs.")
-      .addText((text) => text
-        .setPlaceholder("/path/to/Aha")
-        .setValue(this.plugin.settings.ahaWorkspace)
-        .onChange(async (value) => {
-          this.plugin.settings.ahaWorkspace = value.trim();
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Review note location")
-      .setDesc("Vault-relative folder for Aha Review Notes.")
-      .addText((text) => text
-        .setPlaceholder("Aha/Reviews")
-        .setValue(this.plugin.settings.reviewFolder)
-        .onChange(async (value) => {
-          this.plugin.settings.reviewFolder = value.trim() || DEFAULT_SETTINGS.reviewFolder;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Node command")
-      .setDesc("Optional absolute path to Node.js. Leave empty to auto-detect common desktop install paths.")
-      .addText((text) => text
-        .setPlaceholder("auto")
-        .setValue(this.plugin.settings.nodeCommand)
-        .onChange(async (value) => {
-          this.plugin.settings.nodeCommand = value.trim();
-          await this.plugin.saveSettings();
-        }));
+    this.textSetting("ahaWorkspace", "Aha workspace", "Absolute path to the local Aha repository that contains scripts/aha/run-insight-search.mjs.", { placeholder: "/path/to/Aha", keepEmpty: true });
+    this.textSetting("reviewFolder", "Review note location", "Vault-relative folder for Aha Review Notes.");
+    this.textSetting("nodeCommand", "Node command", "Optional absolute path to Node.js. Leave empty to auto-detect common desktop install paths.", { placeholder: "auto", keepEmpty: true });
 
     new Setting(containerEl)
       .setName("LLM provider")
@@ -106,27 +96,8 @@ export class AhaSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName("OpenAI base URL")
-      .setDesc("OpenAI-compatible API base URL.")
-      .addText((text) => text
-        .setPlaceholder(DEFAULT_SETTINGS.llmBaseUrl)
-        .setValue(this.plugin.settings.llmBaseUrl)
-        .onChange(async (value) => {
-          this.plugin.settings.llmBaseUrl = value.trim() || DEFAULT_SETTINGS.llmBaseUrl;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("OpenAI model")
-      .setDesc("Model used for query planning and bounded Relation Judge.")
-      .addText((text) => text
-        .setPlaceholder(DEFAULT_SETTINGS.llmModel)
-        .setValue(this.plugin.settings.llmModel)
-        .onChange(async (value) => {
-          this.plugin.settings.llmModel = value.trim() || DEFAULT_SETTINGS.llmModel;
-          await this.plugin.saveSettings();
-        }));
+    this.textSetting("llmBaseUrl", "OpenAI base URL", "OpenAI-compatible API base URL.");
+    this.textSetting("llmModel", "OpenAI model", "Model used for query planning and bounded Relation Judge.");
 
     new Setting(containerEl)
       .setName("OpenAI API key")
@@ -142,27 +113,8 @@ export class AhaSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
-      .setName("OpenAI key env")
-      .setDesc("Environment variable name used when the API key field above is empty.")
-      .addText((text) => text
-        .setPlaceholder(DEFAULT_SETTINGS.llmApiKeyEnv)
-        .setValue(this.plugin.settings.llmApiKeyEnv)
-        .onChange(async (value) => {
-          this.plugin.settings.llmApiKeyEnv = value.trim() || DEFAULT_SETTINGS.llmApiKeyEnv;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Codex command")
-      .setDesc("Fallback command used only when LLM provider is Codex CLI.")
-      .addText((text) => text
-        .setPlaceholder("codex")
-        .setValue(this.plugin.settings.codexCommand)
-        .onChange(async (value) => {
-          this.plugin.settings.codexCommand = value.trim() || DEFAULT_SETTINGS.codexCommand;
-          await this.plugin.saveSettings();
-        }));
+    this.textSetting("llmApiKeyEnv", "OpenAI key env", "Environment variable name used when the API key field above is empty.");
+    this.textSetting("codexCommand", "Codex command", "Fallback command used only when LLM provider is Codex CLI.");
 
     new Setting(containerEl)
       .setName("Codex sandbox")
@@ -177,16 +129,7 @@ export class AhaSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName("Codex model")
-      .setDesc("Fallback Codex CLI model.")
-      .addText((text) => text
-        .setPlaceholder(DEFAULT_SETTINGS.codexModel)
-        .setValue(this.plugin.settings.codexModel)
-        .onChange(async (value) => {
-          this.plugin.settings.codexModel = value.trim() || DEFAULT_SETTINGS.codexModel;
-          await this.plugin.saveSettings();
-        }));
+    this.textSetting("codexModel", "Codex model", "Fallback Codex CLI model.");
 
     new Setting(containerEl)
       .setName("Codex reasoning effort")
@@ -213,38 +156,9 @@ export class AhaSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName("QMD command")
-      .setDesc("QMD CLI fallback and SDK module inference path.")
-      .addText((text) => text
-        .setPlaceholder("qmd")
-        .setValue(this.plugin.settings.qmdCommand)
-        .onChange(async (value) => {
-          this.plugin.settings.qmdCommand = value.trim() || DEFAULT_SETTINGS.qmdCommand;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("QMD index")
-      .setDesc("QMD index and collection name used for the Obsidian vault.")
-      .addText((text) => text
-        .setPlaceholder(DEFAULT_SETTINGS.qmdIndex)
-        .setValue(this.plugin.settings.qmdIndex)
-        .onChange(async (value) => {
-          this.plugin.settings.qmdIndex = value.trim() || DEFAULT_SETTINGS.qmdIndex;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("QMD SDK module")
-      .setDesc("Optional module path. Leave empty to import @tobilu/qmd or infer from QMD command.")
-      .addText((text) => text
-        .setPlaceholder("auto")
-        .setValue(this.plugin.settings.qmdSdkModule)
-        .onChange(async (value) => {
-          this.plugin.settings.qmdSdkModule = value.trim();
-          await this.plugin.saveSettings();
-        }));
+    this.textSetting("qmdCommand", "QMD command", "QMD CLI fallback and SDK module inference path.");
+    this.textSetting("qmdIndex", "QMD index", "QMD index and collection name used for the Obsidian vault.");
+    this.textSetting("qmdSdkModule", "QMD SDK module", "Optional module path. Leave empty to import @tobilu/qmd or infer from QMD command.", { placeholder: "auto", keepEmpty: true });
 
     new Setting(containerEl)
       .setName("QMD rerank")
@@ -256,27 +170,8 @@ export class AhaSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName("Obsidian CLI command")
-      .setDesc("Command or absolute path used for backlink/outlink expansion and vault checks.")
-      .addText((text) => text
-        .setPlaceholder("obsidian")
-        .setValue(this.plugin.settings.obsidianCommand)
-        .onChange(async (value) => {
-          this.plugin.settings.obsidianCommand = value.trim() || DEFAULT_SETTINGS.obsidianCommand;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Search runner script")
-      .setDesc("Path to the local retrieval and relation-judging runner, relative to the Aha workspace.")
-      .addText((text) => text
-        .setPlaceholder(DEFAULT_SETTINGS.wrapperRelativePath)
-        .setValue(this.plugin.settings.wrapperRelativePath)
-        .onChange(async (value) => {
-          this.plugin.settings.wrapperRelativePath = value.trim() || DEFAULT_SETTINGS.wrapperRelativePath;
-          await this.plugin.saveSettings();
-        }));
+    this.textSetting("obsidianCommand", "Obsidian CLI command", "Command or absolute path used for backlink/outlink expansion and vault checks.");
+    this.textSetting("wrapperRelativePath", "Search runner script", "Path to the local retrieval and relation-judging runner, relative to the Aha workspace.");
 
     new Setting(containerEl)
       .setName("Target candidates")

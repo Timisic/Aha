@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { normalizeVaultRelativePaths } from "../lib/vault-paths.mjs";
+import { benchVaultRoot, normalizeVaultRelativePaths } from "../lib/vault-paths.mjs";
 
 const DEFAULT_CASE_FILES = [
   "bench/aha-memory-cases.json",
@@ -15,7 +15,7 @@ function usage() {
     "  node scripts/bench/normalize-case-paths.mjs [case-file ...] [options]",
     "",
     "Options:",
-    "  --vault-root <path>   Vault root to strip. Default: $AHA_BENCH_VAULT_ROOT or /path/to/vault",
+    "  --vault-root <path>   Vault root to strip. Default: $AHA_BENCH_VAULT_ROOT or ~/Obsidian Notes",
     "  --check               Do not write; exit non-zero if files would change.",
     "  -h, --help            Show this help.",
     "",
@@ -26,7 +26,7 @@ function usage() {
 function parseArgs(argv) {
   const options = {
     files: [],
-    vaultRoot: process.env.AHA_BENCH_VAULT_ROOT || "/path/to/vault",
+    vaultRoot: benchVaultRoot(),
     check: false,
   };
   for (let index = 0; index < argv.length; index += 1) {

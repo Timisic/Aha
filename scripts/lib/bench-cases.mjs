@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { expandHome, normalizeFailureAttribution, qmdExpectedPath } from "./bench-scoring.mjs";
+import { benchVaultRoot } from "./vault-paths.mjs";
 import { normalizeLineRange, parseLineRange, sliceLineRange } from "./note-excerpt.mjs";
 import {
   buildVaultPathResolver,
@@ -50,7 +51,7 @@ function sliceSourceNote(content, caseItem) {
 export function readSourceNote(sourceNotePath, casesDir, caseId, caseItem = {}) {
   const rawPath = expandHome(String(sourceNotePath ?? "").trim());
   if (!rawPath) return "";
-  const vaultRoot = expandHome(process.env.AHA_BENCH_VAULT_ROOT || "/path/to/vault");
+  const vaultRoot = benchVaultRoot();
   const candidates = isAbsolute(rawPath)
     ? [rawPath]
     : [
@@ -142,11 +143,8 @@ export function normalizeBenchmarkCase(caseItem) {
   return {
     ...caseItem,
     state,
-    status: state === "off" ? "disabled" : state,
     title,
     why,
-    description: title || caseItem.description,
-    annotation_note: why || caseItem.annotation_note,
     input: {
       ...(note ? { note } : {}),
       ...(lines ? { lines } : {}),
@@ -163,7 +161,6 @@ export function normalizeBenchmarkCase(caseItem) {
     source_note_end_line: lines?.[1],
     allow_full_note: wholeNote,
     insight_thought: thought || undefined,
-    insight_input: !note && thought ? thought : caseItem.insight_input,
     must_recall: must,
     nice_to_have: nice,
     negative: noise,
@@ -237,7 +234,7 @@ export function validateCase(caseItem) {
   if (duplicates.length > 0) {
     throw new Error(`${caseId}: benchmark gold paths contain duplicate canonical identities: ${Array.from(new Set(duplicates)).join(", ")}`);
   }
-  const vaultRoot = expandHome(process.env.AHA_BENCH_VAULT_ROOT || "/path/to/vault");
+  const vaultRoot = benchVaultRoot();
   const resolver = buildVaultPathResolver(vaultRoot);
   for (const goldPath of [...caseItem.must_recall, ...(caseItem.nice_to_have ?? []), ...(caseItem.negative ?? []), ...relationTargetPaths]) {
     const resolved = resolveVaultPath(goldPath, resolver);

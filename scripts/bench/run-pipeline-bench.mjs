@@ -41,6 +41,7 @@ import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
   resolveVaultPath as sharedResolveVaultPath,
 } from "../aha/lib/note-identity.mjs";
+import { benchVaultRoot } from "../lib/vault-paths.mjs";
 import {
   DEFAULT_OPENAI_API_KEY_ENV,
   DEFAULT_OPENAI_BASE_URL,
@@ -71,13 +72,16 @@ const DEFAULTS = {
   queryAgentCache: "bench/generated/qmd-query-agent-cache.json",
   queryAgentFallback: true,
   queryAgentTimeoutMs: 120_000,
-  reranker: "agent",
-  rerankAgentProvider: process.env.AHA_BENCH_RERANK_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
-  rerankAgentBin: "codex",
-  rerankAgentModel: "",
-  rerankAgentCache: "bench/generated/agent-rerank-cache.json",
-  rerankAgentFallback: true,
-  rerankAgentTimeoutMs: 300_000,
+  relationJudgeMode: "agent",
+  relationJudgeAgentProvider: process.env.AHA_BENCH_RELATION_JUDGE_AGENT_PROVIDER
+    || process.env.AHA_BENCH_RERANK_AGENT_PROVIDER
+    || process.env.AHA_BENCH_LLM_PROVIDER
+    || "openai",
+  relationJudgeAgentBin: "codex",
+  relationJudgeAgentModel: "",
+  relationJudgeAgentCache: "bench/generated/relation-judge-cache.json",
+  relationJudgeAgentFallback: true,
+  relationJudgeAgentTimeoutMs: 300_000,
   includeDraft: false,
   only: [],
   backlinks: true,
@@ -116,14 +120,15 @@ function usage() {
     "  --query-agent-timeout-ms <n>    Default: 120000",
     "  --no-query-agent-cache",
     "  --no-query-agent-fallback",
-    "  --reranker <agent|none>         Default: agent",
-    "  --rerank-agent-provider <openai|codex-cli> Default: --llm-provider",
-    "  --rerank-agent-bin <bin>        Default: codex",
-    "  --rerank-agent-model <model>    Overrides --llm-model for rerank",
-    "  --rerank-agent-cache <path>     Default: bench/generated/agent-rerank-cache.json",
-    "  --rerank-agent-timeout-ms <n>   Default: 300000",
-    "  --no-rerank-agent-cache",
-    "  --no-rerank-agent-fallback",
+    "  --relation-judge <agent|none>   Default: agent (--reranker kept as deprecated alias)",
+    "  --relation-judge-agent-provider <openai|codex-cli> Default: --llm-provider",
+    "  --relation-judge-agent-bin <bin>        Default: codex",
+    "  --relation-judge-agent-model <model>    Overrides --llm-model for relation judging",
+    "  --relation-judge-agent-cache <path>     Default: bench/generated/relation-judge-cache.json",
+    "  --relation-judge-agent-timeout-ms <n>   Default: 300000",
+    "  --no-relation-judge-agent-cache",
+    "  --no-relation-judge-agent-fallback",
+    "  (--rerank-agent-* flags remain as deprecated aliases)",
     "  --only <id[,id...]>            Run only the listed case ids (fast iteration)",
     "  --include-draft                Include draft cases",
     "  --no-backlinks                 Disable Obsidian backlink expansion",
@@ -167,12 +172,12 @@ function parseArgs() {
       options.queryAgentFallback = false;
       continue;
     }
-    if (arg === "--no-rerank-agent-cache") {
-      options.rerankAgentCache = "";
+    if (arg === "--no-relation-judge-agent-cache" || arg === "--no-rerank-agent-cache") {
+      options.relationJudgeAgentCache = "";
       continue;
     }
-    if (arg === "--no-rerank-agent-fallback") {
-      options.rerankAgentFallback = false;
+    if (arg === "--no-relation-judge-agent-fallback" || arg === "--no-rerank-agent-fallback") {
+      options.relationJudgeAgentFallback = false;
       continue;
     }
     if (!arg.startsWith("--")) {
@@ -227,7 +232,7 @@ function parseArgs() {
       case "--llm-provider":
         options.llmProvider = value;
         if (!options.queryAgentProviderExplicit) options.queryAgentProvider = value;
-        if (!options.rerankAgentProviderExplicit) options.rerankAgentProvider = value;
+        if (!options.relationJudgeAgentProviderExplicit) options.relationJudgeAgentProvider = value;
         break;
       case "--llm-base-url":
         options.llmBaseUrl = value;
@@ -260,24 +265,30 @@ function parseArgs() {
       case "--query-agent-timeout-ms":
         options.queryAgentTimeoutMs = Number(value);
         break;
+      case "--relation-judge":
       case "--reranker":
-        options.reranker = value;
+        options.relationJudgeMode = value;
         break;
+      case "--relation-judge-agent-provider":
       case "--rerank-agent-provider":
-        options.rerankAgentProvider = value;
-        options.rerankAgentProviderExplicit = true;
+        options.relationJudgeAgentProvider = value;
+        options.relationJudgeAgentProviderExplicit = true;
         break;
+      case "--relation-judge-agent-bin":
       case "--rerank-agent-bin":
-        options.rerankAgentBin = value;
+        options.relationJudgeAgentBin = value;
         break;
+      case "--relation-judge-agent-model":
       case "--rerank-agent-model":
-        options.rerankAgentModel = value;
+        options.relationJudgeAgentModel = value;
         break;
+      case "--relation-judge-agent-cache":
       case "--rerank-agent-cache":
-        options.rerankAgentCache = value;
+        options.relationJudgeAgentCache = value;
         break;
+      case "--relation-judge-agent-timeout-ms":
       case "--rerank-agent-timeout-ms":
-        options.rerankAgentTimeoutMs = Number(value);
+        options.relationJudgeAgentTimeoutMs = Number(value);
         break;
       case "--seed-strategy":
         options.seedStrategy = value;
@@ -287,7 +298,7 @@ function parseArgs() {
     }
   }
 
-  for (const key of ["limit", "seedLimit", "backlinksPerSeed", "backlinkLimit", "qmdTimeoutMs", "obsidianTimeoutMs", "queryAgentTimeoutMs", "rerankAgentTimeoutMs"]) {
+  for (const key of ["limit", "seedLimit", "backlinksPerSeed", "backlinkLimit", "qmdTimeoutMs", "obsidianTimeoutMs", "queryAgentTimeoutMs", "relationJudgeAgentTimeoutMs"]) {
     if (!Number.isFinite(options[key]) || options[key] < 1) {
       throw new Error(`${key} must be a positive number.`);
     }
@@ -301,14 +312,14 @@ function parseArgs() {
   for (const [key, value] of [
     ["llmProvider", options.llmProvider],
     ["queryAgentProvider", options.queryAgentProvider],
-    ["rerankAgentProvider", options.rerankAgentProvider],
+    ["relationJudgeAgentProvider", options.relationJudgeAgentProvider],
   ]) {
     if (!["openai", "codex", "codex-cli"].includes(String(value || "").toLowerCase())) {
       throw new Error(`${key} must be openai or codex-cli.`);
     }
   }
   delete options.queryAgentProviderExplicit;
-  delete options.rerankAgentProviderExplicit;
+  delete options.relationJudgeAgentProviderExplicit;
   return options;
 }
 
@@ -374,7 +385,7 @@ function qmdUriPath(path) {
 }
 
 function vaultRoot() {
-  return resolve(process.env.AHA_BENCH_VAULT_ROOT?.trim() || "/path/to/vault");
+  return resolve(benchVaultRoot());
 }
 
 function buildVaultResolver() {
@@ -865,7 +876,7 @@ function printSummary(report) {
   console.log(`Backlinks: ${report.backlinks_enabled ? "enabled" : "disabled"}`);
   console.log(`Seed strategy: ${report.seed_strategy}`);
   console.log(`Source-note filter: ${report.source_note_filter_enabled ? "enabled" : "disabled"}`);
-  console.log(`Reranker: ${report.reranker}`);
+  console.log(`Relation judge: ${report.relation_judge_mode}`);
   console.log("");
 
   if (report.results.length === 0) {
@@ -984,7 +995,6 @@ function reportMetadata(options) {
     pipeline_version: "aha-pipeline-bench-v2",
     query_prompt_version: QUERY_PLAN_PROMPT_VERSION,
     relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
-    rerank_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
     llm_provider: options.llmProvider,
     llm_base_url: options.llmBaseUrl,
     llm_model: options.llmModel,
@@ -996,13 +1006,13 @@ function reportMetadata(options) {
       : null,
     query_agent_model: options.queryAgentModel || options.llmModel || null,
     query_agent_cache: options.queryAgentCache || null,
-    rerank_agent_provider: options.rerankAgentProvider,
-    rerank_agent_bin: options.rerankAgentBin,
-    rerank_agent_version: ["codex", "codex-cli"].includes(String(options.rerankAgentProvider).toLowerCase())
-      ? commandOutput(options.rerankAgentBin, ["--version"])
+    relation_judge_agent_provider: options.relationJudgeAgentProvider,
+    relation_judge_agent_bin: options.relationJudgeAgentBin,
+    relation_judge_agent_version: ["codex", "codex-cli"].includes(String(options.relationJudgeAgentProvider).toLowerCase())
+      ? commandOutput(options.relationJudgeAgentBin, ["--version"])
       : null,
-    rerank_agent_model: options.rerankAgentModel || options.llmModel || null,
-    rerank_agent_cache: options.rerankAgentCache || null,
+    relation_judge_agent_model: options.relationJudgeAgentModel || options.llmModel || null,
+    relation_judge_agent_cache: options.relationJudgeAgentCache || null,
     qmd_bin: options.qmd,
     qmd_version: commandOutput(options.qmd, ["--version"]),
     obsidian_bin: options.obsidian,
@@ -1043,9 +1053,9 @@ function reportDiagnostics(results) {
   const queryCacheHits = countBy(results, (result) => result.query_generated_by === "agent-cache");
   const queryAgentRuns = countBy(results, (result) => result.query_generated_by === "agent");
   const queryFallbacks = countBy(results, (result) => !!result.query_generation_fallback);
-  const rerankCacheHits = countBy(results, (result) => result.pipeline?.rerank_generated_by === "agent-cache");
-  const rerankAgentRuns = countBy(results, (result) => result.pipeline?.rerank_generated_by === "agent");
-  const rerankFallbacks = countBy(results, (result) => !!result.pipeline?.rerank_fallback);
+  const relationJudgeCacheHits = countBy(results, (result) => result.pipeline?.relation_judge_generated_by === "agent-cache");
+  const relationJudgeAgentRuns = countBy(results, (result) => result.pipeline?.relation_judge_generated_by === "agent");
+  const relationJudgeFallbacks = countBy(results, (result) => !!result.pipeline?.relation_judge_fallback);
   const qmdTimeouts = countErrors(results, /qmd query timed out/i);
   const obsidianTimeouts = countErrors(results, /obsidian backlinks timed out/i);
 
@@ -1053,10 +1063,10 @@ function reportDiagnostics(results) {
     query_cache_hits: queryCacheHits,
     query_cache_misses: queryAgentRuns,
     query_fallbacks: queryFallbacks,
-    rerank_cache_hits: rerankCacheHits,
-    rerank_cache_misses: rerankAgentRuns,
-    rerank_fallbacks: rerankFallbacks,
-    fallback_count: queryFallbacks + rerankFallbacks,
+    relation_judge_cache_hits: relationJudgeCacheHits,
+    relation_judge_cache_misses: relationJudgeAgentRuns,
+    relation_judge_fallbacks: relationJudgeFallbacks,
+    fallback_count: queryFallbacks + relationJudgeFallbacks,
     qmd_timeout_count: qmdTimeouts,
     obsidian_timeout_count: obsidianTimeouts,
     timeout_count: qmdTimeouts + obsidianTimeouts,
@@ -1193,7 +1203,7 @@ async function main() {
       missingFromExpandedPool,
       sourceNoteRank: pipelineEval.source_note_rank || qmdEval.source_note_rank || expandedPoolEval.source_note_rank,
       queryFallback: !!generatedQuery.query_generation_fallback,
-      rerankFallback: !!rerankResult.rerank_fallback,
+      rerankFallback: !!rerankResult.relation_judge_fallback,
     });
 
     const caseResult = {
@@ -1202,7 +1212,6 @@ async function main() {
       title: caseItem.title || caseItem.id,
       why: caseItem.why || undefined,
       type: caseItem.type || "real",
-      description: caseItem.title || caseItem.description || caseItem.id,
       query: queryText,
       queries: querySpecs.map((query) => ({
         kind: query.kind,
@@ -1246,10 +1255,6 @@ async function main() {
         stability_at_k: 1,
         stability_top_k_fingerprint: topKFingerprint(pipelineEval.files, topK),
         source_note_rank: pipelineEval.source_note_rank,
-        rerank_generated_by: rerankResult.rerank_generated_by,
-        rerank_fallback: rerankResult.rerank_fallback,
-        rerank_error: rerankResult.rerank_error,
-        rerank_ranked_ids: rerankResult.rerank_ranked_ids,
         relation_judge_generated_by: rerankResult.relation_judge_generated_by,
         relation_judge_fallback: rerankResult.relation_judge_fallback,
         relation_judge_error: rerankResult.relation_judge_error,
@@ -1347,7 +1352,7 @@ async function main() {
     query_mode: options.queryMode,
     seed_strategy: options.seedStrategy,
     source_note_filter_enabled: options.sourceNoteFilter,
-    reranker: options.reranker,
+    relation_judge_mode: options.relationJudgeMode,
     results,
     diagnostics: reportDiagnostics(results),
     summary: {

@@ -1,10 +1,10 @@
+import { DEFAULT_VAULT_ROOT } from "./vault-paths.mjs";
+
 export function candidatePath(candidate) {
   return candidate?.file || candidate?.path || candidate?.slug || candidate?.title || "";
 }
 
 export const DEFAULT_EXCLUDED_CANDIDATE_FOLDERS = ["templates", "Aha/Reviews"];
-
-const DEFAULT_VAULT_ROOT = "/path/to/vault";
 
 export function excludedCandidateFolders(extraEnvValue = process.env.AHA_EXCLUDED_FOLDERS) {
   const extras = String(extraEnvValue ?? "")

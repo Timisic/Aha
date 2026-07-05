@@ -14,11 +14,15 @@ import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "./lib/
 import { isExcludedCandidatePath } from "../lib/candidate-fields.mjs";
 import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
 import {
+  compactLine,
   fallbackQmdObject as sharedFallbackQmdObject,
   generateQueryPlanWithAdapter,
   qmdQueryFromObject as sharedQmdQueryFromObject,
+  unique,
 } from "./query-plan.mjs";
-import { judgeCandidateRelations } from "./relation-judge.mjs";
+import { judgeCandidateRelations, normalizeStructuredResult } from "./relation-judge.mjs";
+import { isNoProxyHost, parseMacProxyConfig } from "../lib/https-proxy.mjs";
+import { extractOpenAiOutputText, openAiResponsesUrl } from "../lib/openai-json-agent.mjs";
 
 const JSON_BEGIN = "AHA_RESULT_JSON_BEGIN";
 const JSON_END = "AHA_RESULT_JSON_END";
@@ -42,9 +46,9 @@ const COMMON_COMMAND_DIRS = [
   "/bin",
   "/usr/sbin",
   "/sbin",
-  "~/.local/bin",
-  "~/.npm-global/bin",
-  "~/.bun/bin",
+  path.join(homedir(), ".local/bin"),
+  path.join(homedir(), ".npm-global/bin"),
+  path.join(homedir(), ".bun/bin"),
 ];
 
 main().catch((error) => {
@@ -443,11 +447,6 @@ async function runOpenAi(args, prompt, options = {}) {
   };
 }
 
-function openAiResponsesUrl(baseUrl) {
-  const trimmed = String(baseUrl || DEFAULT_LLM_BASE_URL).trim().replace(/\/+$/, "");
-  return `${trimmed}/responses`;
-}
-
 async function postJson(url, payload, headers, timeoutMs) {
   const target = new URL(url);
   const body = JSON.stringify(payload);
@@ -524,22 +523,6 @@ function proxyUrlFor(target) {
   }
 }
 
-function isNoProxyHost(hostname, noProxy) {
-  const host = String(hostname || "").toLowerCase();
-  return String(noProxy || "")
-    .split(",")
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean)
-    .some((item) => {
-      if (item === "*") return true;
-      const pattern = item.split(":")[0];
-      if (!pattern) return false;
-      if (pattern.startsWith("*.")) return host.endsWith(pattern.slice(1));
-      if (pattern.startsWith(".")) return host.endsWith(pattern);
-      return host === pattern || host.endsWith(`.${pattern}`);
-    });
-}
-
 function systemProxyUrlFor(target) {
   if (process.platform !== "darwin") return "";
   const result = spawnSync("scutil", ["--proxy"], {
@@ -557,32 +540,6 @@ function systemProxyUrlFor(target) {
   const port = proxyConfig[`${prefix}Port`];
   if (!host || !port) return "";
   return `http://${host}:${port}`;
-}
-
-function parseMacProxyConfig(output) {
-  const config = {};
-  let inExceptions = false;
-  const exceptions = [];
-  for (const line of output.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("ExceptionsList")) {
-      inExceptions = true;
-      continue;
-    }
-    if (inExceptions && trimmed === "}") {
-      inExceptions = false;
-      continue;
-    }
-    if (inExceptions) {
-      const match = trimmed.match(/^\d+\s*:\s*(.+)$/);
-      if (match) exceptions.push(match[1].trim());
-      continue;
-    }
-    const match = trimmed.match(/^([A-Za-z0-9]+)\s*:\s*(.+)$/);
-    if (match) config[match[1]] = match[2].trim();
-  }
-  if (exceptions.length > 0) config.ExceptionsList = exceptions;
-  return config;
 }
 
 function openHttpsProxyTunnel(target, proxy, timeoutMs) {
@@ -725,26 +682,6 @@ function runCurl(args, stdin, timeoutMs) {
     });
     child.stdin.end(stdin);
   });
-}
-
-function extractOpenAiOutputText(payload) {
-  if (typeof payload?.output_text === "string") return payload.output_text.trim();
-  const outputParts = Array.isArray(payload?.output) ? payload.output : [];
-  const contentText = outputParts
-    .flatMap((item) => Array.isArray(item?.content) ? item.content : [])
-    .map((content) => {
-      if (typeof content?.text === "string") return content.text;
-      if (typeof content?.value === "string") return content.value;
-      if (typeof content === "string") return content;
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-  if (contentText) return contentText;
-  const choiceText = payload?.choices?.[0]?.message?.content;
-  if (typeof choiceText === "string") return choiceText.trim();
-  throw new Error("OpenAI API response did not include output text.");
 }
 
 function schemaNameForPath(schemaPath) {
@@ -1648,16 +1585,6 @@ function firstSnippetLine(snippet) {
     ) ?? "";
 }
 
-function unique(values) {
-  return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
-}
-
-function compactLine(value, max = 900) {
-  const text = String(value ?? "").replace(/\s+/g, " ").trim();
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 1).trim()}...`;
-}
-
 function isSourceCandidate(args, notePath, row) {
   if (sameNotePath(notePath, args.sourcePath)) return true;
   const rawPaths = [row.file, row.path, row.uri]
@@ -1694,31 +1621,6 @@ function extractCodexJson(stdout) {
   }
   const json = stdout.slice(begin + JSON_BEGIN.length, end).trim();
   return JSON.parse(json);
-}
-
-function normalizeStructuredResult(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const normalized = { ...value };
-  for (const key of ["sourcePath", "generatedAt", "summary", "warnings", "error", "candidates"]) {
-    if (normalized[key] === null) delete normalized[key];
-  }
-  if (Array.isArray(normalized.candidates)) {
-    normalized.candidates = normalized.candidates.map((candidate) => {
-      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
-      const next = { ...candidate };
-      for (const key of ["noteTitle", "quotes", "selected"]) {
-        if (next[key] === null) delete next[key];
-      }
-      return next;
-    });
-  }
-  if (normalized.error && typeof normalized.error === "object" && !Array.isArray(normalized.error)) {
-    normalized.error = { ...normalized.error };
-    for (const key of ["tool", "details"]) {
-      if (normalized.error[key] === null) delete normalized.error[key];
-    }
-  }
-  return normalized;
 }
 
 async function exists(filePath) {

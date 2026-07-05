@@ -12,7 +12,7 @@ function usage() {
     "  node scripts/bench/collect-review-seeds.mjs [options]",
     "",
     "Options:",
-    `  --vault-root <path>       Obsidian vault root. Default: $AHA_BENCH_VAULT_ROOT or /path/to/vault`,
+    `  --vault-root <path>       Obsidian vault root. Default: $AHA_BENCH_VAULT_ROOT or ~/Obsidian Notes`,
     `  --review-folder <path>    Review note folder inside the vault. Default: ${DEFAULT_REVIEW_FOLDER}`,
     `  --output <path>           Ignored private seed case file. Default: ${DEFAULT_SEED_CASES_PATH}`,
     "  --dry-run                 Print JSON to stdout instead of writing the output file.",

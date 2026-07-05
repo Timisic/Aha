@@ -1,9 +1,17 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
+
+export const DEFAULT_VAULT_ROOT = join(homedir(), "Obsidian Notes");
+
+export function benchVaultRoot() {
+  const configured = String(process.env.AHA_BENCH_VAULT_ROOT ?? "").trim();
+  return expandHome(configured || DEFAULT_VAULT_ROOT);
+}
 
 export function expandHome(value) {
   const raw = String(value ?? "");
-  if (raw === "~") return process.env.HOME || raw;
-  if (raw.startsWith("~/")) return resolve(process.env.HOME || ".", raw.slice(2));
+  if (raw === "~") return homedir();
+  if (raw.startsWith("~/")) return resolve(homedir(), raw.slice(2));
   return raw;
 }
 

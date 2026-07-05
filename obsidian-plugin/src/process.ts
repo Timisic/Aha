@@ -24,6 +24,7 @@ const WRAPPER_TIMEOUT_MS = 16 * 60 * 1000;
 const COMMAND_CHECK_TIMEOUT_MS = 15 * 1000;
 const MAX_WRAPPER_OUTPUT_BYTES = 5 * 1024 * 1024;
 const OUTPUT_PREVIEW_LIMIT = 500;
+const HOME_DIR = process.env.HOME ?? process.env.USERPROFILE ?? "";
 const DESKTOP_PATH_ENTRIES = [
   "/opt/homebrew/bin",
   "/opt/homebrew/sbin",
@@ -32,15 +33,20 @@ const DESKTOP_PATH_ENTRIES = [
   "/bin",
   "/usr/sbin",
   "/sbin",
-  "~/.local/bin",
-  "~/.npm-global/bin",
-  "~/.bun/bin",
+  ...(HOME_DIR
+    ? [
+        path.join(HOME_DIR, ".local/bin"),
+        path.join(HOME_DIR, ".npm-global/bin"),
+        path.join(HOME_DIR, ".bun/bin"),
+      ]
+    : []),
 ];
 const NODE_CANDIDATES = [
   "/opt/homebrew/bin/node",
   "/usr/local/bin/node",
-  "~/.local/bin/node",
-  "~/.npm-global/bin/node",
+  ...(HOME_DIR
+    ? [path.join(HOME_DIR, ".local/bin/node"), path.join(HOME_DIR, ".npm-global/bin/node")]
+    : []),
 ];
 
 export function canRunExternalProcesses(): boolean {

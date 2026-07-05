@@ -23,12 +23,11 @@ export function runOpenAiJsonSync(options) {
   const maxAttempts = Math.max(1, Number(options.maxAttempts || DEFAULT_OPENAI_MAX_ATTEMPTS));
 
   const tmpRoot = mkdtempSync(join(tmpdir(), "aha-openai-json-agent-"));
-  const bodyPath = join(tmpRoot, "request.json");
+  const { bodyPath, headerConfigPath } = writeRequestFiles(tmpRoot, body, apiKey);
   try {
-    writeFileSync(bodyPath, `${JSON.stringify(body)}\n`);
     let lastFailure = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const result = spawnSync("curl", curlRequestArgs({ url, proxyUrl, apiKey, bodyPath, timeoutMs: options.timeoutMs }), {
+      const result = spawnSync("curl", curlRequestArgs({ url, proxyUrl, bodyPath, headerConfigPath, timeoutMs: options.timeoutMs }), {
         encoding: "utf-8",
         timeout: Number(options.timeoutMs || 120_000) + 5_000,
       });
@@ -59,13 +58,12 @@ export async function runOpenAiJsonAsync(options) {
   const maxAttempts = Math.max(1, Number(options.maxAttempts || DEFAULT_OPENAI_MAX_ATTEMPTS));
 
   const tmpRoot = mkdtempSync(join(tmpdir(), "aha-openai-json-agent-"));
-  const bodyPath = join(tmpRoot, "request.json");
+  const { bodyPath, headerConfigPath } = writeRequestFiles(tmpRoot, body, apiKey);
   try {
-    writeFileSync(bodyPath, `${JSON.stringify(body)}\n`);
     let lastFailure = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const result = await spawnCurlAsync(
-        curlRequestArgs({ url, proxyUrl, apiKey, bodyPath, timeoutMs: options.timeoutMs }),
+        curlRequestArgs({ url, proxyUrl, bodyPath, headerConfigPath, timeoutMs: options.timeoutMs }),
         Number(options.timeoutMs || 120_000) + 5_000,
       );
       const evaluated = evaluateCurlAttempt(result);
@@ -102,7 +100,17 @@ function openAiRequestBody(options) {
   return body;
 }
 
-function curlRequestArgs({ url, proxyUrl, apiKey, bodyPath, timeoutMs }) {
+// The Authorization header travels in a 0600 config file, never on the curl
+// command line where any local process could read it from the process list.
+function writeRequestFiles(tmpRoot, body, apiKey) {
+  const bodyPath = join(tmpRoot, "request.json");
+  const headerConfigPath = join(tmpRoot, "headers.curl");
+  writeFileSync(bodyPath, `${JSON.stringify(body)}\n`, { mode: 0o600 });
+  writeFileSync(headerConfigPath, `header = "Authorization: Bearer ${apiKey}"\n`, { mode: 0o600 });
+  return { bodyPath, headerConfigPath };
+}
+
+function curlRequestArgs({ url, proxyUrl, bodyPath, headerConfigPath, timeoutMs }) {
   return [
     "--silent",
     "--show-error",
@@ -115,8 +123,8 @@ function curlRequestArgs({ url, proxyUrl, apiKey, bodyPath, timeoutMs }) {
     url,
     "-H",
     "Content-Type: application/json",
-    "-H",
-    `Authorization: Bearer ${apiKey}`,
+    "--config",
+    headerConfigPath,
     "--data-binary",
     `@${bodyPath}`,
   ];
@@ -125,7 +133,16 @@ function curlRequestArgs({ url, proxyUrl, apiKey, bodyPath, timeoutMs }) {
 function evaluateCurlAttempt(result) {
   if (result.error && result.error.code !== "ETIMEDOUT") return { kind: "fatal", error: result.error };
   if (!result.error && result.status === 0) {
-    const payload = JSON.parse(String(result.stdout || "{}"));
+    let payload;
+    try {
+      payload = JSON.parse(String(result.stdout || "{}"));
+    } catch {
+      return {
+        kind: "failure",
+        failure: `OpenAI API returned a non-JSON body: ${String(result.stdout || "").trim().slice(0, 200)}`,
+        retryable: true,
+      };
+    }
     return { kind: "success", outputText: extractOpenAiOutputText(payload) };
   }
   const stderr = String(result.stderr ?? "").trim();

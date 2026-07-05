@@ -1,11 +1,6 @@
-import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { benchVaultRoot, expandHome } from "./vault-paths.mjs";
 
-export function expandHome(path) {
-  if (path === "~") return homedir();
-  if (path.startsWith("~/")) return resolve(homedir(), path.slice(2));
-  return path;
-}
+export { expandHome };
 
 export function normalizePathForScore(path) {
   let normalized = String(path ?? "");
@@ -20,7 +15,7 @@ export function normalizePathForScore(path) {
 
 function vaultRelativePath(path) {
   const normalized = normalizePathForScore(expandHome(String(path ?? "")));
-  const vaultRoot = normalizePathForScore(expandHome(process.env.AHA_BENCH_VAULT_ROOT || "/path/to/vault"));
+  const vaultRoot = normalizePathForScore(benchVaultRoot());
   if (normalized === vaultRoot) return "";
   if (normalized.startsWith(`${vaultRoot}/`)) return normalized.slice(vaultRoot.length + 1);
   return normalized;

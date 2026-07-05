@@ -8,6 +8,14 @@ import {
 } from "./generated-block";
 import type { AhaCandidate, AhaWrapperFailure, AhaWrapperResult } from "./schema";
 import { sourceIdentityAllowsPathDrift } from "./source-identity";
+import {
+  lastPathSegment,
+  noteDisplayTitleFromPath,
+  parseWikiLink,
+  stripMarkdownExtension,
+} from "./wikilink";
+
+export { noteDisplayTitleFromPath } from "./wikilink";
 
 export interface ReviewNoteInit {
   createdAt: Date;
@@ -332,7 +340,7 @@ export function parseReviewBenchmarkSeeds(content: string): ReviewBenchmarkSeed[
       if (field) fields.set(field[1].trim(), stripWrappingBackticks(field[2].trim()));
     }
     const source = fields.get("source") || "";
-    const parsedSource = parseObsidianMarkdownLink(source);
+    const parsedSource = parseWikiLink(source);
     return {
       action: (fields.get("action") || "accept") as ReviewBenchmarkSeedAction,
       status: "draft",
@@ -371,12 +379,6 @@ export function obsidianLink(path: string, title?: string): string {
   return `[[${target}|${alias.replace(/\|/g, "\\|")}]]`;
 }
 
-export function noteDisplayTitleFromPath(path: string): string {
-  const target = path.replace(/^\[\[|\]\]$/g, "").split("|")[0].trim();
-  const base = target.match(/^([^#^]+)/)?.[1]?.trim() || target;
-  return stripMarkdownExtension(lastPathSegment(base)) || target;
-}
-
 export function reviewSourceIdFromContent(content: string): string | null {
   const frontmatter = content.match(/^---\n([\s\S]*?)\n---\n?/)?.[1];
   if (!frontmatter) return null;
@@ -387,6 +389,16 @@ export function reviewSourcePathFromContent(content: string): string | null {
   const frontmatter = content.match(/^---\n([\s\S]*?)\n---\n?/)?.[1];
   if (!frontmatter) return null;
   return frontmatterValue(frontmatter, "source_path");
+}
+
+export function reviewStatusFromContent(content: string): string | null {
+  const frontmatter = content.match(/^---\n([\s\S]*?)\n---\n?/)?.[1];
+  if (!frontmatter) return null;
+  return frontmatterValue(frontmatter, "status");
+}
+
+export function setReviewNoteStatus(content: string, status: string): string {
+  return `${setFrontmatterStatus(content, status).trimEnd()}\n`;
 }
 
 export function reviewNoteMatchesSource(content: string, sourceId: string, sourcePath: string): boolean {
@@ -430,14 +442,6 @@ function formatDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function lastPathSegment(path: string): string {
-  return path.split("/").filter(Boolean).pop() ?? path;
-}
-
-function stripMarkdownExtension(path: string): string {
-  return path.replace(/\.md$/i, "");
-}
-
 function escapeYaml(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
@@ -463,7 +467,7 @@ function parseCandidateList(section: string): ReviewPanelCandidate[] {
   for (const line of section.split("\n")) {
     const candidateMatch = line.match(/^(\d+)\.\s+\[([ xX])\]\s+(.+)$/);
     if (candidateMatch) {
-      const parsedLink = parseObsidianMarkdownLink(candidateMatch[3]);
+      const parsedLink = parseWikiLink(candidateMatch[3]);
       if (!parsedLink) {
         current = null;
         continue;
@@ -499,25 +503,6 @@ function parseCandidateList(section: string): ReviewPanelCandidate[] {
   }
 
   return candidates;
-}
-
-function parseObsidianMarkdownLink(value: string): { path: string; title?: string } | null {
-  const match = value.match(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/);
-  if (!match) return null;
-  const target = match[1].replace(/\\\|/g, "|").trim();
-  const alias = match[2]?.replace(/\\\|/g, "|").trim();
-  return {
-    path: ensureMarkdownExtension(target),
-    title: alias || stripMarkdownExtension(lastPathSegment(target)),
-  };
-}
-
-function ensureMarkdownExtension(target: string): string {
-  const match = target.match(/^([^#^]+)(.*)$/);
-  if (!match) return target;
-  const base = match[1];
-  const suffix = match[2] ?? "";
-  return /\.md$/i.test(base) ? `${base}${suffix}` : `${base}.md${suffix}`;
 }
 
 function stripWrappingBackticks(value: string): string {

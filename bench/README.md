@@ -251,7 +251,7 @@ L2: Memory pipeline approximation.
 node scripts/bench/run-pipeline-bench.mjs
 ```
 
-This reads the same active cases, asks the query-generation agent for 3-5 structured QMD queries, runs QMD for seed candidates, expands backlinks from the top 10 QMD seeds with Obsidian CLI, merges QMD/backlink evidence, asks a rerank agent to rank the combined candidate pool, and writes `bench/reports/latest/pipeline.json`.
+This reads the same active cases, asks the query-generation agent for 3-5 structured QMD queries, runs QMD for seed candidates, expands backlinks from the top 10 QMD seeds with Obsidian CLI, merges QMD/backlink evidence, asks the Relation Judge to rank the combined candidate pool, and writes `bench/reports/latest/pipeline.json`.
 
 Each L2 case also writes a structured `PipelineTrace` JSON artifact under:
 
@@ -286,14 +286,14 @@ This writes one child report per variant under `bench/reports/latest/pipeline-ab
 
 - `raw-only` versus multi-query retrieval.
 - backlinks off versus on.
-- `reranker none` versus the configured reranker.
+- `relation-judge none` versus the configured relation judge.
 - first-10 backlink seeds versus fair query-kind seeds.
 - source-note filter off versus on.
 
 Use `-- <pipeline options>` to pass options through to every child run, for example:
 
 ```bash
-node scripts/bench/run-pipeline-ablations.mjs -- --query-generator rules --reranker none
+node scripts/bench/run-pipeline-ablations.mjs -- --query-generator rules --relation-judge none
 ```
 
 ## Eval-v2 Metrics

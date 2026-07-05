@@ -35,7 +35,7 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
       llmModel: "gpt-test",
       llmApiKeyEnv: "AHA_TEST_OPENAI_KEY",
       queryAgentBin: "/definitely/missing/codex",
-      rerankAgentBin: "/definitely/missing/codex",
+      relationJudgeAgentBin: "/definitely/missing/codex",
     };
 
     const queryPlan = resolveQmdQueriesForCase(caseItem, {
@@ -59,16 +59,16 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
       candidate("Memory/Noise.md", "Noise"),
     ], {
       ...commonOptions,
-      reranker: "agent",
-      rerankAgentProvider: "openai",
-      rerankAgentCache: "",
+      relationJudgeMode: "agent",
+      relationJudgeAgentProvider: "openai",
+      relationJudgeAgentCache: "",
       limit: 2,
     });
 
-    assert.equal(reranked.rerank_generated_by, "agent");
-    assert.equal(reranked.rerank_fallback, false);
+    assert.equal(reranked.relation_judge_generated_by, "agent");
+    assert.equal(reranked.relation_judge_fallback, false);
     // Equal-strength relations fall back to retrieval pool order (c001 before c002).
-    assert.deepEqual(reranked.rerank_ranked_ids, ["c001", "c002"]);
+    assert.deepEqual(reranked.relation_judge_ranked_ids, ["c001", "c002"]);
     assert.deepEqual(reranked.candidates.map((item) => item.file), ["Memory/Feedback.md", "Memory/Noise.md"]);
     assert.deepEqual(reranked.candidates.map((item) => item.relation), ["supports", "challenges"]);
     assert.match(reranked.candidates[1].hit, /Noise candidate/);

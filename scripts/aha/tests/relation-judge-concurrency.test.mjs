@@ -66,18 +66,18 @@ test("chunked relation judging fans out concurrently and reassembles all candida
       _resolved_insight_input: "反馈闭环如何帮助修正判断",
       must_recall: [],
     }, candidates, {
-      reranker: "agent",
+      relationJudgeMode: "agent",
       llmProvider: "openai",
-      rerankAgentProvider: "openai",
+      relationJudgeAgentProvider: "openai",
       llmBaseUrl: server.baseUrl,
       llmModel: "gpt-test",
       llmApiKeyEnv: "AHA_TEST_OPENAI_KEY",
-      rerankAgentCache: "",
-      rerankAgentFallback: false,
+      relationJudgeAgentCache: "",
+      relationJudgeAgentFallback: false,
     });
 
-    assert.equal(reranked.rerank_generated_by, "agent");
-    assert.equal(reranked.rerank_fallback, false);
+    assert.equal(reranked.relation_judge_generated_by, "agent");
+    assert.equal(reranked.relation_judge_fallback, false);
     assert.equal(reranked.candidates.length, 9);
     // Every candidate must come back judged (echo server labels all supports).
     assert.ok(reranked.candidates.every((candidate) => candidate.relation === "supports"));

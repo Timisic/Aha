@@ -41,18 +41,20 @@ export function defaultRelationJudgeOptions(overrides = {}) {
   const cleanOverrides = Object.fromEntries(
     Object.entries(overrides).filter(([, value]) => value !== undefined),
   );
+  // AHA_BENCH_RERANK* names remain readable as deprecated fallbacks.
+  const env = (name, legacy) => process.env[name] ?? process.env[legacy];
   return {
-    reranker: process.env.AHA_BENCH_RERANKER || "agent",
+    relationJudgeMode: env("AHA_BENCH_RELATION_JUDGE_MODE", "AHA_BENCH_RERANKER") || "agent",
     llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "openai",
     llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_OPENAI_BASE_URL,
     llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_OPENAI_MODEL,
     llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_OPENAI_API_KEY_ENV,
-    rerankAgentProvider: process.env.AHA_BENCH_RERANK_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
-    rerankAgentBin: process.env.AHA_BENCH_RERANK_AGENT_BIN || "codex",
-    rerankAgentModel: process.env.AHA_BENCH_RERANK_AGENT_MODEL || "",
-    rerankAgentCache: process.env.AHA_BENCH_RERANK_AGENT_CACHE || "bench/generated/relation-judge-cache.json",
-    rerankAgentFallback: process.env.AHA_BENCH_RERANK_AGENT_FALLBACK !== "0",
-    rerankAgentTimeoutMs: Number(process.env.AHA_BENCH_RERANK_AGENT_TIMEOUT_MS || 300_000),
+    relationJudgeAgentProvider: env("AHA_BENCH_RELATION_JUDGE_AGENT_PROVIDER", "AHA_BENCH_RERANK_AGENT_PROVIDER") || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
+    relationJudgeAgentBin: env("AHA_BENCH_RELATION_JUDGE_AGENT_BIN", "AHA_BENCH_RERANK_AGENT_BIN") || "codex",
+    relationJudgeAgentModel: env("AHA_BENCH_RELATION_JUDGE_AGENT_MODEL", "AHA_BENCH_RERANK_AGENT_MODEL") || "",
+    relationJudgeAgentCache: env("AHA_BENCH_RELATION_JUDGE_AGENT_CACHE", "AHA_BENCH_RERANK_AGENT_CACHE") || "bench/generated/relation-judge-cache.json",
+    relationJudgeAgentFallback: env("AHA_BENCH_RELATION_JUDGE_AGENT_FALLBACK", "AHA_BENCH_RERANK_AGENT_FALLBACK") !== "0",
+    relationJudgeAgentTimeoutMs: Number(env("AHA_BENCH_RELATION_JUDGE_AGENT_TIMEOUT_MS", "AHA_BENCH_RERANK_AGENT_TIMEOUT_MS") || 300_000),
     ...cleanOverrides,
   };
 }
@@ -241,9 +243,9 @@ export function hasQuoteEvidence(candidate, excerpt) {
 export async function relationJudgeCandidatesForCase(caseItem, candidates, options = {}) {
   const judgeOptions = defaultRelationJudgeOptions(options);
   const annotated = annotateCandidates(candidates).map(ensureBenchmarkCandidateShape);
-  const reranker = String(judgeOptions.reranker || "agent").toLowerCase();
+  const judgeMode = String(judgeOptions.relationJudgeMode || "agent").toLowerCase();
 
-  if (reranker === "none") {
+  if (judgeMode === "none") {
     return relationJudgeResult({
       candidates: annotated,
       generatedBy: "none",
@@ -251,12 +253,12 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
       error: null,
     });
   }
-  if (reranker !== "agent") {
-    throw new Error(`Unknown reranker: ${judgeOptions.reranker}`);
+  if (judgeMode !== "agent") {
+    throw new Error(`Unknown relation judge mode: ${judgeOptions.relationJudgeMode}`);
   }
 
   const candidateInputs = relationJudgeInputsForCase(caseItem, annotated);
-  const cachePath = judgeOptions.rerankAgentCache ? resolve(judgeOptions.rerankAgentCache) : "";
+  const cachePath = judgeOptions.relationJudgeAgentCache ? resolve(judgeOptions.relationJudgeAgentCache) : "";
   const cache = readRelationJudgeCache(cachePath);
   const cacheKey = relationJudgeCacheKey(caseItem, annotated, judgeOptions);
   const cachedCandidates = cache.entries[cacheKey]?.candidates;
@@ -311,7 +313,7 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
       generator: relationJudgeProvider(judgeOptions) === "openai" ? "openai-responses" : "codex-exec",
       prompt_version: RELATION_JUDGE_PROMPT_VERSION,
       agent_provider: relationJudgeProvider(judgeOptions),
-      agent_bin: judgeOptions.rerankAgentBin,
+      agent_bin: judgeOptions.relationJudgeAgentBin,
       agent_model: relationJudgeModel(judgeOptions),
       candidates: judgedCandidates,
     };
@@ -323,7 +325,7 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
       error: null,
     });
   } catch (error) {
-    if (!judgeOptions.rerankAgentFallback) throw error;
+    if (!judgeOptions.relationJudgeAgentFallback) throw error;
     return relationJudgeResult({
       candidates: annotated,
       generatedBy: "none",
@@ -437,10 +439,6 @@ function relationJudgeResult({ candidates, generatedBy, fallback, error }) {
     relation_judge_error: error,
     relation_judge_ranked_ids: rankedIds,
     relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
-    rerank_generated_by: generatedBy,
-    rerank_fallback: fallback,
-    rerank_error: error,
-    rerank_ranked_ids: rankedIds,
   };
 }
 
@@ -493,7 +491,7 @@ async function generateRelationJudgeWithAgentAsync(caseItem, candidateInputs, op
       prompt,
       schema: RESULT_SCHEMA,
       schemaName: RELATION_JUDGE_SCHEMA_NAME,
-      timeoutMs: options.rerankAgentTimeoutMs,
+      timeoutMs: options.relationJudgeAgentTimeoutMs,
     }), caseItem.id);
   }
   return generateRelationJudgeWithAgent(caseItem, candidateInputs, options);
@@ -513,12 +511,12 @@ function generateRelationJudgeWithAgent(caseItem, candidateInputs, options) {
       prompt,
       schema: RESULT_SCHEMA,
       schemaName: RELATION_JUDGE_SCHEMA_NAME,
-      timeoutMs: options.rerankAgentTimeoutMs,
+      timeoutMs: options.relationJudgeAgentTimeoutMs,
     }), caseItem.id);
   }
 
   if (!["codex", "codex-cli"].includes(relationJudgeProvider(options))) {
-    throw new Error(`${caseItem.id}: unknown relation judge provider: ${options.rerankAgentProvider}`);
+    throw new Error(`${caseItem.id}: unknown relation judge provider: ${options.relationJudgeAgentProvider}`);
   }
 
   const tmpRoot = mkdtempSync(join(tmpdir(), "aha-relation-judge-"));
@@ -542,16 +540,16 @@ function generateRelationJudgeWithAgent(caseItem, candidateInputs, options) {
     "-C",
     tmpRoot,
   ];
-  if (options.rerankAgentModel) {
-    args.push("-m", options.rerankAgentModel);
+  if (options.relationJudgeAgentModel) {
+    args.push("-m", options.relationJudgeAgentModel);
   }
   args.push("-");
 
   try {
-    const result = spawnSync(options.rerankAgentBin || "codex", args, {
+    const result = spawnSync(options.relationJudgeAgentBin || "codex", args, {
       input: prompt,
       encoding: "utf-8",
-      timeout: options.rerankAgentTimeoutMs,
+      timeout: options.relationJudgeAgentTimeoutMs,
       env: process.env,
     });
     if (result.error) throw result.error;
@@ -589,7 +587,7 @@ function parseJsonOutput(output) {
   }
 }
 
-function normalizeStructuredResult(value) {
+export function normalizeStructuredResult(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const normalized = { ...value };
   for (const key of ["sourcePath", "generatedAt", "summary", "warnings", "error", "candidates"]) {
@@ -661,11 +659,11 @@ function candidateCacheShape(candidate) {
 }
 
 function relationJudgeProvider(options) {
-  return String(options.rerankAgentProvider || options.llmProvider || "openai").toLowerCase();
+  return String(options.relationJudgeAgentProvider || options.llmProvider || "openai").toLowerCase();
 }
 
 function relationJudgeModel(options) {
-  return String(options.rerankAgentModel || options.llmModel || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL;
+  return String(options.relationJudgeAgentModel || options.llmModel || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL;
 }
 
 function relationJudgeProviderCacheShape(options) {
@@ -679,8 +677,8 @@ function relationJudgeProviderCacheShape(options) {
   }
   return JSON.stringify({
     provider,
-    bin: options.rerankAgentBin || "codex",
-    model: options.rerankAgentModel || "",
+    bin: options.relationJudgeAgentBin || "codex",
+    model: options.relationJudgeAgentModel || "",
   });
 }
 

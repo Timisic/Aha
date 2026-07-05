@@ -16,7 +16,7 @@ const DEFAULTS = {
 const VARIANTS = [
   {
     id: "baseline",
-    label: "multi-query + backlinks on + fair seeds + source-note filter on + configured reranker",
+    label: "multi-query + backlinks on + fair seeds + source-note filter on + configured relation judge",
     args: [],
   },
   {
@@ -30,9 +30,9 @@ const VARIANTS = [
     args: ["--no-backlinks"],
   },
   {
-    id: "reranker-none",
-    label: "no agent reranker vs configured reranker",
-    args: ["--reranker", "none"],
+    id: "relation-judge-none",
+    label: "no relation judge vs configured relation judge",
+    args: ["--relation-judge", "none"],
   },
   {
     id: "first-10-seeds",

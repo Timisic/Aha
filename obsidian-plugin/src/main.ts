@@ -8,7 +8,8 @@ import {
   TFile,
   normalizePath,
 } from "obsidian";
-import { appendFailureRecord, appendRunningSearchRound, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource, reviewSourcePathFromContent } from "./review-note";
+import { appendFailureRecord, appendRunningSearchRound, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource, reviewSourcePathFromContent, setReviewNoteStatus } from "./review-note";
+import { firstWikiLinkTarget, linkTargetBase } from "./wikilink";
 import { AHA_REVIEW_PANEL_VIEW_TYPE, AhaReviewPanelView, type AhaReviewPanelContext } from "./review-panel";
 import { canRunExternalProcesses, runAhaWrapper, runReadinessCheck } from "./process";
 import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
@@ -80,9 +81,20 @@ export default class AhaPlugin extends Plugin {
       name: "Aha: Open candidate under cursor in new tab",
       editorCheckCallback: (checking, editor) => {
         const line = editor.getLine(editor.getCursor().line);
-        const target = parseFirstWikiLink(line);
+        const target = firstWikiLinkTarget(line);
         if (!target) return false;
         if (!checking) void this.openCandidateInNewTab(target);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "aha-mark-review-grilled",
+      name: "Aha: Mark review note as grilled",
+      checkCallback: (checking) => {
+        const file = this.currentMarkdownFile();
+        if (!file) return false;
+        if (!checking) void this.markReviewNoteGrilled(file);
         return true;
       },
     });
@@ -227,6 +239,17 @@ export default class AhaPlugin extends Plugin {
     await this.openFile(file, false);
   }
 
+  private async markReviewNoteGrilled(file: TFile): Promise<void> {
+    const context = await this.reviewPanelContextForFile(file);
+    if (!context) {
+      new Notice("No Aha Review Note exists for this note yet.");
+      return;
+    }
+    const content = await this.app.vault.read(context.reviewFile);
+    await this.app.vault.modify(context.reviewFile, setReviewNoteStatus(content, "grilled"));
+    new Notice(`Review note marked as grilled: ${context.reviewFile.path}`);
+  }
+
   private async openReviewPanelForCurrentFile(file: TFile): Promise<void> {
     const context = await this.reviewPanelContextForFile(file);
     if (!context) {
@@ -299,7 +322,7 @@ export default class AhaPlugin extends Plugin {
   }
 
   private resolveCandidate(target: string): TFile | null {
-    const normalized = normalizePath(target.replace(/^\[\[|\]\]$/g, "").split("|")[0]);
+    const normalized = normalizePath(linkTargetBase(target) || target);
     const exact = this.app.vault.getAbstractFileByPath(normalized) ?? this.app.vault.getAbstractFileByPath(`${normalized}.md`);
     if (exact instanceof TFile) return exact;
 
@@ -431,11 +454,6 @@ export default class AhaPlugin extends Plugin {
     new Notice(`${prefix}: ${message}`, 10000);
     this.statusBar?.setText("Aha failed");
   }
-}
-
-function parseFirstWikiLink(line: string): string | null {
-  const match = line.match(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/);
-  return match?.[1] ?? null;
 }
 
 function stableSuffix(value: string): string {

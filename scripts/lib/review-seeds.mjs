@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
-import { expandHome, normalizeSlash, toVaultRelativePath } from "./vault-paths.mjs";
+import { benchVaultRoot, expandHome, normalizeSlash, toVaultRelativePath } from "./vault-paths.mjs";
 
 export const DEFAULT_REVIEW_FOLDER = "Aha/Reviews";
 export const DEFAULT_SEED_CASES_PATH = "bench/aha-memory-seed-cases.json";
@@ -104,7 +104,7 @@ export function buildReviewSeedCaseDocument(reviewNotes, options = {}) {
 }
 
 export function collectReviewSeedCasesFromVault(options = {}) {
-  const vaultRoot = resolve(expandHome(options.vaultRoot || process.env.AHA_BENCH_VAULT_ROOT || "/path/to/vault"));
+  const vaultRoot = resolve(options.vaultRoot ? expandHome(options.vaultRoot) : benchVaultRoot());
   const rawReviewFolder = normalizeSlash(options.reviewFolder || DEFAULT_REVIEW_FOLDER);
   const reviewFolder = isAbsolute(rawReviewFolder)
     ? rawReviewFolder.replace(/\/+$/g, "")

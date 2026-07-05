@@ -6,6 +6,7 @@ import {
   excludedCandidateFolders,
   isExcludedCandidatePath,
 } from "../../lib/candidate-fields.mjs";
+import { DEFAULT_VAULT_ROOT } from "../../lib/vault-paths.mjs";
 
 test("default excluded folders cover templates and review shells", () => {
   assert.deepEqual(DEFAULT_EXCLUDED_CANDIDATE_FOLDERS, ["templates", "Aha/Reviews"]);
@@ -14,8 +15,8 @@ test("default excluded folders cover templates and review shells", () => {
 test("isExcludedCandidatePath matches every candidate path shape", () => {
   assert.equal(isExcludedCandidatePath("templates/Insight-Artifact.md"), true);
   assert.equal(isExcludedCandidatePath("qmd://obsidian/templates/weekly-review.md?index=obsidian"), true);
-  assert.equal(isExcludedCandidatePath("/path/to/vault/templates/weekly-review.md"), true);
-  assert.equal(isExcludedCandidatePath("Users/hong/Obsidian Notes/templates/weekly-review.md"), true);
+  assert.equal(isExcludedCandidatePath(`${DEFAULT_VAULT_ROOT}/templates/weekly-review.md`), true);
+  assert.equal(isExcludedCandidatePath(`${DEFAULT_VAULT_ROOT.replace(/^\/+/, "")}/templates/weekly-review.md`), true);
   assert.equal(isExcludedCandidatePath("Aha/Reviews/some-insight.md"), true);
   assert.equal(isExcludedCandidatePath("qmd://obsidian/Aha/Reviews/x.md?index=obsidian"), true);
 });

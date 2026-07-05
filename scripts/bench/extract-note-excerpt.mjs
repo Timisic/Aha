@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { parseLineRange, readNoteExcerpt } from "../lib/note-excerpt.mjs";
+import { benchVaultRoot } from "../lib/vault-paths.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -22,7 +23,7 @@ function usage() {
 function parseArgs(argv) {
   const options = {
     cases: "bench/aha-memory-cases.json",
-    vaultRoot: process.env.AHA_BENCH_VAULT_ROOT || "/path/to/vault",
+    vaultRoot: benchVaultRoot(),
     json: false,
     fullInput: false,
     allowFullNote: false,

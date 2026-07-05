@@ -22,26 +22,24 @@
 | `bounds` | 旧内容说明这个想法适用于哪里、停在哪里 |
 | `weak` | 只是主题相近，证据不足 |
 
-Aha 的每个强关系标签都必须附带**候选原文中的引句**，引句经代码校验不存在则机械降级为 `weak`——模型提出关系假设，确定性代码验证证据。
-
 人机边界始终是：**human-authored, agent-retrieved**。人写笔记、人判断、人落笔；AI 负责召回、解释关系、提供追问，绝不改写原文。
 
 ## 架构
 
 ```text
 ┌─ Obsidian Plugin（Memory Surface）────────────────┐
-│  从当前笔记触发搜索 · 生成/复用 Review Note        │
-│  展示候选与关系理由 · 打开旧笔记 · 记录反馈动作     │
+│  从当前笔记触发搜索 · 生成/复用 Review Note           │
+│  展示候选与关系理由 · 打开旧笔记 · 记录反馈动作         │
 └──────────────────┬───────────────────────────────┘
                    │ 调用
 ┌─ scripts/aha wrapper（机械连接层）────────────────┐
-│  环境检查 · QMD SDK/CLI · 代理与重试 · 候选过滤    │
-│  正文读取 · JSON schema 校验 · 结构化失败记录      │
-└──────────────────┬───────────────────────────────┘
+│  环境检查 · QMD SDK/CLI · 代理与重试 · 候选过滤     │
+│  正文读取 · JSON schema 校验 · 结构化失败记录       │
+└──────────────────┬──────────────────────────────┘
                    │ 编排
 ┌─ LLM + QMD（Reasoning Workflow）─────────────────┐
-│  多路结构化查询生成 · 混合召回 + 链接图扩展        │
-│  候选原文阅读 · Relation Judge（引句校验）· 重排   │
+│  多路结构化查询生成 · 混合召回 + 链接图扩展           │
+│  候选原文阅读 · Relation Judge（引句校验）· 重排     │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -49,18 +47,18 @@ Aha 的每个强关系标签都必须附带**候选原文中的引句**，引句
 
 检索层组合多路信号：LLM 生成的多条结构化 QMD 查询（含结构抽象、反例导向、同义扩展、外文关键词）、确定性的原文/thought 补充查询（不依赖 LLM 措辞的召回底线）、源笔记的链接/反链邻域、QMD top-10 种子的反链扩展。
 
-## 快速开始
+## 仓库结构
 
-前置：Obsidian 桌面版、Node、[QMD](https://github.com/tobi/qmd)（本地混合检索）、OpenAI-compatible API key（或 Codex CLI 作为 fallback）。
-
-```bash
-cd obsidian-plugin
-npm run verify   # 构建 + 测试
+```text
+obsidian-plugin/     Memory Surface：Obsidian 插件（触发、Review Note、Review Panel）
+scripts/aha/         产品 wrapper：检索编排、Relation Judge、结果 schema 校验
+scripts/bench/       评测管线入口（run-pipeline-bench 等）
+scripts/lib/         wrapper 与评测共享的模块（LLM 传输、代理、评分、PipelineTrace）
+bench/               评测用例与报告说明（生成物不入库）
+docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
 ```
 
-把插件装入 vault 后，在设置里填 API key，打开任意笔记，命令面板执行 **Aha: Search**。结果写入 `Aha/Reviews/` 下的 Review Note：候选表、关系理由、引句、Grill Handoff，候选笔记在独立分页打开、不打断当前写作。
-
-运行细节（失败可见性、代理与重试、候选安全、身份幂等）见 [docs/obsidian-plugin-operations.md](./docs/obsidian-plugin-operations.md)。最初的 Pi Extension 形态（`/insight` 会话流）保留在 `insight-package/`，作为历史参考。
+文档入口见 [docs/README.md](./docs/README.md)；插件运行细节（失败可见性、代理与重试、候选安全）见 [docs/obsidian-plugin-operations.md](./docs/obsidian-plugin-operations.md)。
 
 ## 评估：个人记忆空间怎么衡量"找得准"
 
@@ -93,4 +91,4 @@ cd obsidian-plugin && npm run verify       # 插件构建 + 测试
 
 刻意不做：自动修改 Obsidian 原文、自动沉淀总结、把候选自动写入知识库。
 
-诚实边界：这是自用驱动的深度产品实验，评估基于真实个人 review 行为；检索层的 must 入池率已通过确定性手段做到 ~97%，top-10 排序质量仍在通过用户反馈判例持续校准。
+边界：这是自用驱动的深度产品实验，评估基于真实个人 review 行为；检索层的 must 入池率已通过确定性手段做到 ~97%，top-10 排序质量仍在通过用户反馈判例持续校准。
