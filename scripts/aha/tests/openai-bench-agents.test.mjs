@@ -50,7 +50,7 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
     assert.equal(queryPlan.queries.length, 3);
     assert.match(queryPlan.queries[0].query, /intent:/);
 
-    const reranked = relationJudgeCandidatesForCase({
+    const reranked = await relationJudgeCandidatesForCase({
       ...caseItem,
       query_object: queryPlan.query_object,
       queries: queryPlan.queries,

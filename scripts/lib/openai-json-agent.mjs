@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleepAsync } from "node:timers/promises";
 import { httpsProxyUrlFor } from "./https-proxy.mjs";
 
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -16,22 +17,7 @@ export function runOpenAiJsonSync(options) {
   const apiKey = process.env[apiKeyEnv];
   if (!apiKey) throw new Error(`${apiKeyEnv} is not set.`);
 
-  const schema = options.schema;
-  const body = {
-    model: String(options.model || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL,
-    input: String(options.prompt ?? ""),
-  };
-  if (schema) {
-    body.text = {
-      format: {
-        type: "json_schema",
-        name: schemaName(options.schemaName),
-        schema,
-        strict: true,
-      },
-    };
-  }
-
+  const body = openAiRequestBody(options);
   const url = openAiResponsesUrl(options.baseUrl);
   const proxyUrl = httpsProxyUrlFor(url);
   const maxAttempts = Math.max(1, Number(options.maxAttempts || DEFAULT_OPENAI_MAX_ATTEMPTS));
@@ -42,47 +28,146 @@ export function runOpenAiJsonSync(options) {
     writeFileSync(bodyPath, `${JSON.stringify(body)}\n`);
     let lastFailure = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const result = spawnSync("curl", [
-        "--silent",
-        "--show-error",
-        "--fail-with-body",
-        "--max-time",
-        String(Math.max(1, Math.ceil(Number(options.timeoutMs || 120_000) / 1000))),
-        ...(proxyUrl ? ["--proxy", proxyUrl] : ["--noproxy", "*"]),
-        "-X",
-        "POST",
-        url,
-        "-H",
-        "Content-Type: application/json",
-        "-H",
-        `Authorization: Bearer ${apiKey}`,
-        "--data-binary",
-        `@${bodyPath}`,
-      ], {
+      const result = spawnSync("curl", curlRequestArgs({ url, proxyUrl, apiKey, bodyPath, timeoutMs: options.timeoutMs }), {
         encoding: "utf-8",
         timeout: Number(options.timeoutMs || 120_000) + 5_000,
       });
-      if (result.error && result.error.code !== "ETIMEDOUT") throw result.error;
-      if (!result.error && result.status === 0) {
-        const payload = JSON.parse(String(result.stdout || "{}"));
-        return extractOpenAiOutputText(payload);
-      }
-      const stderr = String(result.stderr ?? "").trim();
-      const stdout = String(result.stdout ?? "").trim();
-      lastFailure = result.error?.message
-        || stderr
-        || stdout
-        || `OpenAI API exited with ${result.status}`;
-      if (!shouldRetryCurlFailure(result)) break;
+      const evaluated = evaluateCurlAttempt(result);
+      if (evaluated.kind === "success") return evaluated.outputText;
+      if (evaluated.kind === "fatal") throw evaluated.error;
+      lastFailure = evaluated.failure;
+      if (!evaluated.retryable) break;
       if (attempt < maxAttempts) {
         const backoff = RETRY_BACKOFF_MS[Math.min(attempt - 1, RETRY_BACKOFF_MS.length - 1)];
         sleepSync(backoff);
       }
     }
-    throw new Error(`${lastFailure} (after ${maxAttempts} attempt${maxAttempts > 1 ? "s" : ""}${proxyUrl ? `, proxy ${proxyUrl}` : ", no proxy"})`);
+    throw attemptsExhaustedError(lastFailure, maxAttempts, proxyUrl);
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
+}
+
+export async function runOpenAiJsonAsync(options) {
+  const apiKeyEnv = String(options.apiKeyEnv || DEFAULT_OPENAI_API_KEY_ENV).trim() || DEFAULT_OPENAI_API_KEY_ENV;
+  const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) throw new Error(`${apiKeyEnv} is not set.`);
+
+  const body = openAiRequestBody(options);
+  const url = openAiResponsesUrl(options.baseUrl);
+  const proxyUrl = httpsProxyUrlFor(url);
+  const maxAttempts = Math.max(1, Number(options.maxAttempts || DEFAULT_OPENAI_MAX_ATTEMPTS));
+
+  const tmpRoot = mkdtempSync(join(tmpdir(), "aha-openai-json-agent-"));
+  const bodyPath = join(tmpRoot, "request.json");
+  try {
+    writeFileSync(bodyPath, `${JSON.stringify(body)}\n`);
+    let lastFailure = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const result = await spawnCurlAsync(
+        curlRequestArgs({ url, proxyUrl, apiKey, bodyPath, timeoutMs: options.timeoutMs }),
+        Number(options.timeoutMs || 120_000) + 5_000,
+      );
+      const evaluated = evaluateCurlAttempt(result);
+      if (evaluated.kind === "success") return evaluated.outputText;
+      if (evaluated.kind === "fatal") throw evaluated.error;
+      lastFailure = evaluated.failure;
+      if (!evaluated.retryable) break;
+      if (attempt < maxAttempts) {
+        const backoff = RETRY_BACKOFF_MS[Math.min(attempt - 1, RETRY_BACKOFF_MS.length - 1)];
+        await sleepAsync(backoff);
+      }
+    }
+    throw attemptsExhaustedError(lastFailure, maxAttempts, proxyUrl);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+function openAiRequestBody(options) {
+  const body = {
+    model: String(options.model || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL,
+    input: String(options.prompt ?? ""),
+  };
+  if (options.schema) {
+    body.text = {
+      format: {
+        type: "json_schema",
+        name: schemaName(options.schemaName),
+        schema: options.schema,
+        strict: true,
+      },
+    };
+  }
+  return body;
+}
+
+function curlRequestArgs({ url, proxyUrl, apiKey, bodyPath, timeoutMs }) {
+  return [
+    "--silent",
+    "--show-error",
+    "--fail-with-body",
+    "--max-time",
+    String(Math.max(1, Math.ceil(Number(timeoutMs || 120_000) / 1000))),
+    ...(proxyUrl ? ["--proxy", proxyUrl] : ["--noproxy", "*"]),
+    "-X",
+    "POST",
+    url,
+    "-H",
+    "Content-Type: application/json",
+    "-H",
+    `Authorization: Bearer ${apiKey}`,
+    "--data-binary",
+    `@${bodyPath}`,
+  ];
+}
+
+function evaluateCurlAttempt(result) {
+  if (result.error && result.error.code !== "ETIMEDOUT") return { kind: "fatal", error: result.error };
+  if (!result.error && result.status === 0) {
+    const payload = JSON.parse(String(result.stdout || "{}"));
+    return { kind: "success", outputText: extractOpenAiOutputText(payload) };
+  }
+  const stderr = String(result.stderr ?? "").trim();
+  const stdout = String(result.stdout ?? "").trim();
+  return {
+    kind: "failure",
+    failure: result.error?.message || stderr || stdout || `OpenAI API exited with ${result.status}`,
+    retryable: shouldRetryCurlFailure(result),
+  };
+}
+
+function attemptsExhaustedError(lastFailure, maxAttempts, proxyUrl) {
+  return new Error(`${lastFailure} (after ${maxAttempts} attempt${maxAttempts > 1 ? "s" : ""}${proxyUrl ? `, proxy ${proxyUrl}` : ", no proxy"})`);
+}
+
+function spawnCurlAsync(args, killAfterMs) {
+  return new Promise((resolvePromise) => {
+    const child = spawn("curl", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      resolvePromise({ error: Object.assign(new Error("curl timed out"), { code: "ETIMEDOUT" }), status: null, stdout, stderr });
+    }, killAfterMs);
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise({ error, status: null, stdout, stderr });
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise({ error: null, status: code, stdout, stderr });
+    });
+  });
 }
 
 export function shouldRetryCurlFailure(result) {

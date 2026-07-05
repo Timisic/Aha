@@ -1078,7 +1078,7 @@ function writeReportWithTraces(report, reportPath, traces) {
   return reportCopy;
 }
 
-function main() {
+async function main() {
   const options = parseArgs();
   const { cases: allCases, collection: defaultCollection, expectedInTopK, expectedNiceInTopK } = readBenchmarkCases(options.cases, {
     includeDraft: options.includeDraft,
@@ -1125,7 +1125,7 @@ function main() {
         resolver,
       ),
     );
-    const rerankResult = relationJudgeCandidatesForCase(
+    const rerankResult = await relationJudgeCandidatesForCase(
       {
         ...caseItem,
         query_object: generatedQuery.query_object,
@@ -1362,4 +1362,4 @@ function main() {
   printSummary(latestReport);
 }
 
-main();
+await main();
