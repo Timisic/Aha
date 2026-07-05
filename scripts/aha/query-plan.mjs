@@ -10,7 +10,7 @@ import {
   runOpenAiJsonSync,
 } from "../lib/openai-json-agent.mjs";
 
-export const QUERY_PLAN_PROMPT_VERSION = "aha-query-plan-v2";
+export const QUERY_PLAN_PROMPT_VERSION = "aha-query-plan-v6";
 export const QUERY_PLAN_SCHEMA_NAME = "aha_qmd_query_plan_agent";
 
 const QUERY_PLAN_KINDS = ["raw", "abstracted_judgment", "contextual", "explicit_cue", "bounds"];
@@ -36,7 +36,7 @@ export const QUERY_PLAN_SCHEMA = {
     queries: {
       type: "array",
       minItems: 3,
-      maxItems: 5,
+      maxItems: 6,
       items: {
         type: "object",
         additionalProperties: false,
@@ -189,16 +189,24 @@ export function buildQueryPlanPrompt(args, sourceText) {
   const sourceSummary = queryPlanSourceSummary(args, sourceText);
   return [
     "你是 Aha/Pi /insight 的检索查询生成子 agent。",
-    "只根据下面 source summary 生成 3-5 条 QMD 检索查询计划；不要读取文件、不要运行命令、不要搜索外部资料、不要检查仓库。",
+    "只根据下面 source summary 生成 3-6 条 QMD 检索查询计划；不要读取文件、不要运行命令、不要搜索外部资料、不要检查仓库。",
     "",
     "目标：让 Aha 后续用 QMD 混合召回旧笔记中的旧判断、反例、边界条件、相似结构和明确线索。",
     "",
     "查询形态：",
     "- raw: 贴近原文的语义检索。",
-    "- abstracted_judgment: 抽象出判断结构、关系模式、反例或边界。",
+    "- abstracted_judgment: 抽象出判断结构、关系模式、反例或边界。剥掉 source 的领域名词，用领域中性的词描述机制本身（例如把「杀球动作不稳定」抽象成「表层表现由更深层机制决定」），这样才能召回其他领域里结构相同的旧笔记。",
     "- contextual: 保留具体语境，但不引入 source note 之外的新事实。",
     "- explicit_cue: source note 里有明确实体、概念、短语时可用。",
     "- bounds: 主动找不成立、限制条件、相反经验。",
+    "",
+    "覆盖要求：",
+    "- 旧笔记往往用与 source 不同的词记录同一件事。lex 和 vec 要主动展开同义与口语变体，尤其是情绪和行为词（例如 赌气→生气/吵架/冷战/不平衡，恐惧→害怕/焦虑/不敢，拖延→懒/摆烂/刷视频）。",
+    "- hyde 写成「被找的那篇旧笔记」的口吻：第一人称、过去的复盘语气、含当时可能用到的情绪词和场景词；不要写成对 source 的转述。",
+    "- 至少一条查询专门服务 bounds/反例方向。",
+    "- 结构抽象生成两条、取不同侧面：一条抽象现象层（表层行为/表现如何变化），一条抽象机制层（背后的过程如何运作，例如「认知更新后重新诠释过去的经验」）。同一 insight 的旧笔记可能只在其中一个侧面留下语义痕迹。",
+    "- source 里指向具体旧笔记、旧事件、书名或自造概念的名词（例如某次经历的代号、专有词），很可能就是旧笔记的标题词：为最重要的 1-2 个各生成一条 qmd search，text 保持 1-3 个词的短查询，不要混入其他概念。explicit_cue 的 text 与 lex 只能使用 source summary 中实际出现的词，禁止引入外部词汇。",
+    "- 笔记库里存在英文 Clippings。当 insight 的核心概念有惯用英文表达时（例如 外包理解→delegate understanding / outsource understanding，第二大脑→second brain），为它生成一条独立的 qmd search，text 就是那个英文短语（1-3 个英文词），不要把英文词埋进 qmd query 的 lex 里——混合检索会稀释短语命中。",
     "",
     "command 选择：",
     "- 默认使用 qmd query，并填写 qmd.intent / qmd.lex / qmd.vec / qmd.hyde。",
