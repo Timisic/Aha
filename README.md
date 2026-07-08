@@ -2,17 +2,17 @@
 
 **个人长期笔记的 AI 召回与判断辅助工具。**
 
-当你形成一个新的想法（insight）时，Aha 从 Obsidian 笔记库里找回相关的旧笔记，并回答一个比"相关"更进一步的问题：这条旧笔记是在支持、挑战、类比还是限定你现在的判断？，最终通过追问**让人的历史经验重新参与当前思考**。关键思考只发生在读原文、取舍候选关系、与 AI 追问时，产品只应强化这一过程。
+当形成一个新的想法（insight）时，Aha 从 Obsidian 笔记库里找回相关的旧笔记，并回答一个比"相关"更进一步的问题：这条旧笔记是在支持、挑战、类比还是限定你现在的判断？最终通过 Grilling 追问**让人的历史经验重新参与当前思考**。关键思考只发生在读原文、取舍候选关系、与 AI 追问时，产品只应关注并强化这一过程。
 
 <p align="center">
-  <img src="./docs/assets/plugin.jpg" alt="Aha plugin" width="560" />
+  <img src="./docs/assets/plugin.jpg" alt="Aha plugin" width="660" />
 </p>
 
 ## 为什么做这个
 
 旧笔记里沉淀过判断、教训、反例和边界，在新问题出现时很难被重新调用。
 
-语义搜索类工具已经把"浮现相关笔记"做得很好，但相似度是**对称、无立场**的信号——它答不了"所以呢"。一条旧笔记对当前判断的价值，取决于它对这个判断做了什么：
+语义搜索类工具已经把"浮现相关笔记"做得很好，但相似度是**对称、无立场**的信号——它答不了"所以呢"。正确的废话还是废话。一条旧笔记对当前判断的价值，取决于它对这个判断做了什么，即我要的是 Insight × History Note：
 
 | 关系 | 含义 |
 |---|---|
@@ -62,7 +62,7 @@ docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
 
 个人笔记库没有标准答案，同一条旧笔记对不同 insight 的关系不同，"该召回什么"只有笔记的主人知道。Aha 把评估设计纳入到日常的 Review 行为中：
 
-1. **反馈即标注**：在 Review Note 里对候选点 `accept` / `reject_as_noise` / `should_have_found`，动作被收集为 benchmark seed（`scripts/bench/collect-review-seeds.mjs`），人工确认后进入私有评测集（`gold.must` / `nice` / `noise`，本地文件不入库）。
+1. **反馈即标注**：在 Review Note 里对候选点 `accept` / `noise` / `should_have_found`，动作被收集为 benchmark seed（`scripts/bench/collect-review-seeds.mjs`），人工确认后进入私有评测集（`gold.must` / `nice` / `noise`，本地文件不入库）。
 2. **围绕TOP10计分**：@10——`Must Recall@10`、`Useful Precision@10`、`nDCG@10`、`Negative Rate@10`。
 3. **失败归因**：每个 case 自动归因到 query / retrieval / rerank / relation / 标注 / 输入表示六类，诊断指标（`Expanded Pool Recall@20`、`Dropped Must Count`）区分"没找到"和"找到了但排丢了"——决定下一步优化哪一层。
 
