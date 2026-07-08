@@ -2,17 +2,17 @@
 
 **个人长期笔记的 AI 召回与判断辅助工具。**
 
-当你形成一个新的想法（insight）时，Aha 从你的 Obsidian 笔记库里找回相关的旧笔记，并回答一个比"相关"更进一步的问题：**这条旧笔记是在支持、挑战、类比还是限定你现在的判断？**
+当你形成一个新的想法（insight）时，Aha 从 Obsidian 笔记库里找回相关的旧笔记，并回答一个比"相关"更进一步的问题：这条旧笔记是在支持、挑战、类比还是限定你现在的判断？，最终通过追问**让人的历史经验重新参与当前思考**。关键思考只发生在读原文、取舍候选关系、与 AI 追问时，产品只应强化这一过程。
 
 <p align="center">
-  <img src="./docs/assets/insight-flowchart.png" alt="Aha Insight-to-Judgment workflow" width="560" />
+  <img src="./docs/assets/plugin.jpg" alt="Aha plugin" width="560" />
 </p>
 
 ## 为什么做这个
 
-长期记笔记的人都会遇到同一个问题：旧笔记里沉淀过判断、教训、反例和边界，但在新问题出现时，它们很难被重新调用。
+旧笔记里沉淀过判断、教训、反例和边界，在新问题出现时很难被重新调用。
 
-语义搜索类工具（如 Smart Connections）已经把"浮现相关笔记"做得很好，但相似度是**对称、无立场**的信号——它答不了"所以呢"。一条旧笔记对当前判断的价值，取决于它对这个判断做了什么：
+语义搜索类工具已经把"浮现相关笔记"做得很好，但相似度是**对称、无立场**的信号——它答不了"所以呢"。一条旧笔记对当前判断的价值，取决于它对这个判断做了什么：
 
 | 关系 | 含义 |
 |---|---|
@@ -22,7 +22,7 @@
 | `bounds` | 旧内容说明这个想法适用于哪里、停在哪里 |
 | `weak` | 只是主题相近，证据不足 |
 
-人机边界始终是：**human-authored, agent-retrieved**。人写笔记、人判断、人落笔；AI 负责召回、解释关系、提供追问，绝不改写原文。
+人机边界始终是：**human-authored, agent-retrieved**。人写笔记、人判断、人落笔；AI 负责召回、解释关系、提供追问，不改写原文。
 
 ## 架构
 
@@ -43,8 +43,6 @@
 └──────────────────────────────────────────────────┘
 ```
 
-设计取舍：插件不做第二个 Agent runtime，只做低摩擦的 review 表面；推理全部在 wrapper/LLM 侧。Review Note（Markdown）是持久状态与审计轨迹，不藏隐藏状态。
-
 检索层组合多路信号：LLM 生成的多条结构化 QMD 查询（含结构抽象、反例导向、同义扩展、外文关键词）、确定性的原文/thought 补充查询（不依赖 LLM 措辞的召回底线）、源笔记的链接/反链邻域、QMD top-10 种子的反链扩展。
 
 ## 仓库结构
@@ -62,10 +60,10 @@ docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
 
 ## 评估：个人记忆空间怎么衡量"找得准"
 
-个人笔记库没有标准答案——同一条旧笔记对不同 insight 的关系不同，"该召回什么"只有笔记的主人知道。所以 Aha 不照搬通用 RAG benchmark，而是把评估设计成**正常使用的副产品**：
+个人笔记库没有标准答案，同一条旧笔记对不同 insight 的关系不同，"该召回什么"只有笔记的主人知道。Aha 把评估设计纳入到日常的 Review 行为中：
 
 1. **反馈即标注**：在 Review Note 里对候选点 `accept` / `reject_as_noise` / `should_have_found`，动作被收集为 benchmark seed（`scripts/bench/collect-review-seeds.mjs`），人工确认后进入私有评测集（`gold.must` / `nice` / `noise`，本地文件不入库）。
-2. **围绕注意力预算计分**：一次 review 只读得动 ~10 条候选，主指标全部 @10——`Must Recall@10`、`Useful Precision@10`、`nDCG@10`、`Negative Rate@10`。
+2. **围绕TOP10计分**：@10——`Must Recall@10`、`Useful Precision@10`、`nDCG@10`、`Negative Rate@10`。
 3. **失败归因**：每个 case 自动归因到 query / retrieval / rerank / relation / 标注 / 输入表示六类，诊断指标（`Expanded Pool Recall@20`、`Dropped Must Count`）区分"没找到"和"找到了但排丢了"——决定下一步优化哪一层。
 
 ```bash
@@ -83,12 +81,10 @@ node --test scripts/aha/tests/*.test.mjs   # wrapper/检索/judge/评分单测
 cd obsidian-plugin && npm run verify       # 插件构建 + 测试
 ```
 
-模块共享：查询生成（`scripts/aha/query-plan.mjs`）与 Relation Judge（`scripts/aha/relation-judge.mjs`）同时服务产品 wrapper 和评测管线，评测中验证的改进直接作用于产品。
-
 ## 状态与边界
 
-已支持：Obsidian 插件 MVP（触发、Review Note、候选跳转、反馈按钮）、多路混合召回、引句校验的关系判断、分批 judge 与检索先验保底排序、eval-v2 评测闭环与失败归因、review 反馈到 benchmark seed 的收集链路。
+已支持：Obsidian Plugin（触发、Review Note、候选跳转、反馈按钮）、多路混合召回、引句校验的关系判断、分批 judge 与检索先验保底排序、评测闭环与失败归因、review 反馈到 benchmark seed 的收集链路。
 
-刻意不做：自动修改 Obsidian 原文、自动沉淀总结、把候选自动写入知识库。
+不做：自动修改 Obsidian 原文、自动沉淀总结、把候选自动写入知识库。
 
-边界：这是自用驱动的深度产品实验，评估基于真实个人 review 行为；检索层的 must 入池率已通过确定性手段做到 ~97%，top-10 排序质量仍在通过用户反馈判例持续校准。
+边界：自用驱动的深度产品实验，评估基于真实个人 review 行为；检索层的 must 入池率已通过确定性手段做到 ~97%，top-10 排序质量仍在通过反馈判例持续校准。
