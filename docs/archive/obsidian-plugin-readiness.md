@@ -20,9 +20,9 @@ Created: 2026-06-27
 
 - Binary: `~/.npm-global/bin/qmd`
 - Version: `qmd 2.5.3`
-- Obsidian index: `~/.cache/qmd/obsidian.sqlite`
-- Indexed markdown files: 380
-- Embedded vectors: 567
+- Obsidian index: `~/.cache/qmd/<collection>.sqlite`
+- Indexed markdown files: local snapshot count redacted
+- Embedded vectors: local snapshot count redacted
 - Collection: `obsidian`
 - Smoke search: passed with one JSON result for a small query.
 - Plugin default runner: QMD SDK. The wrapper first tries `@tobilu/qmd`; if that package is not resolvable from the repo, it can infer the SDK module from the configured `qmd` command, for example `~/.npm-global/lib/node_modules/@tobilu/qmd/dist/index.js`.
@@ -31,7 +31,7 @@ Created: 2026-06-27
 ### QMD Remote Services
 
 - Launchd tunnel: healthy
-- Local ports: `127.0.0.1:18081`, `18082`, `18083`
+- Local ports: loopback service ports redacted
 - Remote services: embedding, generation, and rerank active
 - Endpoint health: embedding, generation, and rerank all healthy
 

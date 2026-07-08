@@ -23,7 +23,7 @@ test("isExcludedCandidatePath matches every candidate path shape", () => {
 
 test("isExcludedCandidatePath keeps regular notes and near-miss names", () => {
   assert.equal(isExcludedCandidatePath("Projects/reviews/week/2026-W22.md"), false);
-  assert.equal(isExcludedCandidatePath("Categories/Evergreen/example-feedback-density.md"), false);
+  assert.equal(isExcludedCandidatePath("Knowledge/example-feedback-density.md"), false);
   assert.equal(isExcludedCandidatePath("templates-archive/old.md"), false);
   assert.equal(isExcludedCandidatePath(""), false);
 });

@@ -17,13 +17,13 @@ cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json
 Then edit `aha-memory-cases.json` using the v3 primary benchmark schema. Prefer vault-relative note paths, not full local paths. In other words, write:
 
 ```json
-"Categories/Evergreen/example-feedback-density.md"
+"Knowledge/example-feedback-density.md"
 ```
 
 instead of:
 
 ```json
-"/path/to/vault/Categories/Evergreen/example-feedback-density.md"
+"/path/to/vault/Knowledge/example-feedback-density.md"
 ```
 
 The runner resolves these short paths under `AHA_BENCH_VAULT_ROOT` / `~/Obsidian Notes`.
