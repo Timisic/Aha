@@ -135,11 +135,11 @@ export class AhaReviewPanelView extends ItemView {
         void this.host.openCandidateInNewTab(sourcePath);
       });
     }
-    const actions = header.createDiv({ cls: "aha-review-panel-actions" });
-    this.countEl = actions.createDiv({ cls: "aha-review-panel-count" });
+    this.countEl = title.createDiv({ cls: "aha-review-panel-count" });
     this.updateCount();
     if (!this.context) return;
-    if (options.showRun) this.renderRunButton(actions, "重新运行 Aha");
+    const actions = header.createDiv({ cls: "aha-review-panel-actions" });
+    if (options.showRun) this.renderRunButton(actions, "rerun Aha");
     if (options.showMissingMemorySeed) this.renderMissingMemorySeedButton(actions);
     if (options.showPin) this.renderPinButton(actions);
   }
@@ -211,9 +211,9 @@ export class AhaReviewPanelView extends ItemView {
 
   private renderMissingMemorySeedButton(parent: HTMLElement): HTMLButtonElement {
     const missingButton = parent.createEl("button", {
-      text: "记录 should-have-found",
+      text: "record must",
       cls: "aha-review-panel-seed-button",
-      title: "把本轮漏掉的旧笔记保存为草稿 must-recall seed",
+      title: "Record a draft must-recall seed for a missing memory",
     });
     missingButton.addEventListener("click", () => {
       void this.recordMissingMemorySeed();

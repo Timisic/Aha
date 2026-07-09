@@ -433,6 +433,25 @@ test("panel source keeps follow and pin hooks without a Review Note export butto
   assert.doesNotMatch(source, /exportReviewNote/);
 });
 
+test("panel header keeps source title space beside compact actions", async () => {
+  const styles = await readFile(path.join(repoRoot, "obsidian-plugin/styles.css"), "utf8");
+  const source = await readFile(path.join(repoRoot, "obsidian-plugin/src/review-panel.ts"), "utf8");
+  const sourceLinkRule = styles.match(/\.aha-review-panel-source-link\s*{[\s\S]*?}/)?.[0] ?? "";
+
+  assert.match(styles, /grid-template-areas:\s*"title actions"/);
+  assert.match(styles, /grid-template-columns:\s*minmax\(0, 1fr\) max-content/);
+  assert.match(styles, /@container \(max-width: 680px\)/);
+  assert.match(styles, /@container \(max-width: 430px\)/);
+  assert.match(styles, /\.aha-review-panel-actions\s*{[\s\S]*?display:\s*flex;/);
+  assert.match(styles, /\.aha-review-panel-actions > \.aha-review-panel-run,[\s\S]*?height:\s*24px/);
+  assert.doesNotMatch(styles, /display:\s*contents/);
+  assert.match(sourceLinkRule, /overflow-wrap:\s*break-word/);
+  assert.doesNotMatch(sourceLinkRule, /overflow-wrap:\s*anywhere/);
+  assert.match(source, /this\.countEl = title\.createDiv\(\{ cls: "aha-review-panel-count" \}\)/);
+  assert.match(source, /renderRunButton\(actions, "rerun Aha"\)/);
+  assert.match(source, /text: "record must"/);
+});
+
 test("plugin manifest presents the product as Aha", async () => {
   const manifest = JSON.parse(await readFile(path.join(repoRoot, "obsidian-plugin/manifest.json"), "utf8"));
 
