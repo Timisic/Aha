@@ -8,7 +8,7 @@ import {
   TFile,
   normalizePath,
 } from "obsidian";
-import { makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource, reviewSourcePathFromContent, setReviewNoteStatus } from "./review-note";
+import { appendReviewBenchmarkSeed, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource, reviewSourcePathFromContent, setReviewNoteStatus } from "./review-note";
 import { firstWikiLinkTarget, linkTargetBase } from "./wikilink";
 import { AHA_REVIEW_PANEL_VIEW_TYPE, AhaReviewPanelView, type AhaReviewPanelContext } from "./review-panel";
 import { canRunExternalProcesses, runAhaWrapper, runReadinessCheck } from "./process";
@@ -22,10 +22,14 @@ import {
   recordFailedSessionRound,
   recordRunningSessionRound,
   recordSuccessfulSessionRound,
+  resultForSessionRound,
+  reviewSeedInputForSessionFeedback,
   sessionRecordKeyForSource,
   syncSessionSelections,
+  latestSuccessfulRound,
   type AhaSessionFeedbackInput,
   type AhaSessionRecord,
+  type AhaSessionRound,
   type AhaSessionSourceInput,
   type AhaSessionStoreData,
   type SyncSessionSelectionResult,
@@ -89,6 +93,17 @@ export default class AhaPlugin extends Plugin {
         const file = this.currentMarkdownFile();
         if (!file) return false;
         if (!checking) void this.openReviewForSource(file);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "aha-export-review-note",
+      name: "Aha: Export Review Note",
+      checkCallback: (checking) => {
+        const file = this.currentMarkdownFile();
+        if (!file) return false;
+        if (!checking) void this.exportReviewNoteForCurrentFile(file);
         return true;
       },
     });
@@ -256,6 +271,29 @@ export default class AhaPlugin extends Plugin {
     await this.openFile(file, false);
   }
 
+  private async exportReviewNoteForCurrentFile(file: TFile): Promise<void> {
+    const context = await this.reviewPanelContextForFile(file);
+    const record = this.sessionStore.records[context.recordKey];
+    const round = record ? latestSuccessfulRound(record) : null;
+    if (!record || !round) {
+      new Notice("No Aha Session Record with candidates exists for this source note yet.");
+      return;
+    }
+
+    const sourceFile = this.app.vault.getAbstractFileByPath(context.sourcePath);
+    const sourceId = sourceFile instanceof TFile ? await this.sourceIdentityFor(sourceFile) : record.source.id;
+    const folder = reviewFolderPath(this.settings.reviewFolder);
+    await this.ensureFolder(folder);
+    const createdAt = new Date();
+    const basePath = normalizePath(`${folder}/${makeReviewFileName(context.sourceTitle, createdAt)}`);
+    const reviewPath = await this.uniqueReviewPath(basePath, context.sourcePath);
+    const content = this.renderReviewNoteExport(record, round, sourceId, context, createdAt);
+    const reviewFile = await this.app.vault.create(reviewPath, content);
+    await this.rememberReviewNote(sourceId, context.sourcePath, reviewPath);
+    await this.openFile(reviewFile, false);
+    new Notice(`Aha Review Note exported: ${reviewPath}`, 8000);
+  }
+
   private async markReviewNoteGrilled(file: TFile): Promise<void> {
     const content = await this.app.vault.cachedRead(file);
     const reviewFile = reviewSourcePathFromContent(content) ? file : await this.findExistingReviewNoteForSource(file);
@@ -289,6 +327,33 @@ export default class AhaPlugin extends Plugin {
     }
 
     return this.reviewPanelContextForSource(await this.sessionSourceFor(file));
+  }
+
+  private renderReviewNoteExport(
+    record: AhaSessionRecord,
+    round: AhaSessionRound,
+    sourceId: string,
+    context: AhaReviewPanelContext,
+    createdAt: Date,
+  ): string {
+    let content = makeReviewNoteContent({
+      createdAt,
+      sourceId,
+      sourcePath: context.sourcePath,
+      sourceTitle: context.sourceTitle,
+    });
+    content = appendSuccessfulSearchRound(content, {
+      generatedAt: new Date(round.generatedAt),
+      result: resultForSessionRound(round),
+      sourcePath: context.sourcePath,
+      sourceTitle: context.sourceTitle,
+    });
+
+    for (const feedback of record.feedback) {
+      const seedInput = reviewSeedInputForSessionFeedback(feedback);
+      if (seedInput) content = appendReviewBenchmarkSeed(content, seedInput);
+    }
+    return content;
   }
 
   private async openReviewPanel(context: AhaReviewPanelContext): Promise<void> {

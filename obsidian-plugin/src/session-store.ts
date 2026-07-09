@@ -3,6 +3,7 @@ import {
   renderGrillHandoff,
   seedLabelForAction,
   type ReviewBenchmarkSeedAction,
+  type ReviewBenchmarkSeedInput,
   type ReviewBenchmarkSeedLabel,
   type ReviewPanelCandidate,
 } from "./review-note";
@@ -285,8 +286,60 @@ export function appendSessionFeedback(record: AhaSessionRecord, input: AhaSessio
     note: input.note?.trim() || undefined,
   };
   record.feedback = [...record.feedback, feedback];
+  if (input.action === "reject_as_noise" && input.candidate?.notePath) {
+    clearLatestCandidateSelection(record, input.candidate.notePath);
+  }
   record.updatedAt = input.createdAt.toISOString();
   return feedback;
+}
+
+export function resultForSessionRound(round: AhaSessionRound): AhaWrapperResult {
+  return {
+    ok: true,
+    sourcePath: round.sourcePath,
+    generatedAt: round.generatedAt,
+    summary: round.summary,
+    warnings: round.warnings,
+    candidates: round.candidates.map((candidate) => ({
+      notePath: candidate.notePath,
+      noteTitle: candidate.noteTitle,
+      relation: candidate.relation,
+      hit: candidate.hit,
+      why: candidate.why,
+      quotes: candidate.quotes,
+      selected: candidate.selected,
+    })),
+  };
+}
+
+export function reviewSeedInputForSessionFeedback(feedback: AhaSessionFeedback): ReviewBenchmarkSeedInput | null {
+  const createdAt = new Date(feedback.createdAt);
+  if (Number.isNaN(createdAt.getTime())) return null;
+  if (feedback.action === "should_have_found") {
+    return {
+      action: feedback.action,
+      createdAt,
+      sourcePath: feedback.sourcePath,
+      sourceTitle: feedback.sourceTitle,
+      missingMemory: feedback.memory,
+      note: feedback.note,
+    };
+  }
+  if (!feedback.memory || !feedback.relation || !feedback.hit || !feedback.why) return null;
+  return {
+    action: feedback.action,
+    createdAt,
+    sourcePath: feedback.sourcePath,
+    sourceTitle: feedback.sourceTitle,
+    candidate: {
+      notePath: feedback.memory,
+      relation: feedback.relation as AhaCandidate["relation"],
+      hit: feedback.hit,
+      why: feedback.why,
+      quotes: [],
+    },
+    note: feedback.note,
+  };
 }
 
 function ensureRecord(store: AhaSessionStoreData, source: AhaSessionSourceInput, updatedAt: string): AhaSessionRecord {
@@ -360,7 +413,7 @@ function candidatesForPanel(candidates: AhaCandidate[], previousCandidates: Revi
   const previousByPath = new Map(previousCandidates.map((candidate) => [candidate.notePath, candidate]));
   return candidates.map((candidate, index) => {
     const previous = previousByPath.get(candidate.notePath);
-    const selected = previous?.selected ?? candidate.selected !== false;
+    const selected = previous?.selected ?? candidate.selected ?? candidate.relation !== "weak";
     return {
       index: index + 1,
       notePath: candidate.notePath,
@@ -372,6 +425,14 @@ function candidatesForPanel(candidates: AhaCandidate[], previousCandidates: Revi
       selected,
     };
   });
+}
+
+function clearLatestCandidateSelection(record: AhaSessionRecord, notePath: string): void {
+  const round = latestSuccessfulRound(record);
+  if (!round) return;
+  round.candidates = round.candidates.map((candidate) => candidate.notePath === notePath
+    ? { ...candidate, selected: false }
+    : candidate);
 }
 
 function roundId(status: AhaSessionRoundStatus, generatedAt: string): string {

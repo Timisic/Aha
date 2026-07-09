@@ -640,6 +640,66 @@ test("session store reruns preserve user state while refreshing model-owned fiel
   assert.equal(record.feedback[0].memory, "Memory/Candidate.md");
 });
 
+test("session store separates handoff selection from feedback actions", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const store = sessionStore.createEmptySessionStore();
+  const source = sourceInput("srcfs:selection-source", "Source/Insight.md");
+  const record = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T08:45:00Z"),
+    source,
+    result: {
+      ...searchRound("2026-06-28T08:45:00Z").result,
+      candidates: [
+        searchRound("2026-06-28T08:45:00Z").result.candidates[0],
+        {
+          notePath: "Memory/Weak.md",
+          noteTitle: "Weak",
+          relation: "weak",
+          hit: "Lexical overlap only.",
+          why: "这条候选只是边界材料，默认不应该进入 handoff。",
+          quotes: [],
+        },
+      ],
+    },
+  });
+  const latest = sessionStore.latestSuccessfulRound(record);
+
+  assert.equal(latest.candidates[0].selected, true);
+  assert.equal(latest.candidates[1].selected, false);
+
+  sessionStore.appendSessionFeedback(record, {
+    action: "accept",
+    createdAt: new Date("2026-06-28T08:46:00Z"),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+    candidate: latest.candidates[1],
+  });
+  assert.equal(latest.candidates[1].selected, false);
+
+  sessionStore.appendSessionFeedback(record, {
+    action: "reject_as_noise",
+    createdAt: new Date("2026-06-28T08:47:00Z"),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+    candidate: latest.candidates[0],
+  });
+  sessionStore.appendSessionFeedback(record, {
+    action: "should_have_found",
+    createdAt: new Date("2026-06-28T08:48:00Z"),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+    missingMemory: "Memory/Missing.md",
+  });
+
+  assert.equal(latest.candidates[0].selected, false);
+  assert.deepEqual(record.feedback.map((feedback) => [feedback.action, feedback.status, feedback.seedLabel]), [
+    ["accept", "draft", "nice_to_have"],
+    ["reject_as_noise", "draft", "negative"],
+    ["should_have_found", "draft", "must_recall"],
+  ]);
+  assert.doesNotMatch(sessionStore.handoffForRound(record, latest), /Memory\/Candidate/);
+});
+
 test("session store exposes stale source state without hiding candidates", async () => {
   const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
   const store = sessionStore.createEmptySessionStore();
@@ -687,6 +747,81 @@ test("session store normalization retains orphaned records quietly", async () =>
   assert.equal(Object.keys(normalized.records).length, 1);
   assert.equal(retained.source.path, "Missing/Insight.md");
   assert.equal(sessionStore.latestSuccessfulRound(retained).candidates.length, 1);
+});
+
+test("review note export renders current session panel state only", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const reviewNote = await loadReviewNoteModule();
+  const store = sessionStore.createEmptySessionStore();
+  const source = sourceInput("srcfs:export-source", "Source/Insight.md");
+  const record = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T09:10:00Z"),
+    source,
+    result: {
+      ...searchRound("2026-06-28T09:10:00Z").result,
+      summary: "Older round should not be exported.",
+      candidates: [
+        {
+          ...searchRound("2026-06-28T09:10:00Z").result.candidates[0],
+          why: "Older model text should not appear in a current-state export.",
+        },
+      ],
+    },
+  });
+  sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T09:11:00Z"),
+    source,
+    result: {
+      ...searchRound("2026-06-28T09:11:00Z").result,
+      summary: "Latest panel surface.",
+      candidates: [
+        searchRound("2026-06-28T09:11:00Z").result.candidates[0],
+        {
+          notePath: "Memory/Weak.md",
+          noteTitle: "Weak",
+          relation: "weak",
+          hit: "Weak candidate remains visible.",
+          why: "Weak candidate stays visible but is not selected by default.",
+          quotes: [],
+        },
+      ],
+    },
+  });
+  sessionStore.appendSessionFeedback(record, {
+    action: "should_have_found",
+    createdAt: new Date("2026-06-28T09:12:00Z"),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+    missingMemory: "Memory/Missing.md",
+  });
+
+  const latest = sessionStore.latestSuccessfulRound(record);
+  let exported = reviewNote.makeReviewNoteContent({
+    createdAt: new Date("2026-06-28T09:13:00Z"),
+    sourceId: source.id,
+    sourcePath: source.path,
+    sourceTitle: source.title,
+  });
+  exported = reviewNote.appendSuccessfulSearchRound(exported, {
+    generatedAt: new Date(latest.generatedAt),
+    result: sessionStore.resultForSessionRound(latest),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+  });
+  for (const feedback of record.feedback) {
+    const seedInput = sessionStore.reviewSeedInputForSessionFeedback(feedback);
+    if (seedInput) exported = reviewNote.appendReviewBenchmarkSeed(exported, seedInput);
+  }
+
+  assert.equal((exported.match(/### 搜索轮次 - /g) ?? []).length, 1);
+  assert.match(exported, /Latest panel surface/);
+  assert.match(exported, /1\. \[x\] \[\[Memory\/Candidate\]\]/);
+  assert.match(exported, /2\. \[ \] \[\[Memory\/Weak\]\]/);
+  assert.match(exported, /- action: `should_have_found`/);
+  assert.match(exported, /- seed_label: `must_recall`/);
+  assert.doesNotMatch(exported, /Older round should not be exported/);
+  assert.doesNotMatch(exported, /Older model text should not appear/);
+  assert.doesNotMatch(exported, /2026-06-28T09:10:00Z/);
 });
 
 async function loadReviewNoteModule() {

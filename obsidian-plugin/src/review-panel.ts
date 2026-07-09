@@ -276,6 +276,10 @@ export class AhaReviewPanelView extends ItemView {
         sourceTitle: this.context.sourceTitle,
         candidate,
       });
+      if (action === "reject_as_noise") {
+        candidate.selected = false;
+        this.updateCount();
+      }
       new Notice(action === "accept" ? "已记录 accept 草稿 seed。" : "已记录 reject_as_noise 草稿 seed。", 3000);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
