@@ -1,4 +1,4 @@
-import { App, ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf } from "obsidian";
+import { App, ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import {
   handoffForRound,
   latestSuccessfulRound,
@@ -37,12 +37,13 @@ export class AhaReviewPanelView extends ItemView {
   private handoff = "";
   private status = "";
   private stale = false;
+  private pinned = false;
   private countEl?: HTMLElement;
   private copyButton?: HTMLButtonElement;
 
   constructor(leaf: WorkspaceLeaf, private readonly host: AhaReviewPanelHost) {
     super(leaf);
-    this.icon = "list-checks";
+    this.icon = "network";
   }
 
   getViewType(): string {
@@ -50,12 +51,16 @@ export class AhaReviewPanelView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Aha Review Panel";
+    return "Aha";
   }
 
   async setContext(context: AhaReviewPanelContext): Promise<void> {
     this.context = context;
     await this.refresh();
+  }
+
+  followsActiveFile(): boolean {
+    return !this.pinned;
   }
 
   async refresh(): Promise<void> {
@@ -104,7 +109,7 @@ export class AhaReviewPanelView extends ItemView {
   private renderEmpty(message: string, options: { showRunAction?: boolean; showMissingMemorySeed?: boolean } = {}): void {
     this.contentEl.empty();
     const root = this.contentEl.createDiv({ cls: "aha-review-panel" });
-    this.renderHeader(root);
+    this.renderHeader(root, { showPin: true });
     root.createDiv({ cls: "aha-review-panel-empty", text: message });
     if (!this.context) return;
 
@@ -113,10 +118,10 @@ export class AhaReviewPanelView extends ItemView {
     if (options.showMissingMemorySeed) this.renderMissingMemorySeedButton(footer);
   }
 
-  private renderHeader(root: HTMLElement): void {
+  private renderHeader(root: HTMLElement, options: { showRun?: boolean; showMissingMemorySeed?: boolean; showPin?: boolean } = {}): void {
     const header = root.createDiv({ cls: "aha-review-panel-header" });
     const title = header.createDiv({ cls: "aha-review-panel-title" });
-    title.createEl("h2", { text: "Aha Review" });
+    title.createEl("h2", { text: "Aha" });
     if (this.context) {
       const sourcePath = this.context.sourcePath;
       const sourceLink = title.createEl("a", {
@@ -130,14 +135,19 @@ export class AhaReviewPanelView extends ItemView {
         void this.host.openCandidateInNewTab(sourcePath);
       });
     }
-    this.countEl = header.createDiv({ cls: "aha-review-panel-count" });
+    const actions = header.createDiv({ cls: "aha-review-panel-actions" });
+    this.countEl = actions.createDiv({ cls: "aha-review-panel-count" });
     this.updateCount();
+    if (!this.context) return;
+    if (options.showRun) this.renderRunButton(actions, "重新运行 Aha");
+    if (options.showMissingMemorySeed) this.renderMissingMemorySeedButton(actions);
+    if (options.showPin) this.renderPinButton(actions);
   }
 
   private renderCandidates(): void {
     this.contentEl.empty();
     const root = this.contentEl.createDiv({ cls: "aha-review-panel" });
-    this.renderHeader(root);
+    this.renderHeader(root, { showRun: true, showMissingMemorySeed: true, showPin: true });
     this.renderStaleCue(root);
 
     const table = root.createDiv({ cls: "aha-review-panel-table", attr: { role: "table" } });
@@ -156,8 +166,6 @@ export class AhaReviewPanelView extends ItemView {
     }
 
     const footer = root.createDiv({ cls: "aha-review-panel-footer" });
-    this.renderMissingMemorySeedButton(footer);
-
     this.copyButton = footer.createEl("button", {
       text: "复制 Grill Handoff",
       cls: "aha-review-panel-copy",
@@ -172,7 +180,6 @@ export class AhaReviewPanelView extends ItemView {
     if (!this.context || !this.stale) return;
     const cue = root.createDiv({ cls: "aha-review-panel-stale" });
     cue.createSpan({ text: "源笔记已更新" });
-    this.renderRunButton(cue, "重新运行 Aha");
   }
 
   private renderRunButton(parent: HTMLElement, text = "运行 Aha"): HTMLButtonElement {
@@ -186,6 +193,20 @@ export class AhaReviewPanelView extends ItemView {
       void this.host.runAhaForSourcePath(this.context.sourcePath);
     });
     return runButton;
+  }
+
+  private renderPinButton(parent: HTMLElement): HTMLButtonElement {
+    const pinButton = parent.createEl("button", {
+      cls: "aha-review-panel-icon-button",
+      title: this.pinned ? "跟随当前笔记" : "固定当前笔记",
+      attr: { "aria-label": this.pinned ? "跟随当前笔记" : "固定当前笔记" },
+    });
+    setIcon(pinButton, this.pinned ? "pin-off" : "pin");
+    pinButton.addEventListener("click", () => {
+      this.pinned = !this.pinned;
+      void this.refresh();
+    });
+    return pinButton;
   }
 
   private renderMissingMemorySeedButton(parent: HTMLElement): HTMLButtonElement {
@@ -249,8 +270,8 @@ export class AhaReviewPanelView extends ItemView {
 
   private renderSeedActions(cell: HTMLElement, candidate: ReviewPanelCandidate): void {
     const actions = cell.createDiv({ cls: "aha-review-panel-seed-actions" });
-    this.renderSeedButton(actions, "accept", "accept seed", candidate);
-    this.renderSeedButton(actions, "reject_as_noise", "noise seed", candidate);
+    this.renderSeedButton(actions, "accept", "accept", candidate);
+    this.renderSeedButton(actions, "reject_as_noise", "noise", candidate);
   }
 
   private renderSeedButton(parent: HTMLElement, action: Exclude<ReviewBenchmarkSeedAction, "should_have_found">, text: string, candidate: ReviewPanelCandidate): void {
@@ -351,9 +372,13 @@ export class AhaReviewPanelView extends ItemView {
 
   private updateCount(): void {
     if (!this.countEl) return;
-    const selected = this.candidates.filter((candidate) => candidate.selected).length;
     const stalePrefix = this.stale ? "已过期 · " : "";
     const statusPrefix = this.status ? `${this.status} · ` : "";
+    if (this.candidates.length === 0) {
+      this.countEl.setText(`${stalePrefix}${this.status}`.trim());
+      return;
+    }
+    const selected = this.candidates.filter((candidate) => candidate.selected).length;
     this.countEl.setText(`${stalePrefix}${statusPrefix}${selected} / ${this.candidates.length} 纳入`);
   }
 

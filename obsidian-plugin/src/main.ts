@@ -15,6 +15,7 @@ import { canRunExternalProcesses, runAhaWrapper, runReadinessCheck } from "./pro
 import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
 import { validateAhaWrapperResult } from "./schema";
 import { legacySourceIdentity, sourceIdentityForFile, sourceReviewIndexKey } from "./source-identity";
+import { AHA_COMMANDS } from "./commands";
 import {
   appendSessionFeedback,
   createEmptySessionStore,
@@ -57,16 +58,16 @@ export default class AhaPlugin extends Plugin {
     this.registerView(AHA_REVIEW_PANEL_VIEW_TYPE, (leaf) => new AhaReviewPanelView(leaf, this));
 
     this.addCommand({
-      id: "aha-readiness-check",
-      name: "Aha: Check local readiness",
+      id: AHA_COMMANDS.checkReadiness.id,
+      name: AHA_COMMANDS.checkReadiness.name,
       callback: () => {
         void this.checkReadiness();
       },
     });
 
     this.addCommand({
-      id: "aha-search-current-note",
-      name: "Aha: Search from current note",
+      id: AHA_COMMANDS.run.id,
+      name: AHA_COMMANDS.run.name,
       checkCallback: (checking) => {
         const file = this.currentMarkdownFile();
         if (!file) return false;
@@ -76,8 +77,8 @@ export default class AhaPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "aha-open-review-panel",
-      name: "Aha: Open Aha Review Panel",
+      id: AHA_COMMANDS.openPanel.id,
+      name: AHA_COMMANDS.openPanel.name,
       checkCallback: (checking) => {
         const file = this.currentMarkdownFile();
         if (!file) return false;
@@ -87,19 +88,8 @@ export default class AhaPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "aha-open-current-review-note",
-      name: "Aha: Open current review note",
-      checkCallback: (checking) => {
-        const file = this.currentMarkdownFile();
-        if (!file) return false;
-        if (!checking) void this.openReviewForSource(file);
-        return true;
-      },
-    });
-
-    this.addCommand({
-      id: "aha-export-review-note",
-      name: "Aha: Export Review Note",
+      id: AHA_COMMANDS.exportReviewNote.id,
+      name: AHA_COMMANDS.exportReviewNote.name,
       checkCallback: (checking) => {
         const file = this.currentMarkdownFile();
         if (!file) return false;
@@ -109,8 +99,8 @@ export default class AhaPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "aha-open-candidate-under-cursor",
-      name: "Aha: Open candidate under cursor in new tab",
+      id: AHA_COMMANDS.openCandidate.id,
+      name: AHA_COMMANDS.openCandidate.name,
       editorCheckCallback: (checking, editor) => {
         const line = editor.getLine(editor.getCursor().line);
         const target = firstWikiLinkTarget(line);
@@ -120,16 +110,9 @@ export default class AhaPlugin extends Plugin {
       },
     });
 
-    this.addCommand({
-      id: "aha-mark-review-grilled",
-      name: "Aha: Mark review note as grilled",
-      checkCallback: (checking) => {
-        const file = this.currentMarkdownFile();
-        if (!file) return false;
-        if (!checking) void this.markReviewNoteGrilled(file);
-        return true;
-      },
-    });
+    this.registerEvent(this.app.workspace.on("file-open", (file) => {
+      void this.followActiveFile(file);
+    }));
 
     this.timerId = window.setInterval(() => this.updateStatusBar(), 1000);
     this.registerInterval(this.timerId);
@@ -397,6 +380,19 @@ export default class AhaPlugin extends Plugin {
       return;
     }
     await this.searchFromCurrentNote(file);
+  }
+
+  private async followActiveFile(file: TFile | null): Promise<void> {
+    if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") return;
+    const leaves = this.app.workspace.getLeavesOfType(AHA_REVIEW_PANEL_VIEW_TYPE);
+    if (leaves.length === 0) return;
+
+    const context = await this.reviewPanelContextForFile(file);
+    for (const leaf of leaves) {
+      if (leaf.view instanceof AhaReviewPanelView && leaf.view.followsActiveFile()) {
+        await leaf.view.setContext(context);
+      }
+    }
   }
 
   private async findExistingReviewNoteForSource(sourceFile: TFile): Promise<TFile | null> {

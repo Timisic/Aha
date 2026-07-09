@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -400,6 +400,44 @@ test("plugin wrapper validator requires structured failure fields", async () => 
   assert.ok(incomplete.errors.some((error) => error.includes("error.tool")));
   assert.ok(incomplete.errors.some((error) => error.includes("error.details")));
   assert.equal(complete.ok, true);
+});
+
+test("plugin command names are short Aha product actions", async () => {
+  const commands = await loadTsModule("obsidian-plugin/src/commands.ts");
+
+  assert.deepEqual(commands.AHA_COMMANDS.checkReadiness, {
+    id: "aha-readiness-check",
+    name: "Aha: Check Readiness",
+  });
+  assert.deepEqual(commands.AHA_COMMANDS.run, {
+    id: "aha-run",
+    name: "Aha: Run",
+  });
+  assert.deepEqual(commands.AHA_COMMANDS.openPanel, {
+    id: "aha-open-panel",
+    name: "Aha: Open Panel",
+  });
+  assert.deepEqual(commands.AHA_COMMANDS.exportReviewNote, {
+    id: "aha-export-review-note",
+    name: "Aha: Export Review Note",
+  });
+});
+
+test("panel source keeps follow and pin hooks without a Review Note export button", async () => {
+  const source = await readFile(path.join(repoRoot, "obsidian-plugin/src/review-panel.ts"), "utf8");
+
+  assert.match(source, /followsActiveFile\(\)/);
+  assert.match(source, /private pinned = false/);
+  assert.match(source, /renderPinButton/);
+  assert.doesNotMatch(source, /Export Review Note/);
+  assert.doesNotMatch(source, /exportReviewNote/);
+});
+
+test("plugin manifest presents the product as Aha", async () => {
+  const manifest = JSON.parse(await readFile(path.join(repoRoot, "obsidian-plugin/manifest.json"), "utf8"));
+
+  assert.equal(manifest.name, "Aha");
+  assert.doesNotMatch(manifest.description, /Review Notes/i);
 });
 
 test("source identity survives source note edits and renames", async () => {

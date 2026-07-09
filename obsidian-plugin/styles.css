@@ -11,7 +11,7 @@
 
 .aha-review-panel-header {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
@@ -34,6 +34,15 @@
 .aha-review-panel-empty {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
+}
+
+.aha-review-panel-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 112px;
 }
 
 .aha-review-panel-stale {
@@ -136,10 +145,11 @@
 }
 
 .aha-review-panel-footer {
-  margin-top: 10px;
   background: transparent;
+  margin-top: 10px;
 }
 
+.aha-review-panel-icon-button,
 .aha-review-panel-run,
 .aha-review-panel-copy {
   background: var(--interactive-normal) !important;
@@ -147,9 +157,19 @@
   color: var(--text-normal) !important;
 }
 
+.aha-review-panel-icon-button:hover,
 .aha-review-panel-run:hover,
 .aha-review-panel-copy:hover {
   background: var(--interactive-hover) !important;
+}
+
+.aha-review-panel-icon-button {
+  align-items: center;
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  padding: 4px;
+  width: 28px;
 }
 
 @container (max-width: 560px) {
