@@ -1,25 +1,31 @@
 import { App, ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf } from "obsidian";
 import {
-  appendReviewBenchmarkSeed,
-  latestSelectedMemoriesRound,
-  reviewStatusFromContent,
-  syncLatestSelectedMemoriesAndHandoff,
+  handoffForRound,
+  latestSuccessfulRound,
+  type AhaSessionFeedbackInput,
+  type AhaSessionRecord,
+  type SyncSessionSelectionResult,
+} from "./session-store";
+import {
   type ReviewBenchmarkSeedAction,
   type ReviewPanelCandidate,
-  type SyncReviewSelectionResult,
 } from "./review-note";
 import { markdownFilePathForLink, noteDisplayTitleFromPath } from "./wikilink";
 
 export const AHA_REVIEW_PANEL_VIEW_TYPE = "aha-review-panel";
 
 export interface AhaReviewPanelContext {
-  reviewFile: TFile;
+  recordKey: string;
   sourcePath: string;
   sourceTitle: string;
 }
 
 export interface AhaReviewPanelHost {
   openCandidateInNewTab(target: string): Promise<void>;
+  loadSessionRecord(recordKey: string): AhaSessionRecord | null;
+  syncSessionSelections(recordKey: string, selectedByIndex: Map<number, boolean>): Promise<SyncSessionSelectionResult>;
+  recordSessionFeedback(recordKey: string, input: AhaSessionFeedbackInput): Promise<void>;
+  runAhaForSourcePath(sourcePath: string): Promise<void>;
 }
 
 export class AhaReviewPanelView extends ItemView {
@@ -50,39 +56,43 @@ export class AhaReviewPanelView extends ItemView {
 
   async refresh(): Promise<void> {
     if (!this.context) {
-      this.renderEmpty("无 Review Note");
+      this.renderEmpty("未选择 source note");
       return;
     }
 
-    const content = await this.app.vault.read(this.context.reviewFile);
-    this.status = reviewStatusFromContent(content) ?? "";
-    const latest = latestSelectedMemoriesRound(content);
+    const record = this.host.loadSessionRecord(this.context.recordKey);
+    if (!record) {
+      this.candidates = [];
+      this.handoff = "";
+      this.status = "";
+      this.renderEmpty("还没有 Aha 历史", { showRunAction: true });
+      return;
+    }
+
+    const latestRun = record.rounds.at(-1);
+    this.status = latestRun?.status ?? "";
+    const latest = latestSuccessfulRound(record);
     if (!latest || latest.candidates.length === 0) {
       this.candidates = [];
       this.handoff = "";
-      this.renderEmpty("无候选");
+      this.renderEmpty("无候选", { showRunAction: true, showMissingMemorySeed: true });
       return;
     }
 
     this.candidates = latest.candidates;
-    this.handoff = syncLatestSelectedMemoriesAndHandoff(
-      content,
-      this.context.sourcePath,
-      this.context.sourceTitle,
-      this.selectionMap(),
-    ).handoff;
+    this.handoff = handoffForRound(record, latest);
     this.renderCandidates();
   }
 
   protected async onOpen(): Promise<void> {
-    this.renderEmpty("无 Review Note");
+    this.renderEmpty("未选择 source note");
   }
 
   protected async onClose(): Promise<void> {
     this.contentEl.empty();
   }
 
-  private renderEmpty(message: string): void {
+  private renderEmpty(message: string, options: { showRunAction?: boolean; showMissingMemorySeed?: boolean } = {}): void {
     this.contentEl.empty();
     const root = this.contentEl.createDiv({ cls: "aha-review-panel" });
     this.renderHeader(root);
@@ -90,7 +100,8 @@ export class AhaReviewPanelView extends ItemView {
     if (!this.context) return;
 
     const footer = root.createDiv({ cls: "aha-review-panel-footer" });
-    this.renderMissingMemorySeedButton(footer);
+    if (options.showRunAction) this.renderRunButton(footer);
+    if (options.showMissingMemorySeed) this.renderMissingMemorySeedButton(footer);
   }
 
   private renderHeader(root: HTMLElement): void {
@@ -145,6 +156,19 @@ export class AhaReviewPanelView extends ItemView {
     this.copyButton.addEventListener("click", () => {
       void this.copyHandoff();
     });
+  }
+
+  private renderRunButton(parent: HTMLElement): HTMLButtonElement {
+    const runButton = parent.createEl("button", {
+      text: "运行 Aha",
+      cls: "aha-review-panel-run",
+      title: "为当前 source note 运行 Aha",
+    });
+    runButton.addEventListener("click", () => {
+      if (!this.context) return;
+      void this.host.runAhaForSourcePath(this.context.sourcePath);
+    });
+    return runButton;
   }
 
   private renderMissingMemorySeedButton(parent: HTMLElement): HTMLButtonElement {
@@ -228,15 +252,13 @@ export class AhaReviewPanelView extends ItemView {
   private async recordCandidateSeed(action: Exclude<ReviewBenchmarkSeedAction, "should_have_found">, candidate: ReviewPanelCandidate): Promise<void> {
     if (!this.context) return;
     try {
-      const content = await this.app.vault.read(this.context.reviewFile);
-      const nextContent = appendReviewBenchmarkSeed(content, {
+      await this.host.recordSessionFeedback(this.context.recordKey, {
         action,
         createdAt: new Date(),
         sourcePath: this.context.sourcePath,
         sourceTitle: this.context.sourceTitle,
         candidate,
       });
-      await this.app.vault.modify(this.context.reviewFile, nextContent);
       new Notice(action === "accept" ? "已记录 accept 草稿 seed。" : "已记录 reject_as_noise 草稿 seed。", 3000);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -255,15 +277,13 @@ export class AhaReviewPanelView extends ItemView {
   private async appendMissingMemorySeed(missingMemory: string): Promise<void> {
     if (!this.context) return;
     try {
-      const content = await this.app.vault.read(this.context.reviewFile);
-      const nextContent = appendReviewBenchmarkSeed(content, {
+      await this.host.recordSessionFeedback(this.context.recordKey, {
         action: "should_have_found",
         createdAt: new Date(),
         sourcePath: this.context.sourcePath,
         sourceTitle: this.context.sourceTitle,
         missingMemory,
       });
-      await this.app.vault.modify(this.context.reviewFile, nextContent);
       new Notice("已记录 should_have_found 草稿 seed。", 3000);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -271,18 +291,11 @@ export class AhaReviewPanelView extends ItemView {
     }
   }
 
-  private async persistSelections(): Promise<SyncReviewSelectionResult | null> {
+  private async persistSelections(): Promise<SyncSessionSelectionResult | null> {
     if (!this.context) return null;
 
     try {
-      const content = await this.app.vault.read(this.context.reviewFile);
-      const synced = syncLatestSelectedMemoriesAndHandoff(
-        content,
-        this.context.sourcePath,
-        this.context.sourceTitle,
-        this.selectionMap(),
-      );
-      await this.app.vault.modify(this.context.reviewFile, synced.content);
+      const synced = await this.host.syncSessionSelections(this.context.recordKey, this.selectionMap());
       this.candidates = synced.candidates;
       this.handoff = synced.handoff;
       this.updateCount();

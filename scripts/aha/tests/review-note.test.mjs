@@ -476,6 +476,120 @@ test("source review index key still separates fallback ctime collisions by sourc
   );
 });
 
+test("session store creates compact source-keyed panel records", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const store = sessionStore.createEmptySessionStore();
+  const source = sourceInput("srcfs:stable-source", "Source/Insight.md");
+  const result = {
+    ...searchRound("2026-06-28T08:00:00Z").result,
+    rawPrompt: "SECRET_PROMPT_SHOULD_NOT_PERSIST",
+    candidates: [
+      {
+        ...searchRound("2026-06-28T08:00:00Z").result.candidates[0],
+        rawBody: "SECRET_OLD_NOTE_BODY_SHOULD_NOT_PERSIST",
+      },
+    ],
+  };
+
+  const record = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T08:00:00Z"),
+    source,
+    result,
+  });
+  const latest = sessionStore.latestSuccessfulRound(record);
+  const persisted = JSON.stringify(record);
+
+  assert.equal(Object.keys(store.records)[0], "srcfs:stable-source");
+  assert.equal(record.source.id, "srcfs:stable-source");
+  assert.equal(record.source.path, "Source/Insight.md");
+  assert.equal(record.source.fallbackPath, "Source/Insight.md");
+  assert.equal(latest.candidates.length, 1);
+  assert.equal(latest.candidates[0].notePath, "Memory/Candidate.md");
+  assert.equal(latest.candidates[0].selected, true);
+  assert.match(sessionStore.handoffForRound(record, latest), /Memory\/Candidate/);
+  assert.doesNotMatch(persisted, /SECRET_PROMPT_SHOULD_NOT_PERSIST/);
+  assert.doesNotMatch(persisted, /SECRET_OLD_NOTE_BODY_SHOULD_NOT_PERSIST/);
+});
+
+test("session store lookup follows filesystem identity and separates path fallback collisions", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const store = sessionStore.createEmptySessionStore();
+
+  assert.equal(
+    sessionStore.sessionRecordKeyForSource("srcfs:stable-source", "Source/Insight.md"),
+    "srcfs:stable-source",
+  );
+  assert.notEqual(
+    sessionStore.sessionRecordKeyForSource("src:ctime-collision", "Source/First.md"),
+    sessionStore.sessionRecordKeyForSource("src:ctime-collision", "Source/Second.md"),
+  );
+
+  sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T08:10:00Z"),
+    source: sourceInput("srcfs:stable-source", "Source/Insight.md"),
+    result: searchRound("2026-06-28T08:10:00Z").result,
+  });
+  const renamed = sessionStore.findSessionRecord(store, "srcfs:stable-source", "Other/Renamed.md");
+
+  assert.equal(renamed.source.path, "Source/Insight.md");
+});
+
+test("session store keeps latest successful panel state after a failed run", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const store = sessionStore.createEmptySessionStore();
+  const source = sourceInput("srcfs:failure-source", "Source/Insight.md");
+  const record = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T08:20:00Z"),
+    source,
+    result: searchRound("2026-06-28T08:20:00Z").result,
+  });
+
+  sessionStore.recordFailedSessionRound(store, {
+    generatedAt: new Date("2026-06-28T08:21:00Z"),
+    source,
+    failure: {
+      message: "QMD timeout",
+      tool: "qmd",
+      details: "query exceeded timeout ".repeat(200),
+    },
+  });
+
+  const latest = sessionStore.latestSuccessfulRound(record);
+  const failed = record.rounds.find((round) => round.status === "failed");
+
+  assert.equal(record.rounds.some((round) => round.status === "failed"), true);
+  assert.ok(failed.error.details.length < 2100);
+  assert.equal(latest.generatedAt, "2026-06-28T08:20:00Z");
+  assert.equal(latest.candidates.length, 1);
+});
+
+test("session store syncs panel selections and draft feedback without review notes", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const store = sessionStore.createEmptySessionStore();
+  const source = sourceInput("srcfs:feedback-source", "Source/Insight.md");
+  const record = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T08:30:00Z"),
+    source,
+    result: searchRound("2026-06-28T08:30:00Z").result,
+  });
+
+  const synced = sessionStore.syncSessionSelections(record, new Map([[1, false]]), new Date("2026-06-28T08:31:00Z"));
+  const feedback = sessionStore.appendSessionFeedback(record, {
+    action: "accept",
+    createdAt: new Date("2026-06-28T08:32:00Z"),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+    candidate: synced.candidates[0],
+  });
+
+  assert.equal(synced.candidates[0].selected, false);
+  assert.doesNotMatch(synced.handoff, /Memory\/Candidate/);
+  assert.equal(record.feedback.length, 1);
+  assert.equal(feedback.status, "draft");
+  assert.equal(feedback.seedLabel, "nice_to_have");
+  assert.equal(feedback.memory, "Memory/Candidate.md");
+});
+
 async function loadReviewNoteModule() {
   return loadTsModule("obsidian-plugin/src/review-note.ts", obsidianStubPlugin());
 }
@@ -504,6 +618,17 @@ function mockTFile({ basename, path, ctime, mtime, size }) {
     basename,
     path,
     stat: { ctime, mtime, size },
+  };
+}
+
+function sourceInput(id, path) {
+  return {
+    id,
+    path,
+    title: "Insight",
+    ctime: 1782600000000,
+    mtime: 1782600000000,
+    size: 100,
   };
 }
 

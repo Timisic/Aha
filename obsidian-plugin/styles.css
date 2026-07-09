@@ -130,12 +130,14 @@
   background: transparent;
 }
 
+.aha-review-panel-run,
 .aha-review-panel-copy {
   background: var(--interactive-normal) !important;
   box-shadow: none !important;
   color: var(--text-normal) !important;
 }
 
+.aha-review-panel-run:hover,
 .aha-review-panel-copy:hover {
   background: var(--interactive-hover) !important;
 }

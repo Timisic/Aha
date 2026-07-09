@@ -8,22 +8,39 @@ import {
   TFile,
   normalizePath,
 } from "obsidian";
-import { appendFailureRecord, appendRunningSearchRound, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource, reviewSourcePathFromContent, setReviewNoteStatus } from "./review-note";
+import { makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource, reviewSourcePathFromContent, setReviewNoteStatus } from "./review-note";
 import { firstWikiLinkTarget, linkTargetBase } from "./wikilink";
 import { AHA_REVIEW_PANEL_VIEW_TYPE, AhaReviewPanelView, type AhaReviewPanelContext } from "./review-panel";
 import { canRunExternalProcesses, runAhaWrapper, runReadinessCheck } from "./process";
 import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
 import { validateAhaWrapperResult } from "./schema";
 import { legacySourceIdentity, sourceIdentityForFile, sourceReviewIndexKey } from "./source-identity";
+import {
+  appendSessionFeedback,
+  createEmptySessionStore,
+  normalizeSessionStore,
+  recordFailedSessionRound,
+  recordRunningSessionRound,
+  recordSuccessfulSessionRound,
+  sessionRecordKeyForSource,
+  syncSessionSelections,
+  type AhaSessionFeedbackInput,
+  type AhaSessionRecord,
+  type AhaSessionSourceInput,
+  type AhaSessionStoreData,
+  type SyncSessionSelectionResult,
+} from "./session-store";
 
 interface AhaPluginData {
   settings: AhaPluginSettings;
   reviewIndex: Record<string, string>;
+  sessionStore: AhaSessionStoreData;
 }
 
 export default class AhaPlugin extends Plugin {
   settings: AhaPluginSettings = { ...DEFAULT_SETTINGS };
   reviewIndex: Record<string, string> = {};
+  sessionStore: AhaSessionStoreData = createEmptySessionStore();
   private statusBar?: HTMLElement;
   private activeRun?: { startedAt: number; sourcePath: string };
   private timerId?: number;
@@ -107,10 +124,15 @@ export default class AhaPlugin extends Plugin {
     const data = (await this.loadData()) as Partial<AhaPluginData> | null;
     this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
     this.reviewIndex = data?.reviewIndex ?? {};
+    this.sessionStore = normalizeSessionStore(data?.sessionStore);
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData({ settings: this.settings, reviewIndex: this.reviewIndex });
+    await this.saveData({
+      settings: this.settings,
+      reviewIndex: this.reviewIndex,
+      sessionStore: this.sessionStore,
+    });
   }
 
   private async checkReadiness(): Promise<void> {
@@ -132,18 +154,18 @@ export default class AhaPlugin extends Plugin {
   private async searchFromCurrentNote(sourceFile: TFile): Promise<void> {
     if (!this.assertDesktop()) return;
 
-    const reviewFile = await this.ensureReviewNote(sourceFile);
-
     const startedAt = new Date();
-    await this.appendRunning(reviewFile, startedAt);
+    const source = await this.sessionSourceFor(sourceFile);
+    recordRunningSessionRound(this.sessionStore, { startedAt, source });
+    await this.saveSettings();
 
     this.activeRun = { startedAt: startedAt.getTime(), sourcePath: sourceFile.path };
     this.updateStatusBar();
-    new Notice(`Aha search started. Review note: ${reviewFile.path}`, 8000);
+    new Notice(`Aha search started: ${sourceFile.path}`, 8000);
 
     try {
       const payload = await runAhaWrapper(this.settings, {
-        reviewPath: reviewFile.path,
+        reviewPath: this.expectedReviewPathFor(sourceFile, startedAt),
         sourceAbsolutePath: this.absolutePathForFile(sourceFile),
         sourcePath: sourceFile.path,
         vaultRoot: this.vaultRoot(),
@@ -154,32 +176,37 @@ export default class AhaPlugin extends Plugin {
       }
       if (!validation.result.ok) {
         const failure = validation.result.error ?? { message: "Aha wrapper failed." };
-        await this.appendFailure(reviewFile, failure);
+        recordFailedSessionRound(this.sessionStore, {
+          generatedAt: new Date(),
+          source,
+          failure,
+        });
+        await this.saveSettings();
+        await this.openReviewPanel(this.reviewPanelContextForSource(source));
         new Notice(`Aha failed: ${failure.message}`, 10000);
         return;
       }
 
-      const content = await this.app.vault.read(reviewFile);
-      const nextContent = appendSuccessfulSearchRound(content, {
+      recordSuccessfulSessionRound(this.sessionStore, {
         generatedAt: new Date(),
         result: validation.result,
-        sourcePath: sourceFile.path,
-        sourceTitle: sourceFile.basename,
+        source,
       });
-      await this.app.vault.modify(reviewFile, nextContent);
-      await this.openReviewPanel({
-        reviewFile,
-        sourcePath: sourceFile.path,
-        sourceTitle: sourceFile.basename,
-      });
+      await this.saveSettings();
+      await this.openReviewPanel(this.reviewPanelContextForSource(source));
       new Notice(`Aha search completed: ${validation.result.candidates?.length ?? 0} candidates.`);
     } catch (error) {
       const details = error instanceof Error ? error.message : String(error);
-      await this.appendFailure(reviewFile, {
+      recordFailedSessionRound(this.sessionStore, {
+        generatedAt: new Date(),
+        source,
+        failure: {
         message: "Aha wrapper failed before returning a valid structured result.",
         tool: "wrapper",
         details,
+        },
       });
+      await this.saveSettings();
       this.reportError("Aha search failed", error);
     } finally {
       this.activeRun = undefined;
@@ -220,16 +247,6 @@ export default class AhaPlugin extends Plugin {
     return file;
   }
 
-  private async appendFailure(reviewFile: TFile, failure: { message: string; tool?: string; details?: string }): Promise<void> {
-    const content = await this.app.vault.read(reviewFile);
-    await this.app.vault.modify(reviewFile, appendFailureRecord(content, failure, new Date()));
-  }
-
-  private async appendRunning(reviewFile: TFile, startedAt: Date): Promise<void> {
-    const content = await this.app.vault.read(reviewFile);
-    await this.app.vault.modify(reviewFile, appendRunningSearchRound(content, startedAt));
-  }
-
   private async openReviewForSource(sourceFile: TFile): Promise<void> {
     const file = await this.findExistingReviewNoteForSource(sourceFile);
     if (!(file instanceof TFile)) {
@@ -240,44 +257,38 @@ export default class AhaPlugin extends Plugin {
   }
 
   private async markReviewNoteGrilled(file: TFile): Promise<void> {
-    const context = await this.reviewPanelContextForFile(file);
-    if (!context) {
+    const content = await this.app.vault.cachedRead(file);
+    const reviewFile = reviewSourcePathFromContent(content) ? file : await this.findExistingReviewNoteForSource(file);
+    if (!(reviewFile instanceof TFile)) {
       new Notice("No Aha Review Note exists for this note yet.");
       return;
     }
-    const content = await this.app.vault.read(context.reviewFile);
-    await this.app.vault.modify(context.reviewFile, setReviewNoteStatus(content, "grilled"));
-    new Notice(`Review note marked as grilled: ${context.reviewFile.path}`);
+    const reviewContent = await this.app.vault.read(reviewFile);
+    await this.app.vault.modify(reviewFile, setReviewNoteStatus(reviewContent, "grilled"));
+    new Notice(`Review note marked as grilled: ${reviewFile.path}`);
   }
 
   private async openReviewPanelForCurrentFile(file: TFile): Promise<void> {
     const context = await this.reviewPanelContextForFile(file);
-    if (!context) {
-      new Notice("No Aha Review Note exists for this note yet.");
-      return;
-    }
     await this.openReviewPanel(context);
   }
 
-  private async reviewPanelContextForFile(file: TFile): Promise<AhaReviewPanelContext | null> {
+  private async reviewPanelContextForFile(file: TFile): Promise<AhaReviewPanelContext> {
     const reviewContent = await this.app.vault.cachedRead(file);
     const reviewSourcePath = reviewSourcePathFromContent(reviewContent);
     if (reviewSourcePath) {
-      return {
-        reviewFile: file,
-        sourcePath: reviewSourcePath,
-        sourceTitle: this.sourceTitleForPath(reviewSourcePath),
-      };
+      const sourceFile = this.app.vault.getAbstractFileByPath(reviewSourcePath);
+      const source = sourceFile instanceof TFile
+        ? await this.sessionSourceFor(sourceFile)
+        : {
+            id: legacySourceIdentity(reviewSourcePath),
+            path: reviewSourcePath,
+            title: this.sourceTitleForPath(reviewSourcePath),
+          };
+      return this.reviewPanelContextForSource(source);
     }
 
-    const reviewFile = await this.findExistingReviewNoteForSource(file);
-    return reviewFile instanceof TFile
-      ? {
-          reviewFile,
-          sourcePath: file.path,
-          sourceTitle: file.basename,
-        }
-      : null;
+    return this.reviewPanelContextForSource(await this.sessionSourceFor(file));
   }
 
   private async openReviewPanel(context: AhaReviewPanelContext): Promise<void> {
@@ -293,6 +304,34 @@ export default class AhaPlugin extends Plugin {
     if (leaf.view instanceof AhaReviewPanelView) {
       await leaf.view.setContext(context);
     }
+  }
+
+  loadSessionRecord(recordKey: string): AhaSessionRecord | null {
+    return this.sessionStore.records[recordKey] ?? null;
+  }
+
+  async syncSessionSelections(recordKey: string, selectedByIndex: Map<number, boolean>): Promise<SyncSessionSelectionResult> {
+    const record = this.sessionStore.records[recordKey];
+    if (!record) throw new Error("No Aha Session Record exists for this source note.");
+    const synced = syncSessionSelections(record, selectedByIndex);
+    await this.saveSettings();
+    return synced;
+  }
+
+  async recordSessionFeedback(recordKey: string, input: AhaSessionFeedbackInput): Promise<void> {
+    const record = this.sessionStore.records[recordKey];
+    if (!record) throw new Error("No Aha Session Record exists for this source note.");
+    appendSessionFeedback(record, input);
+    await this.saveSettings();
+  }
+
+  async runAhaForSourcePath(sourcePath: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(sourcePath);
+    if (!(file instanceof TFile)) {
+      new Notice(`Aha source note not found: ${sourcePath}`, 8000);
+      return;
+    }
+    await this.searchFromCurrentNote(file);
   }
 
   private async findExistingReviewNoteForSource(sourceFile: TFile): Promise<TFile | null> {
@@ -423,6 +462,30 @@ export default class AhaPlugin extends Plugin {
 
   private async sourceIdentityFor(sourceFile: TFile): Promise<string> {
     return sourceIdentityForFile(sourceFile, this.absolutePathForFile(sourceFile));
+  }
+
+  private async sessionSourceFor(sourceFile: TFile): Promise<AhaSessionSourceInput> {
+    return {
+      id: await this.sourceIdentityFor(sourceFile),
+      path: sourceFile.path,
+      title: sourceFile.basename,
+      ctime: sourceFile.stat.ctime,
+      mtime: sourceFile.stat.mtime,
+      size: sourceFile.stat.size,
+    };
+  }
+
+  private reviewPanelContextForSource(source: AhaSessionSourceInput): AhaReviewPanelContext {
+    return {
+      recordKey: sessionRecordKeyForSource(source.id, source.path),
+      sourcePath: source.path,
+      sourceTitle: source.title,
+    };
+  }
+
+  private expectedReviewPathFor(sourceFile: TFile, createdAt: Date): string {
+    const folder = reviewFolderPath(this.settings.reviewFolder);
+    return normalizePath(`${folder}/${makeReviewFileName(sourceFile.basename, createdAt)}`);
   }
 
   private sourceTitleForPath(sourcePath: string): string {
