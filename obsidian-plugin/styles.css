@@ -36,6 +36,16 @@
   font-size: var(--font-ui-smaller);
 }
 
+.aha-review-panel-stale {
+  align-items: center;
+  color: var(--text-warning);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--font-ui-smaller);
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
 .aha-review-panel-table {
   width: 100%;
   display: block;

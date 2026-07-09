@@ -87,6 +87,13 @@ export interface SyncSessionSelectionResult {
   handoff: string;
 }
 
+export interface AhaSessionStaleState {
+  stale: boolean;
+  pathChanged: boolean;
+  mtimeChanged: boolean;
+  sizeChanged: boolean;
+}
+
 export interface AhaSessionFeedbackInput {
   action: ReviewBenchmarkSeedAction;
   createdAt: Date;
@@ -231,6 +238,18 @@ export function latestSuccessfulRound(record: AhaSessionRecord): AhaSessionRound
 
 export function handoffForRound(record: AhaSessionRecord, round: AhaSessionRound): string {
   return renderGrillHandoff(record.source.path, record.source.title, round.candidates).join("\n");
+}
+
+export function staleStateForRound(round: AhaSessionRound, currentSource?: AhaSessionSourceSnapshot): AhaSessionStaleState {
+  const pathChanged = Boolean(currentSource?.path && currentSource.path !== round.sourceSnapshot.path);
+  const mtimeChanged = comparableNumberChanged(round.sourceSnapshot.mtime, currentSource?.mtime);
+  const sizeChanged = comparableNumberChanged(round.sourceSnapshot.size, currentSource?.size);
+  return {
+    stale: pathChanged || mtimeChanged || sizeChanged,
+    pathChanged,
+    mtimeChanged,
+    sizeChanged,
+  };
 }
 
 export function syncSessionSelections(record: AhaSessionRecord, selectedByIndex: Map<number, boolean>, updatedAt = new Date()): SyncSessionSelectionResult {
@@ -485,6 +504,10 @@ function compactText(value: string, maxLength: number): string {
   const trimmed = value.replace(/\s+/g, " ").trim();
   if (trimmed.length <= maxLength) return trimmed;
   return `${trimmed.slice(0, maxLength - 3)}...`;
+}
+
+function comparableNumberChanged(before: number | undefined, after: number | undefined): boolean {
+  return typeof before === "number" && typeof after === "number" && before !== after;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

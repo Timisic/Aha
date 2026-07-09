@@ -2,8 +2,10 @@ import { App, ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf } from "obs
 import {
   handoffForRound,
   latestSuccessfulRound,
+  staleStateForRound,
   type AhaSessionFeedbackInput,
   type AhaSessionRecord,
+  type AhaSessionSourceSnapshot,
   type SyncSessionSelectionResult,
 } from "./session-store";
 import {
@@ -18,6 +20,7 @@ export interface AhaReviewPanelContext {
   recordKey: string;
   sourcePath: string;
   sourceTitle: string;
+  sourceSnapshot?: AhaSessionSourceSnapshot;
 }
 
 export interface AhaReviewPanelHost {
@@ -33,6 +36,7 @@ export class AhaReviewPanelView extends ItemView {
   private candidates: ReviewPanelCandidate[] = [];
   private handoff = "";
   private status = "";
+  private stale = false;
   private countEl?: HTMLElement;
   private copyButton?: HTMLButtonElement;
 
@@ -56,6 +60,7 @@ export class AhaReviewPanelView extends ItemView {
 
   async refresh(): Promise<void> {
     if (!this.context) {
+      this.stale = false;
       this.renderEmpty("未选择 source note");
       return;
     }
@@ -65,6 +70,7 @@ export class AhaReviewPanelView extends ItemView {
       this.candidates = [];
       this.handoff = "";
       this.status = "";
+      this.stale = false;
       this.renderEmpty("还没有 Aha 历史", { showRunAction: true });
       return;
     }
@@ -75,16 +81,19 @@ export class AhaReviewPanelView extends ItemView {
     if (!latest || latest.candidates.length === 0) {
       this.candidates = [];
       this.handoff = "";
+      this.stale = false;
       this.renderEmpty("无候选", { showRunAction: true, showMissingMemorySeed: true });
       return;
     }
 
     this.candidates = latest.candidates;
     this.handoff = handoffForRound(record, latest);
+    this.stale = staleStateForRound(latest, this.context.sourceSnapshot).stale;
     this.renderCandidates();
   }
 
   protected async onOpen(): Promise<void> {
+    this.stale = false;
     this.renderEmpty("未选择 source note");
   }
 
@@ -129,6 +138,7 @@ export class AhaReviewPanelView extends ItemView {
     this.contentEl.empty();
     const root = this.contentEl.createDiv({ cls: "aha-review-panel" });
     this.renderHeader(root);
+    this.renderStaleCue(root);
 
     const table = root.createDiv({ cls: "aha-review-panel-table", attr: { role: "table" } });
     const headerRow = table.createDiv({ cls: "aha-review-panel-row aha-review-panel-head", attr: { role: "row" } });
@@ -158,9 +168,16 @@ export class AhaReviewPanelView extends ItemView {
     });
   }
 
-  private renderRunButton(parent: HTMLElement): HTMLButtonElement {
+  private renderStaleCue(root: HTMLElement): void {
+    if (!this.context || !this.stale) return;
+    const cue = root.createDiv({ cls: "aha-review-panel-stale" });
+    cue.createSpan({ text: "源笔记已更新" });
+    this.renderRunButton(cue, "重新运行 Aha");
+  }
+
+  private renderRunButton(parent: HTMLElement, text = "运行 Aha"): HTMLButtonElement {
     const runButton = parent.createEl("button", {
-      text: "运行 Aha",
+      text,
       cls: "aha-review-panel-run",
       title: "为当前 source note 运行 Aha",
     });
@@ -331,8 +348,9 @@ export class AhaReviewPanelView extends ItemView {
   private updateCount(): void {
     if (!this.countEl) return;
     const selected = this.candidates.filter((candidate) => candidate.selected).length;
+    const stalePrefix = this.stale ? "已过期 · " : "";
     const statusPrefix = this.status ? `${this.status} · ` : "";
-    this.countEl.setText(`${statusPrefix}${selected} / ${this.candidates.length} 纳入`);
+    this.countEl.setText(`${stalePrefix}${statusPrefix}${selected} / ${this.candidates.length} 纳入`);
   }
 
   private displayTitleFor(candidate: ReviewPanelCandidate): string {

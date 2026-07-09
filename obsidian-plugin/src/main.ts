@@ -480,6 +480,12 @@ export default class AhaPlugin extends Plugin {
       recordKey: sessionRecordKeyForSource(source.id, source.path),
       sourcePath: source.path,
       sourceTitle: source.title,
+      sourceSnapshot: {
+        path: source.path,
+        ctime: source.ctime,
+        mtime: source.mtime,
+        size: source.size,
+      },
     };
   }
 

@@ -590,6 +590,105 @@ test("session store syncs panel selections and draft feedback without review not
   assert.equal(feedback.memory, "Memory/Candidate.md");
 });
 
+test("session store reruns preserve user state while refreshing model-owned fields", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const store = sessionStore.createEmptySessionStore();
+  const source = sourceInput("srcfs:rerun-source", "Source/Insight.md");
+  const record = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T08:40:00Z"),
+    source,
+    result: searchRound("2026-06-28T08:40:00Z").result,
+  });
+
+  const firstSync = sessionStore.syncSessionSelections(record, new Map([[1, false]]), new Date("2026-06-28T08:41:00Z"));
+  sessionStore.appendSessionFeedback(record, {
+    action: "accept",
+    createdAt: new Date("2026-06-28T08:42:00Z"),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+    candidate: firstSync.candidates[0],
+  });
+
+  sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T08:43:00Z"),
+    source,
+    result: {
+      ...searchRound("2026-06-28T08:43:00Z").result,
+      candidates: [
+        {
+          notePath: "Memory/Candidate.md",
+          noteTitle: "Candidate",
+          relation: "challenges",
+          hit: "\"Fresh evidence quote.\"",
+          why: "这次 rerun 刷新了模型判断文本，但不应该覆盖用户选择。",
+          quotes: ["Fresh evidence quote."],
+          selected: true,
+        },
+      ],
+    },
+  });
+
+  const latest = sessionStore.latestSuccessfulRound(record);
+
+  assert.equal(record.rounds.filter((round) => round.status === "success").length, 2);
+  assert.equal(latest.generatedAt, "2026-06-28T08:43:00Z");
+  assert.equal(latest.candidates[0].selected, false);
+  assert.equal(latest.candidates[0].relation, "challenges");
+  assert.equal(latest.candidates[0].hit, "\"Fresh evidence quote.\"");
+  assert.deepEqual(latest.candidates[0].quotes, ["Fresh evidence quote."]);
+  assert.equal(record.feedback.length, 1);
+  assert.equal(record.feedback[0].memory, "Memory/Candidate.md");
+});
+
+test("session store exposes stale source state without hiding candidates", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const store = sessionStore.createEmptySessionStore();
+  const source = sourceInput("srcfs:stale-source", "Source/Insight.md");
+  const record = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T08:50:00Z"),
+    source,
+    result: searchRound("2026-06-28T08:50:00Z").result,
+  });
+  const latest = sessionStore.latestSuccessfulRound(record);
+
+  const fresh = sessionStore.staleStateForRound(latest, {
+    path: source.path,
+    ctime: source.ctime,
+    mtime: source.mtime,
+    size: source.size,
+  });
+  const changed = sessionStore.staleStateForRound(latest, {
+    path: source.path,
+    ctime: source.ctime,
+    mtime: source.mtime + 1,
+    size: source.size + 1,
+  });
+
+  assert.equal(fresh.stale, false);
+  assert.equal(changed.stale, true);
+  assert.equal(changed.mtimeChanged, true);
+  assert.equal(changed.sizeChanged, true);
+  assert.equal(sessionStore.latestSuccessfulRound(record).candidates.length, 1);
+});
+
+test("session store normalization retains orphaned records quietly", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const store = sessionStore.createEmptySessionStore();
+  const source = sourceInput("srcfs:orphan-source", "Missing/Insight.md");
+  sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T09:00:00Z"),
+    source,
+    result: searchRound("2026-06-28T09:00:00Z").result,
+  });
+
+  const normalized = sessionStore.normalizeSessionStore(JSON.parse(JSON.stringify(store)));
+  const retained = sessionStore.findSessionRecord(normalized, "srcfs:orphan-source", "Missing/Renamed.md");
+
+  assert.equal(Object.keys(normalized.records).length, 1);
+  assert.equal(retained.source.path, "Missing/Insight.md");
+  assert.equal(sessionStore.latestSuccessfulRound(retained).candidates.length, 1);
+});
+
 async function loadReviewNoteModule() {
   return loadTsModule("obsidian-plugin/src/review-note.ts", obsidianStubPlugin());
 }
