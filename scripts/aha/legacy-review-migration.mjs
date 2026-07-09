@@ -39,6 +39,16 @@ export async function migrateLegacyReviews({ reviews, existingData = {}, sourceS
       });
       continue;
     }
+    if (existing && !existingRecordLooksMigrated(existing, review.reviewPath)) {
+      unmatched.push({
+        ok: false,
+        reviewPath: review.reviewPath,
+        reason: "existing-session-record",
+        sourceId: result.record.source.id,
+        sourcePath: result.record.source.path,
+      });
+      continue;
+    }
     const legacyExisting = nextData.sessionStore.records[result.legacyKey];
     if (result.legacyKey !== result.record.key && legacyExisting?.source?.path === result.record.source.path) {
       delete nextData.sessionStore.records[result.legacyKey];
@@ -331,6 +341,11 @@ function normalizeSessionStore(value) {
   return value && value.schemaVersion === RECORD_SCHEMA_VERSION && value.records && typeof value.records === "object"
     ? { schemaVersion: RECORD_SCHEMA_VERSION, records: { ...value.records } }
     : { schemaVersion: RECORD_SCHEMA_VERSION, records: {} };
+}
+
+function existingRecordLooksMigrated(record, reviewPath) {
+  if (!Array.isArray(record.rounds) || record.rounds.length === 0) return false;
+  return record.rounds.every((round) => round?.summary === `Migrated from legacy Review Note: ${reviewPath}`);
 }
 
 function seedLabelForAction(action) {

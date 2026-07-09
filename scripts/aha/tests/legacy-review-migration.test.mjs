@@ -177,6 +177,58 @@ test("legacy migration rekeys existing source notes to the current filesystem id
   assert.equal(result.data.reviewIndex[`srcfs:selected\0Source/Insight.md`], "Aha/Reviews/Insight Review.md");
 });
 
+test("legacy migration does not overwrite existing non-migration session records", async () => {
+  const existing = existingRecord("srcfs:selected", "Source/Insight.md");
+  existing.rounds = [
+    {
+      id: "success:2026-07-09T00:00:00.000Z",
+      status: "success",
+      generatedAt: "2026-07-09T00:00:00.000Z",
+      sourcePath: "Source/Insight.md",
+      sourceTitle: "Insight",
+      sourceSnapshot: { path: "Source/Insight.md" },
+      summary: "OpenAI generated 5 QMD queries; mixed retrieval returned 20 reranked candidates.",
+      warnings: [],
+      candidates: [],
+    },
+  ];
+  existing.latestSuccessfulRoundId = "success:2026-07-09T00:00:00.000Z";
+  existing.feedback = [
+    {
+      action: "accept",
+      status: "draft",
+      seedLabel: "nice_to_have",
+      createdAt: "2026-07-09T00:01:00.000Z",
+      sourcePath: "Source/Insight.md",
+      sourceTitle: "Insight",
+      memory: "Memory/Current.md",
+    },
+  ];
+
+  const result = await migrateLegacyReviews({
+    reviews: [
+      {
+        reviewPath: "Aha/Reviews/Insight Review.md",
+        content: selectedMemoryReviewNote(),
+      },
+    ],
+    existingData: {
+      sessionStore: {
+        schemaVersion: 1,
+        records: {
+          "srcfs:selected": existing,
+        },
+      },
+    },
+  });
+
+  assert.equal(result.migrated.length, 0);
+  assert.equal(result.unmatched.length, 1);
+  assert.equal(result.unmatched[0].reason, "existing-session-record");
+  assert.equal(result.data.sessionStore.records["srcfs:selected"].feedback.length, 1);
+  assert.match(result.data.sessionStore.records["srcfs:selected"].rounds[0].summary, /OpenAI generated/);
+});
+
 test("legacy migration CLI writes a timestamped backup before mutating plugin data", async () => {
   const vaultRoot = await mkdtemp(path.join(tmpdir(), "aha-legacy-migration-"));
   try {
