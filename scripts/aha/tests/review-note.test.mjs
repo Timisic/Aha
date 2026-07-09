@@ -402,25 +402,32 @@ test("plugin wrapper validator requires structured failure fields", async () => 
   assert.equal(complete.ok, true);
 });
 
-test("plugin command names are short Aha product actions", async () => {
+test("plugin command names rely on Obsidian for the Aha palette prefix", async () => {
   const commands = await loadTsModule("obsidian-plugin/src/commands.ts");
 
   assert.deepEqual(commands.AHA_COMMANDS.checkReadiness, {
     id: "aha-readiness-check",
-    name: "Aha: Check Readiness",
+    name: "Check Readiness",
   });
   assert.deepEqual(commands.AHA_COMMANDS.run, {
     id: "aha-run",
-    name: "Aha: Run",
+    name: "Run",
   });
   assert.deepEqual(commands.AHA_COMMANDS.openPanel, {
     id: "aha-open-panel",
-    name: "Aha: Open Panel",
+    name: "Open Panel",
   });
   assert.deepEqual(commands.AHA_COMMANDS.exportReviewNote, {
     id: "aha-export-review-note",
-    name: "Aha: Export Review Note",
+    name: "Export Review Note",
   });
+  assert.deepEqual(commands.AHA_COMMANDS.openCandidate, {
+    id: "aha-open-candidate-under-cursor",
+    name: "Open Candidate",
+  });
+  for (const command of Object.values(commands.AHA_COMMANDS)) {
+    assert.doesNotMatch(command.name, /^Aha:/);
+  }
 });
 
 test("panel source keeps follow and pin hooks without a Review Note export button", async () => {

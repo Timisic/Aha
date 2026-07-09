@@ -1,22 +1,22 @@
 export const AHA_COMMANDS = {
   checkReadiness: {
     id: "aha-readiness-check",
-    name: "Aha: Check Readiness",
+    name: "Check Readiness",
   },
   run: {
     id: "aha-run",
-    name: "Aha: Run",
+    name: "Run",
   },
   openPanel: {
     id: "aha-open-panel",
-    name: "Aha: Open Panel",
+    name: "Open Panel",
   },
   exportReviewNote: {
     id: "aha-export-review-note",
-    name: "Aha: Export Review Note",
+    name: "Export Review Note",
   },
   openCandidate: {
     id: "aha-open-candidate-under-cursor",
-    name: "Aha: Open Candidate",
+    name: "Open Candidate",
   },
 } as const;
