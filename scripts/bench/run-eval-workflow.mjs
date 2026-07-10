@@ -31,6 +31,7 @@ import {
   writeJsonAtomic,
 } from "../lib/bench-workflow.mjs";
 import { benchVaultRoot } from "../lib/vault-paths.mjs";
+import { normalizeOpenAiTransportStats } from "../lib/openai-transport.mjs";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../..");
 const DEFAULT_REPORTS_ROOT = path.join(REPO_ROOT, "bench/reports");
@@ -441,6 +442,9 @@ async function buildSuiteArtifact(input) {
     reportSha256: await sha256File(reportPath),
     traces,
     effectiveConfigId: input.effectiveConfigId,
+    openAiTransport: normalizeOpenAiTransportStats(
+      input.reportDocument.diagnostics?.openai_transport?.total,
+    ),
   };
 }
 

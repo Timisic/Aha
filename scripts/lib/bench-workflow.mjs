@@ -1,11 +1,18 @@
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  emptyOpenAiTransportStats,
+  mergeOpenAiTransportStats,
+  normalizeOpenAiTransportStats,
+} from "./openai-transport.mjs";
 
 const WORKFLOW_SCHEMA = "AhaBenchmarkWorkflowRun";
 const POINTER_SCHEMA = "AhaBenchmarkLatestPointer";
+const OPENAI_TRANSPORT_FIELDS = ["request_count", "attempt_count", "retry_count", "retry_categories"];
+const RECOVERED_RETRY_WARNING_PREFIX = "recovered_openai_retries:";
 
 const WORKFLOWS = {
   validate: { command: "validate", profile: null, suites: [], promotes: false },
@@ -139,6 +146,7 @@ export function loadPluginRuntimeConfiguration(pluginDataPath, options = {}) {
 }
 
 export function buildWorkflowProvenance(input) {
+  const artifacts = safeArtifacts(input.artifacts);
   return {
     schema: WORKFLOW_SCHEMA,
     version: 1,
@@ -161,16 +169,19 @@ export function buildWorkflowProvenance(input) {
       holdout: safeHoldoutSnapshot(input.holdoutSnapshot),
     },
     runtime_configuration: safeRuntimeConfiguration(input.runtimeConfiguration),
-    artifacts: safeArtifacts(input.artifacts),
+    artifacts,
+    openai_transport: manifestOpenAiTransport(artifacts),
     promotion: {
       eligible: input.promotion?.eligible === true,
       reasons: [...(input.promotion?.reasons ?? [])],
+      warnings: [...(input.promotion?.warnings ?? [])],
     },
   };
 }
 
 export function evaluateBaselinePromotion(input) {
   const reasons = [];
+  const warnings = [];
   if (input.workflow !== "baseline") reasons.push("workflow_not_baseline");
   if (input.profile !== "product-parity") reasons.push("profile_not_product_parity");
   if (!input.startState?.clean) reasons.push("dirty_worktree_start");
@@ -189,9 +200,13 @@ export function evaluateBaselinePromotion(input) {
       reasons.push(`missing_active_suite:${suite}`);
       continue;
     }
-    inspectSuiteArtifact({ suite, expectedIds, input, reasons });
+    inspectSuiteArtifact({ suite, expectedIds, input, reasons, warnings });
   }
-  return { eligible: reasons.length === 0, reasons: Array.from(new Set(reasons)).sort(reasonOrder) };
+  return {
+    eligible: reasons.length === 0,
+    reasons: Array.from(new Set(reasons)).sort(reasonOrder),
+    warnings: Array.from(new Set(warnings)).sort(),
+  };
 }
 
 export function evaluateHoldoutSnapshotTransition(previous, current) {
@@ -212,7 +227,7 @@ export function evaluateHoldoutSnapshotTransition(previous, current) {
   };
 }
 
-function inspectSuiteArtifact({ suite, expectedIds, input, reasons }) {
+function inspectSuiteArtifact({ suite, expectedIds, input, reasons, warnings }) {
   const artifact = input.artifacts?.[suite];
   if (!artifact?.reportPath || !existsSync(artifact.reportPath)) {
     reasons.push(`missing_suite_report:${suite}`);
@@ -242,7 +257,21 @@ function inspectSuiteArtifact({ suite, expectedIds, input, reasons }) {
   if (actualIds.length !== wantedIds.length || actualIds.some((id, index) => id !== wantedIds[index])) {
     reasons.push(`incomplete_case_set:${suite}`);
   }
-  for (const result of results) inspectTrace({ suite, result, reportPath: artifact.reportPath, repoRoot: input.repoRoot, reasons });
+  const traces = results.map((result) => inspectTrace({
+    suite,
+    result,
+    reportPath: artifact.reportPath,
+    repoRoot: input.repoRoot,
+    reasons,
+  }));
+  if (traces.every(Boolean)) {
+    try {
+      const evidence = canonicalSuiteOpenAiEvidence(report, traces, `${suite} report`);
+      warnings.push(...recoveredRetryWarnings(suite, evidence));
+    } catch {
+      reasons.push(`openai_transport_invalid:${suite}`);
+    }
+  }
 }
 
 function inspectTrace({ suite, result, reportPath, repoRoot, reasons }) {
@@ -255,20 +284,21 @@ function inspectTrace({ suite, result, reportPath, repoRoot, reasons }) {
   const tracePath = resolveTracePath(result.trace_json, reportPath, repoRoot);
   if (!tracePath) {
     reasons.push(`trace_missing:${suite}:${result.id}`);
-    return;
+    return null;
   }
   let trace;
   try {
     trace = JSON.parse(readFileSync(tracePath, "utf8"));
   } catch {
     reasons.push(`trace_invalid:${suite}:${result.id}`);
-    return;
+    return null;
   }
   if (trace.schema !== "PipelineTrace" || trace.version !== 2 || trace.profile !== "product-parity") {
     reasons.push(`trace_incompatible:${suite}:${result.id}`);
   } else if (trace.status !== "success") {
     reasons.push(`trace_not_success:${suite}:${result.id}`);
   }
+  return trace;
 }
 
 function resolveTracePath(reference, reportPath, repoRoot) {
@@ -296,11 +326,11 @@ export async function writeJsonAtomic(filePath, value) {
 }
 
 export async function promoteLatestPointer(input) {
-  const manifest = JSON.parse(await readFile(input.manifestPath, "utf8"));
-  if (manifest.promotion?.eligible !== true) throw new Error("Cannot promote an ineligible benchmark manifest.");
   const pointerRoot = path.dirname(path.dirname(path.resolve(input.pointerPath)));
   const resolvedManifest = path.resolve(input.manifestPath);
-  assertInside(pointerRoot, resolvedManifest, "manifest");
+  await assertPhysicalFileInside(pointerRoot, resolvedManifest, "manifest");
+  const manifest = JSON.parse(await readFile(resolvedManifest, "utf8"));
+  if (manifest.promotion?.eligible !== true) throw new Error("Cannot promote an ineligible benchmark manifest.");
   await verifyManifestArtifacts(manifest, resolvedManifest);
   const pointer = {
     schema: POINTER_SCHEMA,
@@ -322,7 +352,7 @@ export async function resolveLatestPointer(pointerPath) {
   if (pointer.schema !== POINTER_SCHEMA || pointer.version !== 1) throw new Error("Unsupported latest benchmark pointer.");
   const reportsRoot = path.dirname(path.dirname(resolvedPointer));
   const manifestPath = path.resolve(path.dirname(resolvedPointer), pointer.manifest);
-  assertInside(reportsRoot, manifestPath, "manifest");
+  await assertPhysicalFileInside(reportsRoot, manifestPath, "manifest");
   if (await sha256File(manifestPath) !== pointer.manifest_sha256) throw new Error("Latest benchmark manifest hash mismatch.");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   await verifyManifestArtifacts(manifest, manifestPath);
@@ -364,32 +394,334 @@ function safeArtifacts(artifacts = {}) {
       report_sha256: artifact.reportSha256 ?? null,
       traces,
       effective_config_id: artifact.effectiveConfigId ?? null,
+      openai_transport: normalizeOpenAiTransportStats(artifact.openAiTransport),
     }];
   }));
 }
 
+function manifestOpenAiTransport(artifacts = {}) {
+  const bySuite = Object.fromEntries(Object.entries(artifacts).map(([suite, artifact]) => [
+    suite,
+    normalizeOpenAiTransportStats(artifact.openai_transport),
+  ]));
+  return {
+    by_suite: bySuite,
+    total: mergeOpenAiTransportStats(...Object.values(bySuite)),
+  };
+}
+
 async function verifyManifestArtifacts(manifest, manifestPath) {
   const runDir = path.dirname(path.resolve(manifestPath));
+  const verifiedBySuite = {};
+  const expectedWarnings = [];
   for (const [suite, artifact] of Object.entries(manifest.artifacts ?? {})) {
     const reportPath = path.resolve(runDir, artifact.report ?? "");
-    assertInside(runDir, reportPath, `${suite} report`);
+    await assertPhysicalFileInside(runDir, reportPath, `${suite} report`);
     assertDigest(artifact.report_sha256, `${suite} report`);
-    if (!existsSync(reportPath) || await sha256File(reportPath) !== artifact.report_sha256) {
+    let reportBytes;
+    try {
+      reportBytes = await readFile(reportPath);
+    } catch {
       throw new Error(`${suite} report hash mismatch.`);
+    }
+    if (sha256(reportBytes) !== artifact.report_sha256) throw new Error(`${suite} report hash mismatch.`);
+    let report;
+    try {
+      report = JSON.parse(reportBytes.toString("utf8"));
+    } catch {
+      throw new Error(`${suite} report is invalid JSON.`);
     }
     const traces = artifact.traces ?? {};
     if (!traces || typeof traces !== "object" || Array.isArray(traces)) {
       throw new Error(`${suite} trace manifest is invalid.`);
     }
+    const verifiedTraces = new Map();
     for (const [traceReference, expectedHash] of Object.entries(traces)) {
       const tracePath = path.resolve(runDir, traceReference);
-      assertInside(runDir, tracePath, `${suite} trace`);
+      await assertPhysicalFileInside(runDir, tracePath, `${suite} trace`);
       assertDigest(expectedHash, `${suite} trace`);
-      if (!existsSync(tracePath) || await sha256File(tracePath) !== expectedHash) {
+      let traceBytes;
+      try {
+        traceBytes = await readFile(tracePath);
+      } catch {
         throw new Error(`${suite} trace hash mismatch.`);
       }
+      if (sha256(traceBytes) !== expectedHash) throw new Error(`${suite} trace hash mismatch.`);
+      let trace;
+      try {
+        trace = JSON.parse(traceBytes.toString("utf8"));
+      } catch {
+        throw new Error(`${suite} trace is invalid JSON.`);
+      }
+      verifiedTraces.set(tracePath, trace);
+    }
+    const resultTraces = (report.results ?? []).map((result) => takeVerifiedResultTrace({
+      result,
+      reportPath,
+      runDir,
+      verifiedTraces,
+      label: `${suite} report result ${result?.id ?? "unknown"}`,
+    }));
+    if (verifiedTraces.size > 0) throw new Error(`${suite} trace manifest does not match its report results.`);
+
+    const evidence = canonicalSuiteOpenAiEvidence(report, resultTraces, `${suite} report`);
+    const artifactTransport = requiredOpenAiTransportStats(
+      artifact.openai_transport,
+      `${suite} artifact OpenAI transport`,
+    );
+    if (!sameOpenAiTransportStats(artifactTransport, evidence.total)) {
+      throw new Error(`${suite} artifact OpenAI transport does not match its report.`);
+    }
+    verifiedBySuite[suite] = evidence.total;
+    expectedWarnings.push(...recoveredRetryWarnings(suite, evidence));
+  }
+  assertManifestOpenAiTransport(manifest.openai_transport, verifiedBySuite);
+  assertRecoveredRetryWarnings(manifest.promotion?.warnings, expectedWarnings);
+}
+
+function canonicalSuiteOpenAiEvidence(report, traces, label) {
+  const results = Array.isArray(report?.results) ? report.results : [];
+  if (!Array.isArray(traces) || traces.length !== results.length) {
+    throw new Error(`${label} trace set does not match its results.`);
+  }
+  const legacyTransportAllowed = !hasRetryCapableEvidence(report)
+    && !suiteHasOpenAiTransportFields(report, traces);
+  const normalizedResults = results.map((result, index) => {
+    return canonicalResultOpenAiEvidence(
+      result,
+      traces[index],
+      `${label} result ${result?.id ?? index}`,
+      legacyTransportAllowed,
+    );
+  });
+  const expected = {
+    query_generation: mergeOpenAiTransportStats(...normalizedResults.map((item) => item.queryGeneration)),
+    relation_judge: mergeOpenAiTransportStats(...normalizedResults.map((item) => item.relationJudge)),
+    total: mergeOpenAiTransportStats(...normalizedResults.map((item) => item.total)),
+  };
+  const diagnosticInput = report?.diagnostics?.openai_transport;
+  const diagnosticSnapshots = {
+    query_generation: transportSnapshot(diagnosticInput?.query_generation, `${label} diagnostics query_generation`),
+    relation_judge: transportSnapshot(diagnosticInput?.relation_judge, `${label} diagnostics relation_judge`),
+    total: transportSnapshot(diagnosticInput?.total, `${label} diagnostics total`),
+  };
+  const diagnosticsPresent = Object.values(diagnosticSnapshots).some((snapshot) => snapshot.present);
+  const resultTelemetryPresent = normalizedResults.some((result) => result.telemetryPresent);
+  if (diagnosticsPresent !== resultTelemetryPresent) {
+    throw new Error(`${label} diagnostics OpenAI transport presence does not match its results.`);
+  }
+  if (diagnosticsPresent && Object.values(diagnosticSnapshots).some((snapshot) => !snapshot.present)) {
+    throw new Error(`${label} diagnostics OpenAI transport telemetry is incomplete.`);
+  }
+  const diagnostics = diagnosticsPresent
+    ? Object.fromEntries(Object.entries(diagnosticSnapshots).map(([stage, snapshot]) => [stage, snapshot.stats]))
+    : expected;
+  for (const stage of ["query_generation", "relation_judge", "total"]) {
+    if (!sameOpenAiTransportStats(diagnostics[stage], expected[stage])) {
+      throw new Error(`${label} OpenAI transport ${stage} does not match merged results.`);
     }
   }
+  return { ...diagnostics, results: normalizedResults };
+}
+
+function canonicalResultOpenAiEvidence(result, trace, label, legacyTransportAllowed) {
+  if (trace?.schema !== "PipelineTrace" || trace.version !== 2 || trace.profile !== "product-parity") {
+    throw new Error(`${label} trace is incompatible.`);
+  }
+  if (trace?.case?.id !== result?.id) {
+    throw new Error(`${label} trace case id does not match its report result.`);
+  }
+  if (trace.status !== result?.runtime_status) {
+    throw new Error(`${label} trace status does not match its report result.`);
+  }
+  if (trace.status !== "success") {
+    throw new Error(`${label} eligible evidence requires successful trace and runtime status.`);
+  }
+  const reportSnapshots = {
+    query_generation: transportSnapshot(result?.openai_transport?.query_generation, `${label} query_generation`),
+    relation_judge: transportSnapshot(result?.openai_transport?.relation_judge, `${label} relation_judge`),
+    total: transportSnapshot(result?.openai_transport?.total, `${label} total`),
+  };
+  const traceSnapshots = {
+    query_generation: transportSnapshot(
+      trace?.steps?.query_generation,
+      `${label} trace query_generation`,
+      { embedded: true },
+    ),
+    relation_judge: transportSnapshot(
+      trace?.steps?.relation_judge,
+      `${label} trace relation_judge`,
+      { embedded: true },
+    ),
+  };
+  const reportPresent = Object.values(reportSnapshots).some((snapshot) => snapshot.present);
+  const tracePresent = Object.values(traceSnapshots).some((snapshot) => snapshot.present);
+  if (!reportPresent && !tracePresent) {
+    if (!legacyTransportAllowed) {
+      throw new Error(`${label} OpenAI transport telemetry is missing for retry-capable evidence.`);
+    }
+    const queryGeneration = emptyOpenAiTransportStats();
+    const relationJudge = emptyOpenAiTransportStats();
+    return {
+      runtimeStatus: result?.runtime_status ?? null,
+      queryGeneration,
+      relationJudge,
+      total: mergeOpenAiTransportStats(queryGeneration, relationJudge),
+      telemetryPresent: false,
+    };
+  }
+  if (reportPresent !== tracePresent) {
+    throw new Error(`${label} OpenAI transport telemetry presence does not match its trace.`);
+  }
+  if (
+    Object.values(reportSnapshots).some((snapshot) => !snapshot.present)
+    || Object.values(traceSnapshots).some((snapshot) => !snapshot.present)
+  ) {
+    throw new Error(`${label} OpenAI transport telemetry is incomplete.`);
+  }
+  for (const stage of ["query_generation", "relation_judge"]) {
+    if (!sameOpenAiTransportStats(reportSnapshots[stage].stats, traceSnapshots[stage].stats)) {
+      throw new Error(`${label} OpenAI transport ${stage} does not match its trace.`);
+    }
+  }
+  const traceTotal = mergeOpenAiTransportStats(
+    traceSnapshots.query_generation.stats,
+    traceSnapshots.relation_judge.stats,
+  );
+  if (!sameOpenAiTransportStats(reportSnapshots.total.stats, traceTotal)) {
+    throw new Error(`${label} OpenAI transport total does not match its trace stages.`);
+  }
+  return {
+    runtimeStatus: result?.runtime_status ?? null,
+    queryGeneration: traceSnapshots.query_generation.stats,
+    relationJudge: traceSnapshots.relation_judge.stats,
+    total: traceTotal,
+    telemetryPresent: true,
+  };
+}
+
+function takeVerifiedResultTrace({ result, reportPath, runDir, verifiedTraces, label }) {
+  const reference = String(result?.trace_json ?? "").trim();
+  if (!reference) throw new Error(`${label} trace is missing from the trace manifest.`);
+  const candidates = path.isAbsolute(reference)
+    ? [path.resolve(reference)]
+    : [path.resolve(path.dirname(reportPath), reference), path.resolve(runDir, reference)];
+  const tracePath = candidates.find((candidate) => verifiedTraces.has(candidate));
+  if (!tracePath) throw new Error(`${label} trace is missing from the trace manifest.`);
+  const trace = verifiedTraces.get(tracePath);
+  verifiedTraces.delete(tracePath);
+  return trace;
+}
+
+function transportSnapshot(value, label, options = {}) {
+  const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
+  const presentFields = isObject
+    ? OPENAI_TRANSPORT_FIELDS.filter((field) => Object.hasOwn(value, field))
+    : [];
+  if (presentFields.length === 0) {
+    if (value !== undefined && !(options.embedded && isObject)) {
+      throw new Error(`${label} telemetry is incomplete.`);
+    }
+    return { present: false, stats: null };
+  }
+  if (!isObject || presentFields.length !== OPENAI_TRANSPORT_FIELDS.length) {
+    throw new Error(`${label} telemetry is incomplete.`);
+  }
+  return { present: true, stats: normalizeOpenAiTransportStats(value) };
+}
+
+function requiredOpenAiTransportStats(value, label) {
+  const snapshot = transportSnapshot(value, label);
+  if (!snapshot.present) throw new Error(`${label} telemetry is missing.`);
+  return snapshot.stats;
+}
+
+function hasRetryCapableEvidence(report) {
+  const metadata = report?.metadata ?? {};
+  const providers = [
+    metadata.llm_provider,
+    metadata.query_agent_provider,
+    metadata.relation_judge_agent_provider,
+    metadata.runtime_configuration?.llm_provider,
+    metadata.effective_configuration?.llm_provider,
+  ];
+  return providers.some((provider) => String(provider ?? "").trim().toLowerCase() === "openai");
+}
+
+function suiteHasOpenAiTransportFields(report, traces) {
+  const values = [];
+  for (const result of report?.results ?? []) {
+    values.push(
+      result?.openai_transport?.query_generation,
+      result?.openai_transport?.relation_judge,
+      result?.openai_transport?.total,
+    );
+  }
+  for (const trace of traces) {
+    values.push(trace?.steps?.query_generation, trace?.steps?.relation_judge);
+  }
+  values.push(
+    report?.diagnostics?.openai_transport?.query_generation,
+    report?.diagnostics?.openai_transport?.relation_judge,
+    report?.diagnostics?.openai_transport?.total,
+  );
+  return values.some((value) => value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && OPENAI_TRANSPORT_FIELDS.some((field) => Object.hasOwn(value, field)));
+}
+
+function recoveredRetryWarnings(suite, evidence) {
+  const recoveredRetries = evidence.results
+    .filter((result) => result.runtimeStatus === "success")
+    .reduce((count, result) => count + result.total.retry_count, 0);
+  return recoveredRetries > 0
+    ? [`${RECOVERED_RETRY_WARNING_PREFIX}${suite}:${recoveredRetries}`]
+    : [];
+}
+
+function assertRecoveredRetryWarnings(actualWarnings, expectedWarnings) {
+  const actual = (Array.isArray(actualWarnings) ? actualWarnings : [])
+    .filter((warning) => String(warning).startsWith(RECOVERED_RETRY_WARNING_PREFIX))
+    .sort();
+  const expected = [...expectedWarnings].sort();
+  if (actual.length !== expected.length || actual.some((warning, index) => warning !== expected[index])) {
+    throw new Error("Benchmark promotion warnings do not match recovered OpenAI retries.");
+  }
+}
+
+function assertManifestOpenAiTransport(value, verifiedBySuite) {
+  const bySuite = value?.by_suite;
+  if (!bySuite || typeof bySuite !== "object" || Array.isArray(bySuite)) {
+    throw new Error("Manifest top-level OpenAI transport does not match suite artifacts.");
+  }
+  const expectedSuites = Object.keys(verifiedBySuite).sort();
+  const actualSuites = Object.keys(bySuite).sort();
+  if (
+    expectedSuites.length !== actualSuites.length
+    || expectedSuites.some((suite, index) => suite !== actualSuites[index])
+  ) {
+    throw new Error("Manifest top-level OpenAI transport does not match suite artifacts.");
+  }
+  for (const suite of expectedSuites) {
+    if (!sameOpenAiTransportStats(
+      requiredOpenAiTransportStats(bySuite[suite], `Manifest ${suite} OpenAI transport`),
+      verifiedBySuite[suite],
+    )) {
+      throw new Error("Manifest top-level OpenAI transport does not match suite artifacts.");
+    }
+  }
+  const expectedTotal = mergeOpenAiTransportStats(...Object.values(verifiedBySuite));
+  if (!sameOpenAiTransportStats(
+    requiredOpenAiTransportStats(value?.total, "Manifest total OpenAI transport"),
+    expectedTotal,
+  )) {
+    throw new Error("Manifest top-level OpenAI transport does not match suite artifacts.");
+  }
+}
+
+function sameOpenAiTransportStats(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function assertDigest(value, label) {
@@ -421,6 +753,27 @@ function safeRuntimeConfiguration(value) {
 function assertInside(root, candidate, label) {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`${label} escapes benchmark reports root.`);
+}
+
+async function assertPhysicalFileInside(root, candidate, label) {
+  assertInside(root, candidate, label);
+  let fileStat;
+  let physicalRoot;
+  let physicalCandidate;
+  try {
+    [fileStat, physicalRoot, physicalCandidate] = await Promise.all([
+      lstat(candidate),
+      realpath(root),
+      realpath(candidate),
+    ]);
+  } catch {
+    throw new Error(`${label} is missing or cannot be resolved.`);
+  }
+  if (fileStat.isSymbolicLink()) throw new Error(`${label} must not be a symlink.`);
+  const relative = path.relative(physicalRoot, physicalCandidate);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`${label} physically escapes benchmark reports root.`);
+  }
 }
 
 function sha256(value) {
