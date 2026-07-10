@@ -266,7 +266,9 @@ function inspectSuiteArtifact({ suite, expectedIds, input, reasons, warnings }) 
   }));
   if (traces.every(Boolean)) {
     try {
-      const evidence = canonicalSuiteOpenAiEvidence(report, traces, `${suite} report`);
+      const evidence = canonicalSuiteOpenAiEvidence(report, traces, `${suite} report`, {
+        requireSuccess: false,
+      });
       warnings.push(...recoveredRetryWarnings(suite, evidence));
     } catch {
       reasons.push(`openai_transport_invalid:${suite}`);
@@ -464,7 +466,9 @@ async function verifyManifestArtifacts(manifest, manifestPath) {
     }));
     if (verifiedTraces.size > 0) throw new Error(`${suite} trace manifest does not match its report results.`);
 
-    const evidence = canonicalSuiteOpenAiEvidence(report, resultTraces, `${suite} report`);
+    const evidence = canonicalSuiteOpenAiEvidence(report, resultTraces, `${suite} report`, {
+      requireSuccess: true,
+    });
     const artifactTransport = requiredOpenAiTransportStats(
       artifact.openai_transport,
       `${suite} artifact OpenAI transport`,
@@ -479,7 +483,7 @@ async function verifyManifestArtifacts(manifest, manifestPath) {
   assertRecoveredRetryWarnings(manifest.promotion?.warnings, expectedWarnings);
 }
 
-function canonicalSuiteOpenAiEvidence(report, traces, label) {
+function canonicalSuiteOpenAiEvidence(report, traces, label, { requireSuccess }) {
   const results = Array.isArray(report?.results) ? report.results : [];
   if (!Array.isArray(traces) || traces.length !== results.length) {
     throw new Error(`${label} trace set does not match its results.`);
@@ -492,6 +496,7 @@ function canonicalSuiteOpenAiEvidence(report, traces, label) {
       traces[index],
       `${label} result ${result?.id ?? index}`,
       legacyTransportAllowed,
+      requireSuccess,
     );
   });
   const expected = {
@@ -524,17 +529,21 @@ function canonicalSuiteOpenAiEvidence(report, traces, label) {
   return { ...diagnostics, results: normalizedResults };
 }
 
-function canonicalResultOpenAiEvidence(result, trace, label, legacyTransportAllowed) {
+function canonicalResultOpenAiEvidence(result, trace, label, legacyTransportAllowed, requireSuccess) {
   if (trace?.schema !== "PipelineTrace" || trace.version !== 2 || trace.profile !== "product-parity") {
     throw new Error(`${label} trace is incompatible.`);
   }
-  if (trace?.case?.id !== result?.id) {
+  const resultId = String(result?.id ?? "").trim();
+  const traceId = String(trace?.case?.id ?? "").trim();
+  if (!resultId || !traceId || traceId !== resultId) {
     throw new Error(`${label} trace case id does not match its report result.`);
   }
-  if (trace.status !== result?.runtime_status) {
+  const resultStatus = String(result?.runtime_status ?? "").trim();
+  const traceStatus = String(trace?.status ?? "").trim();
+  if (!resultStatus || !traceStatus || traceStatus !== resultStatus) {
     throw new Error(`${label} trace status does not match its report result.`);
   }
-  if (trace.status !== "success") {
+  if (requireSuccess && traceStatus !== "success") {
     throw new Error(`${label} eligible evidence requires successful trace and runtime status.`);
   }
   const reportSnapshots = {
@@ -563,7 +572,7 @@ function canonicalResultOpenAiEvidence(result, trace, label, legacyTransportAllo
     const queryGeneration = emptyOpenAiTransportStats();
     const relationJudge = emptyOpenAiTransportStats();
     return {
-      runtimeStatus: result?.runtime_status ?? null,
+      runtimeStatus: resultStatus,
       queryGeneration,
       relationJudge,
       total: mergeOpenAiTransportStats(queryGeneration, relationJudge),
@@ -592,7 +601,7 @@ function canonicalResultOpenAiEvidence(result, trace, label, legacyTransportAllo
     throw new Error(`${label} OpenAI transport total does not match its trace stages.`);
   }
   return {
-    runtimeStatus: result?.runtime_status ?? null,
+    runtimeStatus: resultStatus,
     queryGeneration: traceSnapshots.query_generation.stats,
     relationJudge: traceSnapshots.relation_judge.stats,
     total: traceTotal,

@@ -5,11 +5,64 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { validateAhaResult } from "../lib/result-validator.mjs";
 import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "../lib/note-identity.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const wrapper = path.join(repoRoot, "scripts/aha/run-insight-search.mjs");
+
+test("OpenAI retry budget preserves a full first attempt when the total cap permits it", () => {
+  const script = [
+    `import { openAiAttemptDeadline, openAiRetryBudgetMs } from ${JSON.stringify(pathToFileURL(wrapper).href)};`,
+    "const now = 1_000_000;",
+    "const queryTotal = openAiRetryBudgetMs(60_000, 900_000);",
+    "const relationTotal = openAiRetryBudgetMs(120_000, 900_000);",
+    "const shortTotal = openAiRetryBudgetMs(1_000, 900);",
+    "console.log(JSON.stringify({",
+    "  queryTotal,",
+    "  queryFirst: openAiAttemptDeadline(now + queryTotal, 60_000, 3, now) - now,",
+    "  relationTotal,",
+    "  relationFirst: openAiAttemptDeadline(now + relationTotal, 120_000, 3, now) - now,",
+    "  shortTotal,",
+    "  shortFirst: openAiAttemptDeadline(now + shortTotal, 1_000, 3, now) - now,",
+    "}));",
+  ].join("\n");
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8" });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    queryTotal: 181_000,
+    queryFirst: 60_000,
+    relationTotal: 361_000,
+    relationFirst: 120_000,
+    shortTotal: 900,
+    shortFirst: 300,
+  });
+});
+
+test("wrapper remains executable when launched through a symlink", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-link-"));
+  const linkedWrapper = path.join(temp, "aha-wrapper");
+  await symlink(wrapper, linkedWrapper);
+
+  try {
+    const result = spawnSync(process.execPath, [
+      linkedWrapper,
+      "--workspace",
+      repoRoot,
+      "--source-path",
+      "source.md",
+      "--fixture",
+      path.join(repoRoot, "scripts/aha/fixtures/stub-result.json"),
+    ], { encoding: "utf8" });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).ok, true);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
 
 test("fixture result passes schema validation", async () => {
   const fixture = JSON.parse(await readFixture("stub-result.json"));

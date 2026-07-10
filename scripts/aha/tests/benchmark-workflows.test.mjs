@@ -282,7 +282,6 @@ test("baseline promotion requires clean current complete product-parity evidence
   assert.deepEqual(evaluateBaselinePromotion(common), {
     eligible: false,
     reasons: [
-      "openai_transport_invalid:development",
       "runtime_not_success:development:case-1",
       "trace_not_success:development:case-1",
     ],
@@ -385,6 +384,48 @@ test("latest pointer replacement is atomic and hash-verified", async () => {
   const originalReport = await readFile(reportPath, "utf8");
   const originalTrace = await readFile(tracePath, "utf8");
   const zeroStats = transportStats();
+
+  const failedReport = JSON.parse(originalReport);
+  failedReport.results[0].runtime_status = "failed";
+  const failedTrace = JSON.parse(originalTrace);
+  failedTrace.status = "failed";
+  await writeFile(reportPath, JSON.stringify(failedReport));
+  await writeFile(tracePath, JSON.stringify(failedTrace));
+  const forgedEligibleManifest = {
+    ...manifestDocument,
+    artifacts: {
+      development: {
+        ...manifestDocument.artifacts.development,
+        report_sha256: await sha256File(reportPath),
+        traces: {
+          "development/traces/case-1.json": await sha256File(tracePath),
+        },
+      },
+    },
+    promotion: { ...manifestDocument.promotion, warnings: [] },
+  };
+  await writeJsonAtomic(manifestPath, forgedEligibleManifest);
+  await assert.rejects(
+    () => promoteLatestPointer({
+      pointerPath,
+      manifestPath,
+      gitCommit: "abc123",
+      suiteVersions: { development: "dev-v1" },
+      promotedAt: "2026-07-10T00:02:10.000Z",
+    }),
+    /eligible evidence requires successful trace and runtime status/i,
+  );
+  const pointerWithFailedEvidence = JSON.parse(pointerBeforeMismatch);
+  pointerWithFailedEvidence.manifest_sha256 = await sha256File(manifestPath);
+  await writeJsonAtomic(pointerPath, pointerWithFailedEvidence);
+  await assert.rejects(
+    () => resolveLatestPointer(pointerPath),
+    /eligible evidence requires successful trace and runtime status/i,
+  );
+  await writeFile(pointerPath, pointerBeforeMismatch);
+  await writeFile(reportPath, originalReport);
+  await writeFile(tracePath, originalTrace);
+  await writeJsonAtomic(manifestPath, manifestDocument);
 
   await writeJsonAtomic(manifestPath, {
     ...manifestDocument,

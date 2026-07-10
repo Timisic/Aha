@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { access, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, realpathSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
@@ -8,7 +8,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { validateAhaResult } from "./lib/result-validator.mjs";
 import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "./lib/note-identity.mjs";
 import { isExcludedCandidatePath } from "../lib/candidate-fields.mjs";
@@ -68,15 +68,17 @@ const COMMON_COMMAND_DIRS = [
   path.join(homedir(), ".bun/bin"),
 ];
 
-main().catch((error) => {
-  emitJson(failedAhaResult({
-    sourcePath: null,
-    summary: "Aha wrapper failed before completing the search round.",
-    message: "Aha wrapper failed.",
-    tool: "wrapper",
-    details: error instanceof Error ? error.message : String(error),
-  }), 1);
-});
+if (isMainModule()) {
+  main().catch((error) => {
+    emitJson(failedAhaResult({
+      sourcePath: null,
+      summary: "Aha wrapper failed before completing the search round.",
+      message: "Aha wrapper failed.",
+      tool: "wrapper",
+      details: error instanceof Error ? error.message : String(error),
+    }), 1);
+  });
+}
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -446,12 +448,13 @@ async function runOpenAi(args, prompt, options = {}) {
     };
   }
 
-  const timeoutMs = Number(options.timeoutMs ?? args.timeoutMs);
+  const perAttemptTimeoutMs = Number(options.openAiPerAttemptTimeoutMs ?? options.timeoutMs ?? args.timeoutMs);
+  const totalTimeoutMs = Number(options.openAiTotalTimeoutMs ?? args.timeoutMs);
   let request;
   try {
     request = await postOpenAiJsonWithRetry(openAiResponsesUrl(args.llmBaseUrl), requestBody, {
       "Authorization": `Bearer ${apiKey}`,
-    }, timeoutMs);
+    }, perAttemptTimeoutMs, totalTimeoutMs);
   } catch (error) {
     recordOpenAiTransport(args, options.transportStage, error.openAiTransport);
     throw error;
@@ -480,8 +483,9 @@ async function runOpenAi(args, prompt, options = {}) {
   };
 }
 
-async function postOpenAiJsonWithRetry(url, payload, headers, timeoutMs) {
-  const deadline = Date.now() + Math.max(1, Number(timeoutMs || 120_000));
+async function postOpenAiJsonWithRetry(url, payload, headers, perAttemptTimeoutMs, totalTimeoutMs) {
+  const perAttemptCapMs = positiveTimeoutMs(perAttemptTimeoutMs, 120_000);
+  const deadline = Date.now() + openAiRetryBudgetMs(perAttemptCapMs, totalTimeoutMs);
   const transport = { ...emptyOpenAiTransportStats(), request_count: 1 };
   let lastError = null;
   let pendingRetryCategory = null;
@@ -499,7 +503,11 @@ async function postOpenAiJsonWithRetry(url, payload, headers, timeoutMs) {
         url,
         payload,
         headers,
-        dividedDeadline(deadline, DEFAULT_OPENAI_MAX_ATTEMPTS - attempt + 1),
+        openAiAttemptDeadline(
+          deadline,
+          perAttemptCapMs,
+          DEFAULT_OPENAI_MAX_ATTEMPTS - attempt + 1,
+        ),
       );
       mergeAttemptTransport(transport, response.openAiAttempt);
     } catch (error) {
@@ -639,6 +647,29 @@ function requireRemainingDeadline(deadline) {
   const remaining = remainingDeadlineMs(deadline);
   if (remaining <= 0) throw openAiDeadlineError();
   return remaining;
+}
+
+export function openAiRetryBudgetMs(perAttemptTimeoutMs, totalTimeoutMs) {
+  const perAttemptCapMs = positiveTimeoutMs(perAttemptTimeoutMs, 120_000);
+  const boundedBackoffMs = OPENAI_RETRY_BACKOFF_MS
+    .slice(0, Math.max(0, DEFAULT_OPENAI_MAX_ATTEMPTS - 1))
+    .reduce((total, delayMs) => total + delayMs, 0);
+  const fullRetryBudgetMs = (perAttemptCapMs * DEFAULT_OPENAI_MAX_ATTEMPTS) + boundedBackoffMs;
+  return Math.min(positiveTimeoutMs(totalTimeoutMs, fullRetryBudgetMs), fullRetryBudgetMs);
+}
+
+export function openAiAttemptDeadline(
+  totalDeadline,
+  perAttemptTimeoutMs,
+  remainingSlots,
+  now = Date.now(),
+) {
+  const remaining = Math.max(0, Number(totalDeadline) - Number(now));
+  if (remaining <= 0) throw openAiDeadlineError();
+  const slots = Math.max(1, Math.floor(Number(remainingSlots) || 1));
+  const fairBudgetMs = Math.max(1, Math.floor(remaining / slots));
+  const perAttemptCapMs = positiveTimeoutMs(perAttemptTimeoutMs, fairBudgetMs);
+  return Math.min(totalDeadline, now + Math.min(perAttemptCapMs, fairBudgetMs));
 }
 
 function dividedDeadline(deadline, remainingSlots) {
@@ -1283,6 +1314,8 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
         schemaPath: path.join(args.workspace, "scripts/aha/aha-result.schema.json"),
         outputFileName,
         timeoutMs: Math.min(Number(args.timeoutMs || 300_000), timeoutMs),
+        openAiPerAttemptTimeoutMs: Number(timeoutMs),
+        openAiTotalTimeoutMs: Number(args.timeoutMs || 300_000),
         sandbox: "read-only",
         isolateCwd: true,
         ignoreRules: true,
@@ -1326,6 +1359,8 @@ function queryPlanAdapter(args) {
       schemaPath: path.join(args.workspace, "scripts/aha/aha-query-plan.schema.json"),
       outputFileName,
       timeoutMs: Math.min(Number(args.timeoutMs || 300_000), timeoutMs),
+      openAiPerAttemptTimeoutMs: Number(timeoutMs),
+      openAiTotalTimeoutMs: Number(args.timeoutMs || 300_000),
       sandbox: "read-only",
       isolateCwd: true,
       ignoreRules: true,
@@ -2175,6 +2210,20 @@ function clampPositiveInteger(value, fallback) {
   const parsed = Number.parseInt(String(value), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+}
+
+function positiveTimeoutMs(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : fallback;
+}
+
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+  }
 }
 
 function emitJson(value, exitCode = 0) {
