@@ -339,6 +339,7 @@ export function resolveBenchmarkCaseIdentities(caseItem, resolver = buildVaultPa
 
   const blocksScoring = diagnostics.ambiguous.length > 0
     || diagnostics.not_found.length > 0
+    || diagnostics.duplicates.length > 0
     || diagnostics.schema_conflicts.length > 0
     || diagnostics.label_conflicts.length > 0;
   return {

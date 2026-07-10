@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -942,7 +943,9 @@ test("validate workflow checks a sanitized synthetic suite without a private vau
     "--run-id", "validate-test",
   ], { cwd: repoRoot, encoding: "utf8" });
   assert.notEqual(repeated.status, 0);
-  assert.match(repeated.stderr, /run directory already exists/i);
+  assert.equal(repeated.stdout, "");
+  assert.equal(repeated.stderr, "Evaluation workflow setup failed: workflow_run_exists.\n");
+  assert.ok(!`${repeated.stdout}\n${repeated.stderr}`.includes(root));
   assert.equal(await readFile(path.join(reportsRoot, "runs/validate-test/manifest.json"), "utf8"), manifestBefore);
   await rm(root, { recursive: true, force: true });
 });
@@ -991,6 +994,443 @@ test("validate workflow rejects invalid off cases without making them runnable",
   const manifest = JSON.parse(await readFile(path.join(reportsRoot, "runs/validate-off-test/manifest.json"), "utf8"));
   assert.equal(manifest.status, "failed");
   await rm(root, { recursive: true, force: true });
+});
+
+test("validate manifest preserves safe identity conflict diagnostics without private evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-workflow-identity-conflict-"));
+  const vaultRoot = path.join(root, "Private Vault");
+  const reportsRoot = path.join(root, "reports");
+  const casesPath = path.join(root, "cases.json");
+  const privateNoteText = "PRIVATE_NOTE_TEXT_MUST_NOT_LEAK";
+  await mkdir(path.join(vaultRoot, "Folder A"), { recursive: true });
+  await mkdir(path.join(vaultRoot, "Folder B"), { recursive: true });
+  await writeFile(path.join(vaultRoot, "Folder A", "Same.md"), privateNoteText);
+  await writeFile(path.join(vaultRoot, "Folder B", "Same.md"), privateNoteText);
+  await writeFile(casesPath, JSON.stringify({
+    version: 3,
+    collection: "obsidian",
+    suites: { development: { version: "dev-private-v1" } },
+    cases: [{
+      id: "identity-conflict-case",
+      state: "active",
+      suite: "development",
+      evaluation_mode: "discovery",
+      provenance: { origin: "reviewed", reason: "Ambiguous identity regression case." },
+      input: { thought: "Private standalone thought." },
+      gold: { must: ["Same.md"], nice: [], noise: [] },
+    }],
+  }));
+
+  const result = spawnSync(process.execPath, [
+    "scripts/bench/run-eval-workflow.mjs",
+    "validate",
+    "--private",
+    "--cases", casesPath,
+    "--vault-root", vaultRoot,
+    "--reports-root", reportsRoot,
+    "--run-id", "validate-identity-conflict",
+  ], { cwd: repoRoot, encoding: "utf8" });
+
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /identity_conflicts/i);
+  const manifest = JSON.parse(await readFile(
+    path.join(reportsRoot, "runs/validate-identity-conflict/manifest.json"),
+    "utf8",
+  ));
+  assert.equal(manifest.status, "failed");
+  assert.equal(manifest.validation.reason, "identity_conflicts");
+  const encoded = JSON.stringify(manifest);
+  assert.ok(!encoded.includes(root));
+  assert.ok(!encoded.includes(privateNoteText));
+  assert.ok(!encoded.includes("Folder A"));
+  assert.ok(!encoded.includes("Folder B"));
+  await rm(root, { recursive: true, force: true });
+});
+
+test("reserved workflow runs record privacy-bounded failed manifests on preflight exceptions", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-workflow-preflight-failure-"));
+  const reportsRoot = path.join(root, "reports");
+  const invalidCasesPath = path.join(root, "invalid-cases.json");
+  const placeholderCasesPath = path.join(root, "placeholder-cases.json");
+  const invalidPluginDataPath = path.join(root, "private-plugin-data.json");
+  const smokeHookPath = path.join(root, "fail-smoke-spawn.cjs");
+  const privateCaseText = "PRIVATE_CASE_BODY_MUST_NOT_LEAK";
+  const privatePluginSecret = "PRIVATE_PLUGIN_SECRET_MUST_NOT_LEAK";
+  const privateSmokeError = "PRIVATE_SMOKE_ERROR_MUST_NOT_LEAK";
+
+  await writeFile(invalidCasesPath, `{\"privacy\":\"${privateCaseText}\"`);
+  await writeFile(placeholderCasesPath, JSON.stringify({ privacy: privateCaseText }));
+  await writeFile(
+    invalidPluginDataPath,
+    `{\"settings\":{\"llmApiKey\":\"${privatePluginSecret}\"`,
+  );
+  await writeFile(smokeHookPath, [
+    'const childProcess = require("node:child_process");',
+    'const { syncBuiltinESMExports } = require("node:module");',
+    "const originalSpawnSync = childProcess.spawnSync;",
+    "childProcess.spawnSync = function (command, args, options) {",
+    `  if (command === process.execPath && args?.[0] === "--test") throw new Error("${privateSmokeError}");`,
+    "  return originalSpawnSync(command, args, options);",
+    "};",
+    "syncBuiltinESMExports();",
+    "",
+  ].join("\n"));
+
+  const scenarios = [
+    {
+      command: "validate",
+      args: ["--cases", invalidCasesPath],
+      expectedFailure: { validation: { status: "failed", reason: "validation_failed" } },
+    },
+    {
+      command: "smoke",
+      env: { NODE_OPTIONS: `--require=${smokeHookPath}` },
+      expectedFailure: { failure: { phase: "preflight", reason: "workflow_preflight_failed" } },
+    },
+    {
+      command: "baseline",
+      args: ["--cases", placeholderCasesPath, "--plugin-data", invalidPluginDataPath],
+      expectedFailure: { failure: { phase: "preflight", reason: "workflow_preflight_failed" } },
+    },
+    {
+      command: "diagnostic",
+      args: ["--cases", placeholderCasesPath, "--plugin-data", invalidPluginDataPath],
+      expectedFailure: { failure: { phase: "preflight", reason: "workflow_preflight_failed" } },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const runId = `preflight-${scenario.command}`;
+    const result = spawnSync(process.execPath, [
+      "scripts/bench/run-eval-workflow.mjs",
+      scenario.command,
+      "--reports-root", reportsRoot,
+      "--run-id", runId,
+      ...(scenario.args ?? []),
+    ], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, ...(scenario.env ?? {}) },
+    });
+
+    assert.notEqual(result.status, 0, `${scenario.command} unexpectedly succeeded`);
+    const output = `${result.stdout}\n${result.stderr}`;
+    assert.ok(!output.includes(root), `${scenario.command} leaked its private root: ${output}`);
+    assert.ok(!output.includes(privateCaseText), `${scenario.command} leaked case text`);
+    assert.ok(!output.includes(privatePluginSecret), `${scenario.command} leaked plugin secret`);
+    assert.ok(!output.includes(privateSmokeError), `${scenario.command} leaked smoke marker`);
+    if (scenario.expectedFailure.failure) {
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "Evaluation workflow failed: workflow_preflight_failed.\n");
+    } else {
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "Validation failed: validation_failed.\n");
+    }
+    const manifestPath = path.join(reportsRoot, "runs", runId, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.equal(manifest.status, "failed");
+    if (scenario.expectedFailure.failure) {
+      assert.deepEqual(manifest.failure, scenario.expectedFailure.failure);
+      assert.deepEqual(manifest.promotion, {
+        eligible: false,
+        reasons: ["workflow_preflight_failed"],
+        warnings: [],
+      });
+    } else {
+      assert.equal(manifest.validation.status, scenario.expectedFailure.validation.status);
+      assert.equal(manifest.validation.reason, scenario.expectedFailure.validation.reason);
+    }
+    const encoded = JSON.stringify(manifest);
+    assert.ok(!encoded.includes(root));
+    assert.ok(!encoded.includes(privateCaseText));
+    assert.ok(!encoded.includes(privatePluginSecret));
+    assert.ok(!encoded.includes(privateSmokeError));
+  }
+
+  const failedBaselineManifestPath = path.join(
+    reportsRoot,
+    "runs/preflight-baseline/manifest.json",
+  );
+  const failedBaselineManifest = await readFile(failedBaselineManifestPath, "utf8");
+  const repeatedBaseline = spawnSync(process.execPath, [
+    "scripts/bench/run-eval-workflow.mjs",
+    "baseline",
+    "--reports-root", reportsRoot,
+    "--run-id", "preflight-baseline",
+    "--cases", placeholderCasesPath,
+    "--plugin-data", invalidPluginDataPath,
+  ], { cwd: repoRoot, encoding: "utf8" });
+  assert.notEqual(repeatedBaseline.status, 0);
+  assert.equal(repeatedBaseline.stdout, "");
+  assert.equal(repeatedBaseline.stderr, "Evaluation workflow setup failed: workflow_run_exists.\n");
+  assert.ok(!`${repeatedBaseline.stdout}\n${repeatedBaseline.stderr}`.includes(root));
+  assert.equal(await readFile(failedBaselineManifestPath, "utf8"), failedBaselineManifest);
+
+  const badOption = spawnSync(process.execPath, [
+    "scripts/bench/run-eval-workflow.mjs",
+    "validate",
+    `--private-${privatePluginSecret}`,
+  ], { cwd: repoRoot, encoding: "utf8" });
+  assert.equal(badOption.status, 1);
+  assert.equal(badOption.stdout, "");
+  assert.equal(badOption.stderr, "Evaluation workflow setup failed: workflow_setup_failed.\n");
+  assert.ok(!`${badOption.stdout}\n${badOption.stderr}`.includes(privatePluginSecret));
+
+  await rm(root, { recursive: true, force: true });
+});
+
+test("execution exceptions retain recorded provenance and emit only a safe failure code", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-workflow-execution-failure-"));
+  const vaultRoot = path.join(root, "Private Vault");
+  const reportsRoot = path.join(root, "reports");
+  const casesPath = path.join(root, "private-cases.json");
+  const pluginDataPath = path.join(root, "private-plugin-data.json");
+  const runnerPath = path.join(root, "private-runner.mjs");
+  const markerPath = path.join(repoRoot, `.aha-private-execution-marker-${randomUUID()}`);
+  const privateText = "PRIVATE_EXECUTION_TEXT_MUST_NOT_LEAK";
+  const privateSecret = "PRIVATE_EXECUTION_SECRET_MUST_NOT_LEAK";
+  const retryStats = {
+    request_count: 1,
+    attempt_count: 2,
+    retry_count: 1,
+    retry_categories: { timeout: 1 },
+  };
+  const recordedArtifact = {
+    report: "development/already-recorded-report.json",
+    report_sha256: "a".repeat(64),
+    traces: { "development/traces/already-recorded.json": "b".repeat(64) },
+    effective_config_id: "c".repeat(64),
+    openai_transport: retryStats,
+  };
+
+  await assert.rejects(readFile(markerPath), { code: "ENOENT" });
+
+  await mkdir(path.join(vaultRoot, "Notes"), { recursive: true });
+  await writeFile(path.join(vaultRoot, "Notes/Dev.md"), privateText);
+  await writeFile(path.join(vaultRoot, "Notes/Holdout.md"), privateText);
+  await writeFile(casesPath, JSON.stringify({
+    version: 3,
+    collection: "obsidian",
+    suites: {
+      development: { version: "dev-execution-v1" },
+      holdout: { version: "holdout-execution-v1", frozen: true, change_reason: "Initial frozen split." },
+    },
+    cases: [
+      {
+        id: "execution-development",
+        state: "active",
+        suite: "development",
+        evaluation_mode: "discovery",
+        provenance: { origin: "reviewed", reason: "Execution failure regression." },
+        input: { thought: "Private development thought." },
+        gold: { must: ["Notes/Dev.md"], nice: [], noise: [] },
+      },
+      {
+        id: "execution-holdout",
+        state: "active",
+        suite: "holdout",
+        evaluation_mode: "discovery",
+        provenance: { origin: "reviewed", reason: "Execution failure regression." },
+        input: { thought: "Private holdout thought." },
+        gold: { must: ["Notes/Holdout.md"], nice: [], noise: [] },
+      },
+    ],
+  }));
+  await writeFile(pluginDataPath, JSON.stringify({ settings: {
+    ahaWorkspace: repoRoot,
+    llmProvider: "openai",
+    llmBaseUrl: "https://example.invalid/v1",
+    llmModel: "private-model-name",
+    llmApiKey: privateSecret,
+    llmApiKeyEnv: "AHA_EXECUTION_TEST_KEY",
+    codexCommand: "/opt/private/codex",
+    codexModel: "private-codex-model",
+    codexReasoningEffort: "high",
+    codexSandbox: "read-only",
+    qmdRunner: "cli",
+    qmdCommand: "/opt/private/qmd",
+    qmdIndex: "private-index",
+    qmdRerank: false,
+    obsidianCommand: "/opt/private/obsidian",
+    wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
+    targetCandidates: 17,
+    useFixtureResult: false,
+  } }));
+  await writeFile(runnerPath, [
+    'import { readFileSync, writeFileSync } from "node:fs";',
+    'import path from "node:path";',
+    "const args = process.argv.slice(2);",
+    'const reportPath = args[args.indexOf("--report") + 1];',
+    "const runDir = path.dirname(path.dirname(reportPath));",
+    'const manifestPath = path.join(runDir, "manifest.json");',
+    'const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));',
+    `manifest.artifacts = { development: ${JSON.stringify(recordedArtifact)} };`,
+    `manifest.openai_transport = { by_suite: { development: ${JSON.stringify(retryStats)} }, total: ${JSON.stringify(retryStats)} };`,
+    "manifest.private_extra = process.env.AHA_EXECUTION_TEST_KEY;",
+    "manifest.cases.private_path = reportPath;",
+    "manifest.runtime_configuration.private_secret = process.env.AHA_EXECUTION_TEST_KEY;",
+    `manifest.artifacts.development.private_text = "${privateText}";`,
+    `manifest.openai_transport.private_marker = "${privateText}";`,
+    "if (process.env.AHA_UNSAFE_RUNNING_MANIFEST === \"1\") manifest.artifacts.development.report = reportPath;",
+    `writeFileSync(manifestPath, process.env.AHA_CORRUPT_RUNNING_MANIFEST === "1" ? '{"private":"${privateText}"' : \`${"${JSON.stringify(manifest, null, 2)}"}\\n\`);`,
+    `writeFileSync(process.env.AHA_EXECUTION_MARKER_PATH, "${privateText}");`,
+    `writeFileSync(reportPath, '{"private":"${privateText}"');`,
+    "",
+  ].join("\n"));
+
+  try {
+    const result = spawnSync(process.execPath, [
+      "scripts/bench/run-eval-workflow.mjs",
+      "baseline",
+      "--cases", casesPath,
+      "--vault-root", vaultRoot,
+      "--plugin-data", pluginDataPath,
+      "--runner", runnerPath,
+      "--reports-root", reportsRoot,
+      "--run-id", "execution-failure",
+    ], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, AHA_EXECUTION_MARKER_PATH: markerPath },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "Evaluation workflow failed: workflow_execution_failed.\n");
+    const output = `${result.stdout}\n${result.stderr}`;
+    assert.ok(!output.includes(root));
+    assert.ok(!output.includes(markerPath));
+    assert.ok(!output.includes(privateText));
+    assert.ok(!output.includes(privateSecret));
+
+    const manifest = JSON.parse(await readFile(
+      path.join(reportsRoot, "runs/execution-failure/manifest.json"),
+      "utf8",
+    ));
+    const currentHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim();
+    const currentClean = spawnSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim() === "";
+    assert.equal(manifest.status, "failed");
+    assert.match(manifest.finished_at, /^\d{4}-\d{2}-\d{2}T/);
+    assert.deepEqual(manifest.failure, { phase: "execution", reason: "workflow_execution_failed" });
+    assert.equal(manifest.git.commit_end, currentHead);
+    assert.equal(manifest.git.clean_end, currentClean);
+    assert.equal(manifest.git.clean_end, false);
+    assert.equal(manifest.cases.suite_versions.development, "dev-execution-v1");
+    assert.equal(manifest.cases.suite_versions.holdout, "holdout-execution-v1");
+    assert.equal(manifest.cases.counts.development, 1);
+    assert.equal(manifest.cases.counts.holdout, 1);
+    assert.equal(manifest.cases.holdout.version, "holdout-execution-v1");
+    assert.match(manifest.cases.sha256, /^[a-f0-9]{64}$/);
+    assert.equal(manifest.runtime_configuration.source, "obsidian-plugin-settings");
+    assert.match(manifest.runtime_configuration.settings_id, /^[a-f0-9]{64}$/);
+    assert.deepEqual(manifest.artifacts.development, recordedArtifact);
+    assert.deepEqual(manifest.openai_transport, {
+      by_suite: { development: retryStats },
+      total: retryStats,
+    });
+    assert.deepEqual(manifest.promotion, {
+      eligible: false,
+      reasons: ["workflow_execution_failed"],
+      warnings: [],
+    });
+    const manifestText = JSON.stringify(manifest);
+    assert.ok(!manifestText.includes(root));
+    assert.ok(!manifestText.includes(markerPath));
+    assert.ok(!manifestText.includes(privateText));
+    assert.ok(!manifestText.includes(privateSecret));
+
+    const corruptResult = spawnSync(process.execPath, [
+      "scripts/bench/run-eval-workflow.mjs",
+      "diagnostic",
+      "--cases", casesPath,
+      "--vault-root", vaultRoot,
+      "--plugin-data", pluginDataPath,
+      "--runner", runnerPath,
+      "--reports-root", reportsRoot,
+      "--run-id", "execution-corrupt-manifest",
+    ], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AHA_EXECUTION_MARKER_PATH: markerPath,
+        AHA_CORRUPT_RUNNING_MANIFEST: "1",
+      },
+    });
+    assert.equal(corruptResult.status, 1, corruptResult.stderr || corruptResult.stdout);
+    assert.equal(corruptResult.stdout, "");
+    assert.equal(corruptResult.stderr, "Evaluation workflow failed: workflow_execution_failed.\n");
+    const corruptOutput = `${corruptResult.stdout}\n${corruptResult.stderr}`;
+    assert.ok(!corruptOutput.includes(root));
+    assert.ok(!corruptOutput.includes(markerPath));
+    assert.ok(!corruptOutput.includes(privateText));
+    assert.ok(!corruptOutput.includes(privateSecret));
+    const corruptManifest = JSON.parse(await readFile(
+      path.join(reportsRoot, "runs/execution-corrupt-manifest/manifest.json"),
+      "utf8",
+    ));
+    const corruptEndHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim();
+    const corruptEndClean = spawnSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf8" }).stdout.trim() === "";
+    assert.equal(corruptManifest.status, "failed");
+    assert.match(corruptManifest.finished_at, /^\d{4}-\d{2}-\d{2}T/);
+    assert.deepEqual(corruptManifest.failure, { phase: "execution", reason: "workflow_execution_failed" });
+    assert.equal(corruptManifest.git.commit_end, corruptEndHead);
+    assert.equal(corruptManifest.git.clean_end, corruptEndClean);
+    assert.equal(corruptManifest.git.clean_end, false);
+    assert.deepEqual(corruptManifest.cases.suite_versions, {});
+    assert.deepEqual(corruptManifest.cases.counts, {});
+    assert.equal(corruptManifest.runtime_configuration, null);
+    assert.deepEqual(corruptManifest.artifacts, {});
+    assert.deepEqual(corruptManifest.promotion, {
+      eligible: false,
+      reasons: ["workflow_execution_failed"],
+      warnings: [],
+    });
+    const corruptManifestText = JSON.stringify(corruptManifest);
+    assert.ok(!corruptManifestText.includes(root));
+    assert.ok(!corruptManifestText.includes(markerPath));
+    assert.ok(!corruptManifestText.includes(privateText));
+    assert.ok(!corruptManifestText.includes(privateSecret));
+
+    const unsafeResult = spawnSync(process.execPath, [
+      "scripts/bench/run-eval-workflow.mjs",
+      "diagnostic",
+      "--cases", casesPath,
+      "--vault-root", vaultRoot,
+      "--plugin-data", pluginDataPath,
+      "--runner", runnerPath,
+      "--reports-root", reportsRoot,
+      "--run-id", "execution-unsafe-manifest",
+    ], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AHA_EXECUTION_MARKER_PATH: markerPath,
+        AHA_UNSAFE_RUNNING_MANIFEST: "1",
+      },
+    });
+    assert.equal(unsafeResult.status, 1, unsafeResult.stderr || unsafeResult.stdout);
+    assert.equal(unsafeResult.stdout, "");
+    assert.equal(unsafeResult.stderr, "Evaluation workflow failed: workflow_execution_failed.\n");
+    const unsafeManifest = JSON.parse(await readFile(
+      path.join(reportsRoot, "runs/execution-unsafe-manifest/manifest.json"),
+      "utf8",
+    ));
+    assert.equal(unsafeManifest.status, "failed");
+    assert.deepEqual(unsafeManifest.failure, { phase: "execution", reason: "workflow_execution_failed" });
+    assert.deepEqual(unsafeManifest.cases.suite_versions, {});
+    assert.equal(unsafeManifest.runtime_configuration, null);
+    assert.deepEqual(unsafeManifest.artifacts, {});
+    const unsafeManifestText = JSON.stringify(unsafeManifest);
+    assert.ok(!unsafeManifestText.includes(root));
+    assert.ok(!unsafeManifestText.includes(markerPath));
+    assert.ok(!unsafeManifestText.includes(privateText));
+    assert.ok(!unsafeManifestText.includes(privateSecret));
+  } finally {
+    await rm(markerPath, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 async function writeSuiteArtifact(root, suite, caseIds, options = {}) {

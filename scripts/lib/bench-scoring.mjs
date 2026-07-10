@@ -373,17 +373,27 @@ export function failureAttributionFromTrace(caseItem, trace, options = {}) {
     });
   }
 
+  const qmdRuns = steps.qmd_runs;
+  const hasPreJudgeCandidates = Array.isArray(steps.pre_judge_candidates);
+  const hasPreRerankCandidates = Array.isArray(steps.pre_rerank_candidates);
+  const missingCandidatePathFields = [
+    ...(!Array.isArray(qmdRuns) ? ["qmd_runs"] : []),
+    ...(!hasPreJudgeCandidates && !hasPreRerankCandidates ? ["pre_judge_candidates"] : []),
+    ...(!Array.isArray(steps.final_candidates) ? ["final_candidates"] : []),
+  ];
+  if (missingCandidatePathFields.length > 0) {
+    return unattributedFailure(missingCandidatePathFields);
+  }
+
   const reviewed = steps.relation_judge?.reviewed_candidates;
   if (!Array.isArray(reviewed)) {
     return unattributedFailure(["relation_judge.reviewed_candidates"]);
   }
   const judgeBudget = Number(options.judgeBudget ?? 20);
   const reviewedWithinBudget = reviewed.slice(0, judgeBudget);
-  const preJudge = Array.isArray(steps.pre_judge_candidates)
+  const preJudge = hasPreJudgeCandidates
     ? steps.pre_judge_candidates
-    : Array.isArray(steps.pre_rerank_candidates)
-      ? steps.pre_rerank_candidates
-      : [];
+    : steps.pre_rerank_candidates;
   const reviewedMisses = missedMust.filter((file) => traceRank(reviewedWithinBudget, file, options) !== null);
   const beyondJudgeBudget = missedMust.filter((file) =>
     traceRank(preJudge, file, options) !== null && traceRank(reviewedWithinBudget, file, options) === null,
@@ -398,7 +408,7 @@ export function failureAttributionFromTrace(caseItem, trace, options = {}) {
       reviewed_must_count: reviewedMisses.length,
       must_found_beyond_judge_budget: beyondJudgeBudget.length,
       judge_budget: judgeBudget,
-      qmd_run_count: Array.isArray(steps.qmd_runs) ? steps.qmd_runs.length : 0,
+      qmd_run_count: qmdRuns.length,
     });
   }
 

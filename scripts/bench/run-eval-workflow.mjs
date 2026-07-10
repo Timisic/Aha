@@ -46,6 +46,25 @@ const SMOKE_TESTS = [
   "scripts/aha/tests/benchmark-workflows.test.mjs",
   "scripts/aha/tests/review-seeds-collector.test.mjs",
 ];
+const SAFE_VALIDATION_REASON_CODES = [
+  "missing_suite_metadata",
+  "invalid_suite_metadata",
+  "missing_suite",
+  "invalid_suite",
+  "missing_evaluation_mode",
+  "invalid_evaluation_mode",
+  "missing_provenance",
+  "graph_evidence_conflicts",
+  "mode_review_required",
+  "identity_conflicts",
+  "duplicate_case_ids",
+  "cross_suite_leakage",
+  "missing_privacy_declaration",
+  "non_synthetic_provenance",
+  "private_paths",
+  "forbidden_content_fields",
+];
+const EVIDENCE_SUITES = ["development", "holdout"];
 
 const USAGE = [
   "Usage:",
@@ -74,17 +93,30 @@ async function main() {
   const runId = options.runId || defaultRunId(specification.command, gitStart.head);
   const runDir = path.join(options.reportsRoot, "runs", runId);
   const manifestPath = path.join(runDir, "manifest.json");
+  const startedAt = new Date().toISOString();
   await createImmutableRunDirectory(runDir);
 
-  if (specification.command === "validate") {
-    process.exitCode = await runValidate({ ...options, specification, gitStart, runId, runDir, manifestPath });
-    return;
+  const context = { ...options, specification, gitStart, runId, runDir, manifestPath, startedAt };
+  try {
+    if (specification.command === "validate") {
+      process.exitCode = await runValidate(context);
+      return;
+    }
+    if (specification.command === "smoke") {
+      process.exitCode = await runSmoke(context);
+      return;
+    }
+    process.exitCode = await runPipeline(context);
+  } catch {
+    const phase = existsSync(manifestPath) ? "execution" : "preflight";
+    try {
+      await writeFailedWorkflowManifest(context, phase);
+      console.error(`Evaluation workflow failed: workflow_${phase}_failed.`);
+    } catch {
+      console.error("Evaluation workflow failed: workflow_failure_manifest_write_failed.");
+    }
+    process.exitCode = 1;
   }
-  if (specification.command === "smoke") {
-    process.exitCode = await runSmoke({ ...options, specification, gitStart, runId, runDir, manifestPath });
-    return;
-  }
-  process.exitCode = await runPipeline({ ...options, specification, gitStart, runId, runDir, manifestPath });
 }
 
 function parseArgs(argv) {
@@ -140,7 +172,6 @@ function parseArgs(argv) {
 }
 
 async function runValidate(context) {
-  const startedAt = new Date().toISOString();
   let status = "complete";
   let validation;
   try {
@@ -149,8 +180,9 @@ async function runValidate(context) {
       : await validatePublicCases(context.cases);
   } catch (error) {
     status = "failed";
-    validation = { status: "failed", reason: "validation_failed" };
-    console.error(error.message);
+    const reason = safeValidationFailureReason(error);
+    validation = { status: "failed", reason };
+    console.error(`Validation failed: ${reason}.`);
   }
   const endState = readGitState(REPO_ROOT);
   const manifest = buildWorkflowProvenance({
@@ -158,7 +190,7 @@ async function runValidate(context) {
     runId: context.runId,
     profile: null,
     status,
-    startedAt,
+    startedAt: context.startedAt,
     finishedAt: new Date().toISOString(),
     startState: context.gitStart,
     endState,
@@ -170,12 +202,13 @@ async function runValidate(context) {
   });
   manifest.validation = safeValidationSummary(validation);
   await writeJsonAtomic(context.manifestPath, manifest);
-  console.log(`Validation ${status}: ${relativeToRepo(context.manifestPath)}`);
+  if (status === "complete") {
+    console.log(`Validation complete: ${relativeToRepo(context.manifestPath)}`);
+  }
   return status === "complete" ? 0 : 1;
 }
 
 async function runSmoke(context) {
-  const startedAt = new Date().toISOString();
   const result = spawnSync(process.execPath, ["--test", "--test-concurrency=1", ...SMOKE_TESTS], {
     cwd: REPO_ROOT,
     stdio: "inherit",
@@ -186,7 +219,7 @@ async function runSmoke(context) {
     runId: context.runId,
     profile: null,
     status,
-    startedAt,
+    startedAt: context.startedAt,
     finishedAt: new Date().toISOString(),
     startState: context.gitStart,
     endState: readGitState(REPO_ROOT),
@@ -201,7 +234,6 @@ async function runSmoke(context) {
 }
 
 async function runPipeline(context) {
-  const startedAt = new Date().toISOString();
   const casesHashStart = await sha256File(context.cases);
   const pluginRuntime = loadPluginRuntimeConfiguration(context.pluginData, { repoRoot: REPO_ROOT });
   const previousVaultRoot = process.env.AHA_BENCH_VAULT_ROOT;
@@ -236,7 +268,7 @@ async function runPipeline(context) {
     runId: context.runId,
     profile: context.specification.profile,
     status: "running",
-    startedAt,
+    startedAt: context.startedAt,
     finishedAt: null,
     startState: context.gitStart,
     endState: context.gitStart,
@@ -316,7 +348,7 @@ async function runPipeline(context) {
     runId: context.runId,
     profile: context.specification.profile,
     status: runnerFailed ? "failed" : promotion.eligible ? "complete" : "ineligible",
-    startedAt,
+    startedAt: context.startedAt,
     finishedAt: new Date().toISOString(),
     startState: context.gitStart,
     endState,
@@ -469,9 +501,171 @@ async function createImmutableRunDirectory(runDir) {
   try {
     await mkdir(runDir);
   } catch (error) {
-    if (error?.code === "EEXIST") throw new Error(`Run directory already exists: ${relativeToRepo(runDir)}`);
+    if (error?.code === "EEXIST") {
+      const runExists = new Error("Evaluation workflow run already exists.");
+      runExists.code = "WORKFLOW_RUN_EXISTS";
+      throw runExists;
+    }
     throw error;
   }
+}
+
+async function writeFailedWorkflowManifest(context, phase) {
+  const reason = `workflow_${phase}_failed`;
+  const endState = readGitState(REPO_ROOT);
+  const existing = await readExistingWorkflowManifest(context);
+  const minimal = buildWorkflowProvenance({
+    workflow: context.specification.command,
+    runId: context.runId,
+    profile: context.specification.profile,
+    status: "failed",
+    startedAt: context.startedAt,
+    finishedAt: new Date().toISOString(),
+    startState: context.gitStart,
+    endState,
+    casesHash: null,
+    suiteVersions: {},
+    caseCounts: {},
+    artifacts: {},
+    promotion: { eligible: false, reasons: [reason] },
+  });
+  let manifest = minimal;
+  if (existing) {
+    try {
+      manifest = buildProjectedFailureManifest(context, existing, endState, reason);
+    } catch {
+      manifest = minimal;
+    }
+  }
+  manifest.failure = { phase, reason };
+  await writeJsonAtomic(context.manifestPath, manifest);
+}
+
+function buildProjectedFailureManifest(context, existing, endState, reason) {
+  if (!isRecord(existing.cases)) throw new Error("Existing workflow cases provenance is invalid.");
+  const casesHash = requireDigest(existing.cases.sha256, "cases sha256");
+  const suiteVersions = projectSuiteVersions(existing.cases.suite_versions, context.specification.suites);
+  const caseCounts = projectCaseCounts(existing.cases.counts, context.specification.suites);
+  const holdoutSnapshot = projectHoldoutSnapshot(existing.cases.holdout);
+  const runtimeConfiguration = projectRuntimeConfiguration(existing.runtime_configuration);
+  const artifacts = projectArtifacts(existing.artifacts);
+  return buildWorkflowProvenance({
+    workflow: context.specification.command,
+    runId: context.runId,
+    profile: context.specification.profile,
+    status: "failed",
+    startedAt: context.startedAt,
+    finishedAt: new Date().toISOString(),
+    startState: context.gitStart,
+    endState,
+    casesHash,
+    suiteVersions,
+    caseCounts,
+    holdoutSnapshot,
+    runtimeConfiguration,
+    artifacts,
+    promotion: { eligible: false, reasons: [reason] },
+  });
+}
+
+function projectSuiteVersions(value, expectedSuites) {
+  if (!isRecord(value)) throw new Error("Existing workflow suite versions are invalid.");
+  const projected = {};
+  for (const suite of EVIDENCE_SUITES.filter((item) => Object.hasOwn(value, item))) {
+    const version = value[suite];
+    if (typeof version !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(version)) {
+      throw new Error("Existing workflow suite version is invalid.");
+    }
+    projected[suite] = version;
+  }
+  if (expectedSuites.some((suite) => !Object.hasOwn(projected, suite))) {
+    throw new Error("Existing workflow suite version is missing.");
+  }
+  return projected;
+}
+
+function projectCaseCounts(value, expectedSuites) {
+  if (!isRecord(value)) throw new Error("Existing workflow case counts are invalid.");
+  const projected = {};
+  for (const suite of EVIDENCE_SUITES.filter((item) => Object.hasOwn(value, item))) {
+    const count = value[suite];
+    if (!Number.isInteger(count) || count < 0) throw new Error("Existing workflow case count is invalid.");
+    projected[suite] = count;
+  }
+  if (expectedSuites.some((suite) => !Object.hasOwn(projected, suite))) {
+    throw new Error("Existing workflow case count is missing.");
+  }
+  return projected;
+}
+
+function projectHoldoutSnapshot(value) {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value)) throw new Error("Existing workflow holdout snapshot is invalid.");
+  if (typeof value.version !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(value.version)) {
+    throw new Error("Existing workflow holdout version is invalid.");
+  }
+  if (typeof value.frozen !== "boolean") throw new Error("Existing workflow holdout frozen flag is invalid.");
+  if (value.change_reason !== null && typeof value.change_reason !== "string") {
+    throw new Error("Existing workflow holdout change reason is invalid.");
+  }
+  return {
+    version: value.version,
+    frozen: value.frozen,
+    change_reason: value.change_reason,
+    fingerprint: requireDigest(value.fingerprint, "holdout fingerprint"),
+  };
+}
+
+function projectRuntimeConfiguration(value) {
+  if (!isRecord(value)) throw new Error("Existing workflow runtime provenance is invalid.");
+  if (value.source !== "obsidian-plugin-settings") {
+    throw new Error("Existing workflow runtime source is invalid.");
+  }
+  return {
+    source: value.source,
+    settings_id: requireDigest(value.settings_id, "runtime settings id"),
+  };
+}
+
+function projectArtifacts(value) {
+  if (!isRecord(value)) throw new Error("Existing workflow artifacts are invalid.");
+  const projected = {};
+  for (const suite of EVIDENCE_SUITES) {
+    if (!Object.hasOwn(value, suite)) continue;
+    const artifact = value[suite];
+    if (!isRecord(artifact)) throw new Error("Existing workflow suite artifact is invalid.");
+    projected[suite] = {
+      report: artifact.report,
+      reportSha256: artifact.report_sha256 ?? undefined,
+      traces: artifact.traces,
+      effectiveConfigId: requireDigest(artifact.effective_config_id, `${suite} effective config id`),
+      openAiTransport: artifact.openai_transport,
+    };
+  }
+  return projected;
+}
+
+function requireDigest(value, label) {
+  const digest = String(value ?? "");
+  if (!/^[a-f0-9]{64}$/i.test(digest)) throw new Error(`Existing workflow ${label} is invalid.`);
+  return digest;
+}
+
+async function readExistingWorkflowManifest(context) {
+  try {
+    const manifest = JSON.parse(await readFile(context.manifestPath, "utf8"));
+    if (!isRecord(manifest)) return null;
+    if (manifest.schema !== "AhaBenchmarkWorkflowRun") return null;
+    if (manifest.workflow !== context.specification.command) return null;
+    if (manifest.run_id !== context.runId) return null;
+    return manifest;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function safeValidationSummary(validation) {
@@ -481,6 +675,13 @@ function safeValidationSummary(validation) {
     suite_versions: validation.suiteVersions ?? {},
     case_counts: validation.caseCounts ?? {},
   };
+}
+
+function safeValidationFailureReason(error) {
+  const message = String(error?.message ?? "");
+  const tokens = new Set((message.match(/[a-z][a-z0-9_]*/gi) ?? []).map((token) => token.toLowerCase()));
+  const codes = SAFE_VALIDATION_REASON_CODES.filter((code) => tokens.has(code));
+  return codes.length > 0 ? codes.join(",") : "validation_failed";
 }
 
 function countCases(cases) {
@@ -535,4 +736,12 @@ function restoreVaultRoot(previous) {
   else process.env.AHA_BENCH_VAULT_ROOT = previous;
 }
 
-await main();
+try {
+  await main();
+} catch (error) {
+  const code = error?.code === "WORKFLOW_RUN_EXISTS"
+    ? "workflow_run_exists"
+    : "workflow_setup_failed";
+  console.error(`Evaluation workflow setup failed: ${code}.`);
+  process.exitCode = 1;
+}

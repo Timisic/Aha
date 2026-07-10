@@ -263,10 +263,7 @@ test("L1 CLI scores v3 and legacy labels through canonical identities and exclud
         provenance: { origin: "synthetic", reason: "L1 v3 scoring fixture." },
         input: { thought: "current schema" },
         gold: {
-          must: [
-            "Memory/Must Note.md",
-            "qmd://obsidian/Memory/Must%20Note.md?index=obsidian",
-          ],
+          must: ["qmd://obsidian/Memory/Must%20Note.md?index=obsidian"],
           nice: ["qmd://obsidian/Memory/Nice%20Note.md?index=obsidian"],
           noise: [path.join(vaultRoot, "Memory/Noise Note.md")],
         },
@@ -354,7 +351,7 @@ test("L1 CLI scores v3 and legacy labels through canonical identities and exclud
     assert.equal(stats.duplicate_result_count, 1);
     assert.equal(stats.evaluation_top_files.length, 3);
   }
-  assert.equal(byId.get("v3-case").identity_diagnostics.duplicates.length, 1);
+  assert.equal(byId.get("v3-case").identity_diagnostics.duplicates.length, 0);
   assert.equal(byId.get("ambiguous-case").evaluation_status, "not_scored");
   assert.equal(byId.get("ambiguous-case").eval_v2.must_recall_at_k, null);
   assert.equal(byId.get("ambiguous-case").identity_diagnostics.ambiguous.length, 1);

@@ -84,6 +84,48 @@ test("strict suite validation accepts versioned development and frozen holdout c
   await rm(root, { recursive: true, force: true });
 });
 
+test("duplicate canonical gold identities block suite readiness while preserving scoring dedupe", async () => {
+  const root = await benchmarkRoot("aha-duplicate-gold-identity-");
+  const casesPath = path.join(root, "cases.json");
+  const document = suiteDocument([
+    benchmarkCase({
+      id: "duplicate-gold-identity",
+      suite: "development",
+      evaluation_mode: "discovery",
+      gold: {
+        must: ["Memory/Must.md", "qmd://obsidian/Memory/Must.md"],
+        nice: ["Memory/Nice.md"],
+        noise: ["Memory/Noise.md"],
+      },
+      provenance: provenance("human_authored", "Canonical duplicate must be reviewed before scoring."),
+    }),
+  ]);
+  await writeFile(casesPath, JSON.stringify(document, null, 2));
+
+  const benchmark = readBenchmarkCases(casesPath);
+  const [caseItem] = benchmark.cases;
+
+  assert.equal(caseItem.identity_evaluation.status, "not_scored");
+  assert.deepEqual(caseItem.identity_evaluation.gold.must, ["Memory/Must.md"]);
+  assert.deepEqual(caseItem.identity_evaluation.diagnostics.duplicates, [{
+    label: "must",
+    identity: "memory/must",
+    references: ["Memory/Must.md", "qmd://obsidian/Memory/Must.md"],
+  }]);
+  assert.equal(benchmark.suiteEvaluation.status, "not_scored");
+  assert.equal(benchmark.suiteEvaluation.case_evaluations[0].status, "not_scored");
+  assert.deepEqual(
+    benchmark.suiteEvaluation.diagnostics.identity_conflicts.map((item) => item.case_id),
+    ["duplicate-gold-identity"],
+  );
+  assert.throws(
+    () => validateBenchmarkSuiteDocument(document, document.cases, { strict: true }),
+    /identity_conflicts/i,
+  );
+
+  await rm(root, { recursive: true, force: true });
+});
+
 test("strict suite validation includes off cases even when runners pass only active cases", async () => {
   const root = await benchmarkRoot("aha-off-suite-validation-");
   const document = suiteDocument([

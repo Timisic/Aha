@@ -117,6 +117,7 @@ test("trace attribution distinguishes query, relation, and identity evidence", (
   const queryFailure = pipelineTrace({ reviewed: [], final: [] });
   queryFailure.steps.query_generation.status = "failed";
   queryFailure.steps.query_generation.errors = [{ category: "stage_error" }];
+  delete queryFailure.steps.final_candidates;
   assert.equal(
     failureAttributionFromTrace(caseItem(), queryFailure, { topK: 10 }).primary,
     "query_failure",
@@ -160,6 +161,47 @@ test("incomplete trace evidence remains explicitly unattributed", () => {
     },
     flags: [],
   });
+});
+
+test("trace attribution does not fabricate retrieval evidence when candidate-path stages are missing", () => {
+  const scenarios = [
+    {
+      missingField: "pre_judge_candidates",
+      remove(trace) {
+        delete trace.steps.pre_judge_candidates;
+      },
+    },
+    {
+      missingField: "qmd_runs",
+      remove(trace) {
+        delete trace.steps.qmd_runs;
+      },
+    },
+    {
+      missingField: "final_candidates",
+      remove(trace) {
+        delete trace.steps.final_candidates;
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const trace = pipelineTrace({ preJudge: [], reviewed: [], final: [] });
+    scenario.remove(trace);
+
+    const attribution = failureAttributionFromTrace(caseItem(), trace, { topK: 10 });
+
+    assert.deepEqual(attribution, {
+      status: "unattributed",
+      primary: null,
+      reason: "insufficient_trace_evidence",
+      evidence: {
+        stage: "unknown",
+        missing_trace_fields: [scenario.missingField],
+      },
+      flags: [],
+    });
+  }
 });
 
 function pipelineReport(files) {
