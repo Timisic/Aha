@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   applyBenchEvaluationPolicy,
+  readBenchmarkCases,
   sourceNotePathForCase,
 } from "../lib/bench-cases.mjs";
 
@@ -21,6 +22,7 @@ function parseArgs() {
     queryAgentCache: "bench/generated/qmd-query-agent-cache.json",
     queryAgentFallback: true,
     queryAgentTimeoutMs: 120_000,
+    suite: "all",
   };
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i += 1) {
@@ -35,7 +37,7 @@ function parseArgs() {
     }
     const value = args[i + 1];
     if (!key?.startsWith("--") || !value || value.startsWith("--")) {
-      console.error("Usage: node scripts/bench/run-qmd-bench.mjs [--cases path] [--fixture path] [--report path] [--index obsidian] [--qmd qmd] [--query-generator agent|rules]");
+      console.error("Usage: node scripts/bench/run-qmd-bench.mjs [--cases path] [--fixture path] [--report path] [--suite development|holdout|all] [--index obsidian] [--qmd qmd] [--query-generator agent|rules]");
       process.exit(1);
     }
     i += 1;
@@ -63,6 +65,9 @@ function parseArgs() {
         defaults[name] = value;
     }
   }
+  if (!["development", "holdout", "all"].includes(defaults.suite)) {
+    throw new Error("--suite must be development, holdout, or all.");
+  }
   return defaults;
 }
 
@@ -85,32 +90,47 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-function caseConfigById(casesPath) {
-  const input = JSON.parse(readFileSync(resolve(casesPath), "utf-8"));
-  const defaultTopK = Number(input.expected_in_top_k ?? 10);
-  const defaultNiceTopK = Number(input.nice_expected_in_top_k ?? 20);
-  return new Map(
-    (input.cases ?? [])
-      .filter((caseItem) => String(caseItem.status ?? "active").toLowerCase() === "active")
-      .map((caseItem) => [
-        caseItem.id,
-        {
-          topK: Number(caseItem.expected_in_top_k ?? defaultTopK),
-          niceTopK: Number(caseItem.nice_expected_in_top_k ?? defaultNiceTopK),
-          niceToHave: Array.isArray(caseItem.nice_to_have) ? caseItem.nice_to_have : [],
-          sourceNotePath: sourceNotePathForCase(caseItem),
-        },
-      ]),
-  );
+function caseConfigById(casesPath, suite = "all") {
+  const benchmark = readBenchmarkCases(casesPath);
+  const cases = suite === "all"
+    ? benchmark.cases
+    : benchmark.cases.filter((caseItem) => caseItem.suite === suite);
+  return {
+    identityResolver: benchmark.identityResolver,
+    suiteEvaluation: benchmark.suiteEvaluation,
+    suiteVersions: benchmark.suiteVersions,
+    caseById: new Map(
+      cases.map((caseItem) => {
+        const identityEvaluation = caseItem.identity_evaluation;
+        return [
+          caseItem.id,
+          {
+            topK: Number(caseItem.expected_in_top_k ?? benchmark.expectedInTopK),
+            niceTopK: Number(caseItem.nice_expected_in_top_k ?? benchmark.expectedNiceInTopK),
+            expectedFiles: identityEvaluation.gold.must,
+            niceToHave: identityEvaluation.gold.nice,
+            negative: identityEvaluation.gold.noise,
+            sourceNotePath: sourceNotePathForCase(caseItem),
+            identityEvaluation,
+            suite: caseItem.suite ?? null,
+            suiteVersion: caseItem._suite_version ?? null,
+            evaluationMode: caseItem.evaluation_mode ?? null,
+            suiteEvaluation: caseItem.suite_evaluation,
+          },
+        ];
+      }),
+    ),
+  };
 }
 
-function fixtureConfig(fixturePath, casesPath) {
+function fixtureConfig(fixturePath, casesPath, suite = "all") {
   const fixture = JSON.parse(readFileSync(resolve(fixturePath), "utf-8"));
+  const caseConfig = caseConfigById(casesPath, suite);
   const values = (fixture.queries ?? [])
     .map((query) => Number(query.expected_in_top_k))
     .filter((value) => Number.isFinite(value) && value > 0);
   const expectedById = new Map(
-    (fixture.queries ?? []).map((query) => [query.id, Array.isArray(query.expected_files) ? query.expected_files : []]),
+    Array.from(caseConfig.caseById, ([id, config]) => [id, config.expectedFiles]),
   );
   const queryMetaById = new Map(
     (fixture.queries ?? []).map((query) => [
@@ -127,13 +147,24 @@ function fixtureConfig(fixturePath, casesPath) {
     retrievalTopK: values[0] || 20,
     expectedById,
     queryMetaById,
-    caseById: caseConfigById(casesPath),
+    caseById: caseConfig.caseById,
+    identityResolver: caseConfig.identityResolver,
+    suiteEvaluation: caseConfig.suiteEvaluation,
+    suiteVersions: caseConfig.suiteVersions,
   };
 }
 
-function normalizeBenchJson(stdout, config) {
+function normalizeBenchJson(stdout, config, suite) {
   const report = JSON.parse(stdout);
-  return `${JSON.stringify(applyBenchEvaluationPolicy(report, config), null, 2)}\n`;
+  const evaluated = applyBenchEvaluationPolicy(report, config);
+  evaluated.suite = suite === "all"
+    ? { kind: "all", versions: config.suiteVersions }
+    : { kind: suite, version: config.suiteVersions?.[suite] ?? null };
+  evaluated.suite_validation = {
+    status: config.suiteEvaluation.status,
+    suite_versions: config.suiteVersions,
+  };
+  return `${JSON.stringify(evaluated, null, 2)}\n`;
 }
 
 function main() {
@@ -142,6 +173,8 @@ function main() {
     "scripts/bench/build-fixture.mjs",
     options.cases,
     options.fixture,
+    "--suite",
+    options.suite,
     "--query-generator",
     options.queryGenerator,
     "--query-agent-bin",
@@ -165,7 +198,7 @@ function main() {
   });
 
   const bench = run(options.qmd, ["--index", options.index, "bench", options.fixture, "--json"]);
-  const reportJson = normalizeBenchJson(bench.stdout, fixtureConfig(options.fixture, options.cases));
+  const reportJson = normalizeBenchJson(bench.stdout, fixtureConfig(options.fixture, options.cases, options.suite), options.suite);
   mkdirSync(dirname(resolve(options.report)), { recursive: true });
   writeFileSync(resolve(options.report), reportJson);
 

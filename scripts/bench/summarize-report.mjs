@@ -2,6 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { resolveReportInput } from "../lib/bench-workflow.mjs";
 
 const USAGE = [
   "Usage:",
@@ -102,6 +103,10 @@ function printMisses(results, backend) {
 
 function printPipelineSummary(report) {
   const summary = report.summary ?? {};
+  const stability = summary.stability;
+  const stabilityValue = stability?.status === "measured" && typeof stability.score === "number"
+    ? fixed(stability.score)
+    : `not measured (${stability?.reason || "no_comparison_report"})`;
   console.log("| Metric | Value |");
   console.log("|---|---:|");
   console.log(`| Must Recall@10 | ${fixed(summary.eval_v2?.avg_must_recall_at_k)} |`);
@@ -110,32 +115,37 @@ function printPipelineSummary(report) {
   console.log(`| Negative Rate@10 | ${fixed(summary.eval_v2?.avg_negative_rate_at_k)} |`);
   console.log(`| Expanded Pool Recall@20 | ${fixed(summary.avg_expanded_pool_recall_at_20 ?? summary.avg_expanded_pool_recall)} |`);
   console.log(`| Dropped Must Count | ${number(summary.dropped_must_count ?? summary.expanded_pool_dropped_topk_count)} |`);
-  console.log(`| Stability@10 | ${fixed(summary.avg_stability_at_10)} |`);
+  console.log(`| Stability@10 | ${stabilityValue} |`);
   for (const [group, count] of Object.entries(summary.failure_attribution_counts ?? {})) {
     console.log(`| Failure Attribution: ${group} | ${count} |`);
   }
   for (const [group, count] of Object.entries(summary.trace_diagnosis_counts ?? {})) {
     console.log(`| Trace Diagnosis: ${group} | ${count} |`);
   }
+  console.log(`| Unattributed failures | ${number(summary.unattributed_failure_count)} |`);
 }
 
-function main() {
+async function main() {
   const { reportPath, backend } = parseArgs();
-  const report = JSON.parse(readFileSync(resolve(reportPath), "utf-8"));
-  const rows = backendRows(report.summary);
-  const selectedSummary = report.summary?.[backend];
+  const resolvedReportPath = await resolveReportInput(reportPath);
+  const report = JSON.parse(readFileSync(resolve(resolvedReportPath), "utf-8"));
 
   console.log(`# Aha Memory Bench Summary`);
   console.log("");
-  console.log(`Report: ${reportPath}`);
+  console.log(`Report: ${resolvedReportPath}`);
   console.log(`Primary backend: ${backend}`);
-  console.log(`Health: ${health(selectedSummary)}`);
-  console.log("");
 
   if ((report.results ?? []).some((result) => result.pipeline) && typeof report.summary?.cases === "number") {
+    console.log("Health: see product metrics below");
+    console.log("");
     printPipelineSummary(report);
     return;
   }
+
+  const rows = backendRows(report.summary);
+  const selectedSummary = report.summary?.[backend];
+  console.log(`Health: ${health(selectedSummary)}`);
+  console.log("");
 
   if (rows.length === 0) {
     console.log("No benchmark results found. Add active cases to bench/aha-memory-cases.json first.");
@@ -146,4 +156,4 @@ function main() {
   printMisses(report.results, backend);
 }
 
-main();
+await main();

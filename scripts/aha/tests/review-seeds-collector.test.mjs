@@ -8,7 +8,9 @@ import test from "node:test";
 
 import {
   buildReviewSeedCaseDocument,
+  buildSessionFeedbackSeedCaseDocument,
   parseReviewBenchmarkSeedsFromContent,
+  writeReviewSeedCaseDocument,
 } from "../../lib/review-seeds.mjs";
 import { readBenchmarkCases } from "../../lib/bench-cases.mjs";
 
@@ -43,8 +45,16 @@ test("review benchmark seeds aggregate into benchmark-like draft cases", () => {
 
   assert.equal(document.source, "review-benchmark-seeds");
   assert.equal(document.version, 3);
+  assert.equal(document.suites.development.version, "seed-inbox-v1");
   assert.equal(document.cases.length, 1);
   assert.equal(document.cases[0].state, "draft");
+  assert.equal(document.cases[0].suite, "development");
+  assert.equal(document.cases[0].evaluation_mode, "discovery");
+  assert.equal(document.cases[0].mode_review_required, true);
+  assert.deepEqual(document.cases[0].provenance, {
+    origin: "legacy_review_note",
+    reason: "Uncurated Review Note feedback seed; verify labels, input range, and discovery mode before activation.",
+  });
   assert.deepEqual(document.cases[0].input, {
     note: "Source/Insight.md",
     whole_note: true,
@@ -128,19 +138,192 @@ test("collector writes vault-relative paths when review seeds contain absolute v
   await rm(root, { recursive: true, force: true });
 });
 
-test("collect-review-seeds CLI writes draft cases that benchmark reader can validate", async () => {
+test("session feedback maps to private v3 draft cases with stable event provenance", () => {
+  const pluginData = sessionPluginData([
+    sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Nice Candidate.md", {
+      hit: "PRIVATE_HIT_MUST_NOT_LEAK",
+      why: "PRIVATE_WHY_MUST_NOT_LEAK",
+      note: "PRIVATE_NOTE_MUST_NOT_LEAK",
+      quotes: ["PRIVATE_QUOTE_MUST_NOT_LEAK"],
+    }),
+    sessionFeedback("2026-07-10T01:01:00.000Z", "reject_as_noise", "Memory/False Friend.md"),
+    sessionFeedback("2026-07-10T01:02:00.000Z", "should_have_found", "Memory/Missing Must.md"),
+  ], {
+    settings: { llmApiKey: "PRIVATE_API_KEY_MUST_NOT_LEAK" },
+    rounds: [{ rawPrompt: "PRIVATE_PROMPT_MUST_NOT_LEAK", noteBody: "PRIVATE_BODY_MUST_NOT_LEAK" }],
+  });
+
+  const first = buildSessionFeedbackSeedCaseDocument(pluginData, {
+    generatedAt: new Date("2026-07-10T02:00:00Z"),
+  });
+  const second = buildSessionFeedbackSeedCaseDocument(pluginData, {
+    generatedAt: new Date("2026-07-10T03:00:00Z"),
+  });
+
+  assert.equal(first.source, "session-feedback-seeds");
+  assert.equal(first.version, 3);
+  assert.equal(first.cases.length, 1);
+  assert.equal(first.cases[0].state, "draft");
+  assert.equal(first.cases[0].suite, "development");
+  assert.equal(first.cases[0].evaluation_mode, "discovery");
+  assert.equal(first.cases[0].mode_review_required, true);
+  assert.deepEqual(first.cases[0].provenance, {
+    origin: "session_feedback",
+    reason: "Uncurated Session Store feedback seed; verify labels, input range, and discovery mode before activation.",
+  });
+  assert.deepEqual(first.cases[0].gold, {
+    must: ["Memory/Missing Must.md"],
+    nice: ["Memory/Nice Candidate.md"],
+    noise: ["Memory/False Friend.md"],
+  });
+  const events = first.cases[0].seed_provenance.feedback_events;
+  assert.equal(events.length, 3);
+  assert.deepEqual(events.map((event) => Object.keys(event)), [
+    ["event_id", "action", "created_at"],
+    ["event_id", "action", "created_at"],
+    ["event_id", "action", "created_at"],
+  ]);
+  assert.equal(events.every((event) => /^session-feedback-[a-f0-9]{24}$/.test(event.event_id)), true);
+  assert.deepEqual(
+    second.cases[0].seed_provenance.feedback_events.map((event) => event.event_id),
+    events.map((event) => event.event_id),
+  );
+
+  pluginData.sessionStore.records["srcfs:feedback-source"].feedback.push(
+    sessionFeedback("2026-07-10T01:03:00.000Z", "accept", "Memory/Newly Appended.md"),
+  );
+  const appended = buildSessionFeedbackSeedCaseDocument(pluginData, {
+    generatedAt: new Date("2026-07-10T04:00:00Z"),
+  });
+  const appendedEventIds = appended.cases[0].seed_provenance.feedback_events.map((event) => event.event_id);
+  assert.equal(appended.cases[0].id, first.cases[0].id);
+  assert.equal(appendedEventIds.length, 4);
+  assert.equal(events.every((event) => appendedEventIds.includes(event.event_id)), true);
+  assert.deepEqual(appended.cases[0].gold.nice, ["Memory/Nice Candidate.md", "Memory/Newly Appended.md"]);
+
+  const serialized = JSON.stringify(first);
+  for (const secret of ["PRIVATE_API_KEY", "PRIVATE_PROMPT", "PRIVATE_BODY", "PRIVATE_HIT", "PRIVATE_WHY", "PRIVATE_NOTE", "PRIVATE_QUOTE"]) {
+    assert.doesNotMatch(serialized, new RegExp(secret));
+  }
+});
+
+test("session feedback collection deduplicates events and diagnoses malformed entries", () => {
+  const valid = sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Nice.md");
+  const document = buildSessionFeedbackSeedCaseDocument({
+    sessionStore: {
+      schemaVersion: 1,
+      records: {
+        "srcfs:valid": sessionRecord([valid, { ...valid }]),
+        "srcfs:bad-feedback": sessionRecord([
+          sessionFeedback("not-a-date", "accept", "Memory/Bad Date.md"),
+          sessionFeedback("2026-07-10T01:02:00.000Z", "unsupported", "Memory/Unknown.md"),
+          sessionFeedback("2026-07-10T01:03:00.000Z", "reject_as_noise", ""),
+          null,
+        ]),
+        "srcfs:bad-record": "not-an-object",
+      },
+    },
+  }, { generatedAt: new Date("2026-07-10T02:00:00Z") });
+
+  assert.equal(document.cases.length, 1);
+  assert.deepEqual(document.cases[0].gold.nice, ["Memory/Nice.md"]);
+  assert.equal(document.cases[0].seed_provenance.seed_count, 1);
+  assert.match(document.warnings.join("\n"), /duplicate feedback event/i);
+  assert.match(document.warnings.join("\n"), /invalid createdAt/i);
+  assert.match(document.warnings.join("\n"), /unsupported action/i);
+  assert.match(document.warnings.join("\n"), /without memory path/i);
+  assert.match(document.warnings.join("\n"), /malformed feedback/i);
+  assert.match(document.warnings.join("\n"), /malformed session record/i);
+});
+
+test("session feedback collection returns a diagnosed empty draft document", () => {
+  const document = buildSessionFeedbackSeedCaseDocument({
+    sessionStore: { schemaVersion: 1, records: {} },
+  }, { generatedAt: new Date("2026-07-10T02:00:00Z") });
+
+  assert.deepEqual(document.cases, []);
+  assert.match(document.warnings.join("\n"), /no supported Session Store feedback events/i);
+  assert.throws(
+    () => buildSessionFeedbackSeedCaseDocument({ sessionStore: { schemaVersion: 2, records: {} } }),
+    /Session Store schemaVersion 1/i,
+  );
+});
+
+test("session feedback rejects vault-external absolute paths without copying them into the draft inbox", async () => {
+  const root = await mkdtempDir("review-seeds-external-feedback-");
+  const vault = path.join(root, "vault");
+  const internalSource = path.join(vault, "Source", "Valid.md");
+  const internalMemory = path.join(vault, "Memory", "Valid.md");
+  const externalSource = path.join(root, "outside", "Source.md");
+  const externalMemory = path.join(root, "outside", "Memory.md");
+  const document = buildSessionFeedbackSeedCaseDocument(sessionPluginData([
+    sessionFeedback("2026-07-10T01:00:00.000Z", "accept", internalMemory, {
+      sourcePath: internalSource,
+    }),
+    sessionFeedback("2026-07-10T01:01:00.000Z", "reject_as_noise", externalMemory),
+    sessionFeedback("2026-07-10T01:02:00.000Z", "should_have_found", "Memory/Missing.md", {
+      sourcePath: externalSource,
+    }),
+  ]), {
+    generatedAt: new Date("2026-07-10T02:00:00Z"),
+    vaultRoot: vault,
+  });
+
+  assert.equal(document.cases.length, 1);
+  assert.equal(document.cases[0].input.note, "Source/Valid.md");
+  assert.deepEqual(document.cases[0].gold, {
+    must: [],
+    nice: ["Memory/Valid.md"],
+    noise: [],
+  });
+  assert.match(document.warnings.join("\n"), /vault-external absolute source path/i);
+  assert.match(document.warnings.join("\n"), /vault-external absolute memory path/i);
+  assert.equal(JSON.stringify(document).includes(externalSource), false);
+  assert.equal(JSON.stringify(document).includes(externalMemory), false);
+  assert.equal(JSON.stringify(document).includes(internalSource), false);
+  assert.equal(JSON.stringify(document).includes(internalMemory), false);
+
+  await rm(root, { recursive: true, force: true });
+});
+
+test("seed writer refuses any non-development or non-draft target", async () => {
+  const root = await mkdtempDir("review-seeds-guard-");
+  const output = path.join(root, "seed-cases.json");
+  const document = buildSessionFeedbackSeedCaseDocument(sessionPluginData([
+    sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Nice.md"),
+  ]), { generatedAt: new Date("2026-07-10T02:00:00Z") });
+
+  const holdout = structuredClone(document);
+  holdout.cases[0].suite = "holdout";
+  assert.throws(
+    () => writeReviewSeedCaseDocument(holdout, output),
+    /seed inbox only accepts draft development cases/i,
+  );
+  assert.equal(existsSync(output), false);
+
+  const active = structuredClone(document);
+  active.cases[0].state = "active";
+  assert.throws(
+    () => writeReviewSeedCaseDocument(active, output),
+    /seed inbox only accepts draft development cases/i,
+  );
+  assert.equal(existsSync(output), false);
+
+  await rm(root, { recursive: true, force: true });
+});
+
+test("collect-review-seeds CLI defaults to Session Store feedback and writes benchmark-readable cases", async () => {
   const root = await mkdtempDir("review-seeds-cli-");
   const vault = path.join(root, "vault");
   const output = path.join(root, "aha-memory-seed-cases.json");
-  await mkdir(path.join(vault, "Aha/Reviews"), { recursive: true });
   await mkdir(path.join(vault, "Source"), { recursive: true });
   await mkdir(path.join(vault, "Memory"), { recursive: true });
   await writeFile(path.join(vault, "Source/Insight.md"), "Source note text for benchmark input.\n");
   await writeFile(path.join(vault, "Memory/Missing Must.md"), "old memory\n");
   await writeFile(path.join(vault, "Memory/Nice Candidate.md"), "nice memory\n");
-  await writeFile(path.join(vault, "Aha/Reviews/2026-06-30 Insight.md"), reviewNoteWithSeeds([
-    seedSection("2026-06-30T01:00:00.000Z", "accept", "nice_to_have", "[[Memory/Nice Candidate]]"),
-    seedSection("2026-06-30T01:01:00.000Z", "should_have_found", "must_recall", "[[Memory/Missing Must]]"),
+  await writePluginData(vault, sessionPluginData([
+    sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Nice Candidate.md"),
+    sessionFeedback("2026-07-10T01:01:00.000Z", "should_have_found", "Memory/Missing Must.md"),
   ]));
 
   const result = spawnSync("node", [
@@ -155,6 +338,7 @@ test("collect-review-seeds CLI writes draft cases that benchmark reader can vali
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(existsSync(output), true);
   const document = JSON.parse(await readFile(output, "utf-8"));
+  assert.equal(document.source, "session-feedback-seeds");
   assert.equal(document.cases.length, 1);
   assert.equal(document.cases[0].state, "draft");
 
@@ -165,7 +349,7 @@ test("collect-review-seeds CLI writes draft cases that benchmark reader can vali
   await rm(root, { recursive: true, force: true });
 });
 
-test("collector accepts an absolute review folder path", async () => {
+test("collector keeps Review Note scanning behind the explicit legacy flag", async () => {
   const root = await mkdtempDir("review-seeds-absolute-");
   const vault = path.join(root, "vault");
   const reviewFolder = path.join(root, "external-reviews");
@@ -181,6 +365,7 @@ test("collector accepts an absolute review folder path", async () => {
   const result = spawnSync("node", [
     "scripts/bench/collect-review-seeds.mjs",
     "--vault-root", vault,
+    "--legacy-review-notes",
     "--review-folder", reviewFolder,
     "--dry-run",
   ], {
@@ -190,9 +375,96 @@ test("collector accepts an absolute review folder path", async () => {
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const document = JSON.parse(result.stdout);
+  assert.equal(document.source, "review-benchmark-seeds");
   assert.equal(document.cases.length, 1);
   assert.equal(document.cases[0].state, "draft");
   assert.deepEqual(document.cases[0].gold.must, ["Memory/Missing Must.md"]);
+
+  await rm(root, { recursive: true, force: true });
+});
+
+test("collector supports a plugin-data override and never overwrites output after malformed JSON", async () => {
+  const root = await mkdtempDir("review-seeds-plugin-data-");
+  const vault = path.join(root, "vault");
+  const pluginData = path.join(root, "custom-plugin-data.json");
+  const output = path.join(root, "aha-memory-seed-cases.json");
+  await mkdir(vault, { recursive: true });
+  await writeFile(pluginData, JSON.stringify(sessionPluginData([
+    sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Nice.md"),
+  ])));
+
+  const valid = spawnSync("node", [
+    "scripts/bench/collect-review-seeds.mjs",
+    "--vault-root", vault,
+    "--plugin-data", pluginData,
+    "--output", output,
+  ], { cwd: repoRoot, encoding: "utf-8" });
+  assert.equal(valid.status, 0, valid.stderr || valid.stdout);
+  const written = await readFile(output, "utf-8");
+  assert.equal(JSON.parse(written).cases.length, 1);
+
+  await writeFile(pluginData, "{ malformed json");
+  const collect = () => spawnSync("node", [
+    "scripts/bench/collect-review-seeds.mjs",
+    "--vault-root", vault,
+    "--plugin-data", pluginData,
+    "--output", output,
+  ], { cwd: repoRoot, encoding: "utf-8" });
+  const malformed = collect();
+  assert.notEqual(malformed.status, 0);
+  assert.equal(await readFile(output, "utf-8"), written);
+
+  await writeFile(pluginData, JSON.stringify({ sessionStore: { schemaVersion: 2, records: {} } }));
+  const malformedRoot = collect();
+  assert.notEqual(malformedRoot.status, 0);
+  assert.match(malformedRoot.stderr, /Session Store schemaVersion 1/i);
+  assert.equal(await readFile(output, "utf-8"), written);
+
+  await rm(root, { recursive: true, force: true });
+});
+
+test("collector preserves an existing seed inbox when Session Store feedback is empty unless --allow-empty is explicit", async () => {
+  const root = await mkdtempDir("review-seeds-empty-overwrite-");
+  const vault = path.join(root, "vault");
+  const pluginData = path.join(root, "custom-plugin-data.json");
+  const output = path.join(root, "aha-memory-seed-cases.json");
+  await mkdir(vault, { recursive: true });
+  await writeFile(pluginData, JSON.stringify(sessionPluginData([
+    sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Nice.md"),
+  ])));
+
+  const collect = (...extraArgs) => spawnSync("node", [
+    "scripts/bench/collect-review-seeds.mjs",
+    "--vault-root", vault,
+    "--plugin-data", pluginData,
+    "--output", output,
+    ...extraArgs,
+  ], { cwd: repoRoot, encoding: "utf-8" });
+
+  const populated = collect();
+  assert.equal(populated.status, 0, populated.stderr || populated.stdout);
+  const previousOutput = await readFile(output, "utf-8");
+  assert.equal(JSON.parse(previousOutput).cases.length, 1);
+
+  await writeFile(pluginData, JSON.stringify({
+    sessionStore: { schemaVersion: 1, records: {} },
+  }));
+
+  const dryRun = collect("--dry-run");
+  assert.equal(dryRun.status, 0, dryRun.stderr || dryRun.stdout);
+  assert.deepEqual(JSON.parse(dryRun.stdout).cases, []);
+  assert.match(JSON.parse(dryRun.stdout).warnings.join("\n"), /no supported Session Store feedback events/i);
+  assert.equal(await readFile(output, "utf-8"), previousOutput);
+
+  const protectedRun = collect();
+  assert.notEqual(protectedRun.status, 0);
+  assert.match(protectedRun.stderr, /refusing to replace.*zero supported Session Store feedback events/i);
+  assert.match(protectedRun.stderr, /--allow-empty/i);
+  assert.equal(await readFile(output, "utf-8"), previousOutput);
+
+  const allowedRun = collect("--allow-empty");
+  assert.equal(allowedRun.status, 0, allowedRun.stderr || allowedRun.stdout);
+  assert.deepEqual(JSON.parse(await readFile(output, "utf-8")).cases, []);
 
   await rm(root, { recursive: true, force: true });
 });
@@ -236,4 +508,55 @@ function seedSection(createdAt, action, label, memory) {
     "- hit: Evidence quote.",
     "- why: Human review marked this candidate as useful benchmark material.",
   ].join("\n");
+}
+
+function sessionPluginData(feedback, options = {}) {
+  return {
+    settings: options.settings ?? {},
+    reviewIndex: {},
+    sessionStore: {
+      schemaVersion: 1,
+      records: {
+        "srcfs:feedback-source": sessionRecord(feedback, options),
+      },
+    },
+  };
+}
+
+function sessionRecord(feedback, options = {}) {
+  return {
+    schemaVersion: 1,
+    key: "srcfs:feedback-source",
+    source: {
+      id: "srcfs:feedback-source",
+      path: "Source/Insight.md",
+      title: "Insight",
+      fallbackPath: "Source/Insight.md",
+    },
+    rounds: options.rounds ?? [],
+    feedback,
+    updatedAt: "2026-07-10T01:10:00.000Z",
+  };
+}
+
+function sessionFeedback(createdAt, action, memory, extra = {}) {
+  return {
+    action,
+    status: "draft",
+    seedLabel: action === "accept" ? "nice_to_have" : action === "reject_as_noise" ? "negative" : "must_recall",
+    createdAt,
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+    memory,
+    relation: "supports",
+    hit: "Evidence quote.",
+    why: "Human review marked this candidate as useful benchmark material.",
+    ...extra,
+  };
+}
+
+async function writePluginData(vault, data) {
+  const pluginRoot = path.join(vault, ".obsidian/plugins/aha-memory-surface");
+  await mkdir(pluginRoot, { recursive: true });
+  await writeFile(path.join(pluginRoot, "data.json"), `${JSON.stringify(data, null, 2)}\n`);
 }

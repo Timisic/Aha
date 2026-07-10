@@ -8,7 +8,6 @@ import test from "node:test";
 import {
   applyBenchEvaluationPolicy,
   droppedMustFromExpandedPool,
-  failureAttributionForPipelineCase,
   normalizeFailureAttribution,
   readBenchmarkCases,
   scoreEvalV2,
@@ -116,21 +115,214 @@ test("failure attribution validation rejects unknown or multiple primary groups"
   await rm(vaultRoot, { recursive: true, force: true });
 });
 
-test("benchmark validation rejects duplicate identities across must, nice, and negative labels", async () => {
+test("benchmark validation reports cross-label canonical identity conflicts without scoring them", async () => {
   const vaultRoot = await mkdtemp(path.join(tmpdir(), "aha-eval-v2-vault-"));
   process.env.AHA_BENCH_VAULT_ROOT = vaultRoot;
+  await mkdir(path.join(vaultRoot, "Memory"), { recursive: true });
+  await writeFile(path.join(vaultRoot, "Memory/same.md"), "same note\n");
 
-  assert.throws(
-    () => validateCase({
-      id: "duplicate-negative",
-      _resolved_insight_input: "input",
-      must_recall: ["Memory/same.md"],
-      nice_to_have: [],
-      negative: ["qmd://obsidian/Memory/same.md"],
-    }),
-    /duplicate canonical identities/,
-  );
+  const identity = validateCase({
+    id: "duplicate-negative",
+    _resolved_insight_input: "input",
+    must_recall: ["Memory/same.md"],
+    nice_to_have: [],
+    negative: ["qmd://obsidian/Memory/same.md"],
+  });
+
+  assert.equal(identity.status, "not_scored");
+  assert.equal(identity.diagnostics.label_conflicts.length, 1);
+  assert.deepEqual(identity.diagnostics.label_conflicts[0].labels, ["must", "noise"]);
   await rm(vaultRoot, { recursive: true, force: true });
+});
+
+test("benchmark reader resolves current and legacy labels through one canonical vault identity", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-canonical-cases-"));
+  const vaultRoot = path.join(root, "vault");
+  process.env.AHA_BENCH_VAULT_ROOT = vaultRoot;
+  await mkdir(path.join(vaultRoot, "Moved/New Folder"), { recursive: true });
+  await mkdir(path.join(vaultRoot, "Memory/A"), { recursive: true });
+  await mkdir(path.join(vaultRoot, "Memory/B"), { recursive: true });
+  await writeFile(path.join(vaultRoot, "Moved/New Folder/Moved Note.md"), "moved note\n");
+  await writeFile(path.join(vaultRoot, "Memory/A/Same.md"), "first\n");
+  await writeFile(path.join(vaultRoot, "Memory/B/Same.md"), "second\n");
+  const casesPath = path.join(root, "cases.json");
+  await writeFile(casesPath, JSON.stringify({
+    collection: "obsidian",
+    cases: [
+      {
+        id: "equivalent-current-legacy",
+        state: "active",
+        input: { thought: "same logical gold note through two path forms" },
+        gold: {
+          must: ["Moved/Old Folder/Moved Note.md"],
+          nice: [],
+          noise: [],
+        },
+        must_recall: [path.join(vaultRoot, "Moved/New Folder/Moved Note.md")],
+      },
+      {
+        id: "conflicting-current-legacy",
+        state: "active",
+        input: { thought: "conflicting migration labels" },
+        gold: {
+          must: ["Moved/New Folder/Moved Note.md"],
+          nice: [],
+          noise: [],
+        },
+        must_recall: ["Memory/A/Same.md"],
+      },
+      {
+        id: "ambiguous-gold",
+        state: "active",
+        input: { thought: "ambiguous basename" },
+        gold: { must: ["Same.md"], nice: [], noise: [] },
+      },
+      {
+        id: "missing-gold",
+        state: "active",
+        input: { thought: "missing note" },
+        gold: { must: ["Memory/Does Not Exist.md"], nice: [], noise: [] },
+      },
+    ],
+  }, null, 2));
+
+  const { cases } = readBenchmarkCases(casesPath);
+  const byId = new Map(cases.map((item) => [item.id, item]));
+  assert.equal(byId.get("equivalent-current-legacy").identity_evaluation.status, "ready");
+  assert.deepEqual(
+    byId.get("equivalent-current-legacy").identity_evaluation.gold.must,
+    ["Moved/New Folder/Moved Note.md"],
+  );
+  assert.equal(byId.get("conflicting-current-legacy").identity_evaluation.status, "not_scored");
+  assert.equal(byId.get("conflicting-current-legacy").identity_evaluation.diagnostics.schema_conflicts.length, 1);
+  assert.equal(byId.get("ambiguous-gold").identity_evaluation.status, "not_scored");
+  assert.equal(byId.get("ambiguous-gold").identity_evaluation.diagnostics.ambiguous.length, 1);
+  assert.equal(byId.get("missing-gold").identity_evaluation.status, "not_scored");
+  assert.equal(byId.get("missing-gold").identity_evaluation.diagnostics.not_found.length, 1);
+
+  await rm(root, { recursive: true, force: true });
+});
+
+test("L1 CLI scores v3 and legacy labels through canonical identities and excludes invalid gold", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-l1-canonical-cli-"));
+  const vaultRoot = path.join(root, "vault");
+  const binDir = path.join(root, "bin");
+  const casesPath = path.join(root, "cases.json");
+  const fixturePath = path.join(root, "fixture.json");
+  const reportPath = path.join(root, "qmd.json");
+  const qmdBin = path.join(binDir, "qmd.mjs");
+  process.env.AHA_BENCH_VAULT_ROOT = vaultRoot;
+  await mkdir(path.join(vaultRoot, "Memory/A"), { recursive: true });
+  await mkdir(path.join(vaultRoot, "Memory/B"), { recursive: true });
+  await mkdir(binDir, { recursive: true });
+  await writeFile(path.join(vaultRoot, "Memory/Must Note.md"), "must\n");
+  await writeFile(path.join(vaultRoot, "Memory/Nice Note.md"), "nice\n");
+  await writeFile(path.join(vaultRoot, "Memory/Noise Note.md"), "noise\n");
+  await writeFile(path.join(vaultRoot, "Memory/A/Same.md"), "first\n");
+  await writeFile(path.join(vaultRoot, "Memory/B/Same.md"), "second\n");
+  await writeFile(casesPath, JSON.stringify({
+    collection: "obsidian",
+    expected_in_top_k: 3,
+    nice_expected_in_top_k: 3,
+    suites: {
+      development: { version: "dev-v1" },
+      holdout: { version: "holdout-v1", frozen: true, change_reason: "Initial synthetic holdout." },
+    },
+    cases: [
+      {
+        id: "v3-case",
+        state: "active",
+        suite: "development",
+        evaluation_mode: "discovery",
+        provenance: { origin: "synthetic", reason: "L1 v3 scoring fixture." },
+        input: { thought: "current schema" },
+        gold: {
+          must: [
+            "Memory/Must Note.md",
+            "qmd://obsidian/Memory/Must%20Note.md?index=obsidian",
+          ],
+          nice: ["qmd://obsidian/Memory/Nice%20Note.md?index=obsidian"],
+          noise: [path.join(vaultRoot, "Memory/Noise Note.md")],
+        },
+      },
+      {
+        id: "legacy-case",
+        status: "active",
+        suite: "development",
+        evaluation_mode: "discovery",
+        provenance: { origin: "synthetic", reason: "L1 legacy compatibility fixture." },
+        insight_input: "legacy schema",
+        must_recall: ["Memory/Must Note.md"],
+        nice_to_have: ["Memory/Nice Note.md"],
+        negative: ["Memory/Noise Note.md"],
+      },
+      {
+        id: "ambiguous-case",
+        state: "active",
+        suite: "development",
+        evaluation_mode: "discovery",
+        provenance: { origin: "synthetic", reason: "L1 ambiguous identity fixture." },
+        input: { thought: "invalid gold identity" },
+        gold: { must: ["Same.md"], nice: [], noise: [] },
+      },
+    ],
+  }, null, 2));
+  await writeFile(qmdBin, [
+    "#!/usr/bin/env node",
+    "import { readFileSync } from 'node:fs';",
+    "const args = process.argv.slice(2);",
+    "const fixture = JSON.parse(readFileSync(args[args.indexOf('bench') + 1], 'utf8'));",
+    `const resultFiles = ${JSON.stringify([
+      "qmd://obsidian/Memory/Must%20Note.md?index=obsidian",
+      "Memory/Must Note.md",
+      "Memory/Nice Note.md",
+      path.join(vaultRoot, "Memory/Noise Note.md"),
+    ])};`,
+    "const results = fixture.queries.map((query) => ({",
+    "  id: query.id,",
+    "  backends: { full: { top_files: query.id === 'ambiguous-case' ? [] : resultFiles } },",
+    "}));",
+    "console.log(JSON.stringify({ results, summary: { full: {} } }));",
+    "",
+  ].join("\n"));
+  await chmod(qmdBin, 0o755);
+
+  const result = spawnSync("node", [
+    "scripts/bench/run-qmd-bench.mjs",
+    "--cases", casesPath,
+    "--fixture", fixturePath,
+    "--report", reportPath,
+    "--qmd", qmdBin,
+    "--query-generator", "rules",
+  ], {
+    cwd: repoRoot,
+    encoding: "utf-8",
+    env: { ...process.env, AHA_BENCH_VAULT_ROOT: vaultRoot },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const report = JSON.parse(await readFile(reportPath, "utf-8"));
+  const byId = new Map(report.results.map((item) => [item.id, item.backends.full]));
+  for (const id of ["v3-case", "legacy-case"]) {
+    const stats = byId.get(id);
+    assert.equal(stats.evaluation_status, "scored");
+    assert.equal(stats.eval_v2.must_recall_at_k, 1);
+    assert.equal(stats.eval_v2.useful_precision_at_k, 2 / 3);
+    assert.equal(stats.eval_v2.negative_rate_at_k, 1 / 3);
+    assert.equal(stats.total_expected, 1);
+    assert.equal(stats.eval_v2.total_must_recall, 1);
+    assert.equal(stats.duplicate_result_count, 1);
+    assert.equal(stats.evaluation_top_files.length, 3);
+  }
+  assert.equal(byId.get("v3-case").identity_diagnostics.duplicates.length, 1);
+  assert.equal(byId.get("ambiguous-case").evaluation_status, "not_scored");
+  assert.equal(byId.get("ambiguous-case").eval_v2.must_recall_at_k, null);
+  assert.equal(byId.get("ambiguous-case").identity_diagnostics.ambiguous.length, 1);
+  assert.equal(report.summary.full.scored_cases, 2);
+  assert.equal(report.summary.full.not_scored_cases, 1);
+  assert.equal(report.summary.full.eval_v2.avg_must_recall_at_k, 1);
+
+  await rm(root, { recursive: true, force: true });
 });
 
 test("benchmark reader rejects malformed v3 gold arrays", async () => {
@@ -413,7 +605,7 @@ test("legacy report policy remains valid and attaches eval-v2 metrics when negat
   assert.equal(evaluated.summary.full.eval_v2.avg_must_recall_at_k, 1);
 });
 
-test("pipeline summary exposes eval-v2 metrics, expanded-pool recall at 20, dropped must count, and stability", () => {
+test("pipeline summary exposes eval-v2 metrics and only aggregates measured stability", () => {
   const must = ["Memory/must-a.md", "Memory/must-b.md"];
   const nice = ["Memory/nice-a.md"];
   const negative = ["Memory/noise-a.md"];
@@ -452,7 +644,12 @@ test("pipeline summary exposes eval-v2 metrics, expanded-pool recall at 20, drop
         niceToHaveFiles: nice,
         negativeFiles: negative,
       }),
-      stability_at_k: 1,
+      stability: {
+        status: "measured",
+        metric: "top_k_overlap",
+        top_k: 10,
+        score: 0.75,
+      },
     },
     expanded_pool: {
       score: scoreResults(expandedFiles, must, expandedFiles.length),
@@ -474,7 +671,14 @@ test("pipeline summary exposes eval-v2 metrics, expanded-pool recall at 20, drop
   assert.equal(summary.eval_v2.avg_negative_rate_at_k, 0.1);
   assert.equal(summary.avg_expanded_pool_recall_at_20, 1);
   assert.equal(summary.dropped_must_count, 1);
-  assert.equal(summary.avg_stability_at_10, 1);
+  assert.equal(summary.avg_stability_at_10, 0.75);
+  assert.deepEqual(summary.stability, {
+    status: "measured",
+    metric: "top_k_overlap",
+    top_k: 10,
+    measured_cases: 1,
+    score: 0.75,
+  });
 });
 
 test("dropped must count includes expanded-pool hits ranked outside final top ten", () => {
@@ -505,45 +709,6 @@ test("dropped must count includes expanded-pool hits ranked outside final top te
   assert.deepEqual(droppedMustFromExpandedPool(expandedScoreAt20, pipelineScore, 10), ["Memory/must-late.md"]);
 });
 
-test("generated pipeline attribution marks expanded-pool hit outside top ten as rerank failure", () => {
-  const must = ["Memory/must-late.md"];
-  const pipelineFiles = [
-    "Memory/noise-01.md",
-    "Memory/noise-02.md",
-    "Memory/noise-03.md",
-    "Memory/noise-04.md",
-    "Memory/noise-05.md",
-    "Memory/noise-06.md",
-    "Memory/noise-07.md",
-    "Memory/noise-08.md",
-    "Memory/noise-09.md",
-    "Memory/noise-10.md",
-    "Memory/noise-11.md",
-    "Memory/noise-12.md",
-    "Memory/noise-13.md",
-    "Memory/noise-14.md",
-    "Memory/must-late.md",
-  ];
-  const expandedFiles = ["Memory/must-late.md", ...pipelineFiles.slice(0, 19)];
-  const pipelineScore = scoreResults(pipelineFiles, must, 10);
-  const expandedScoreAt20 = scoreResults(expandedFiles, must, 20);
-  const dropped = droppedMustFromExpandedPool(expandedScoreAt20, pipelineScore, 10);
-  const attribution = failureAttributionForPipelineCase(
-    { id: "late-rerank" },
-    {
-      pipelineMissedAtTopKCount: Math.max(0, pipelineScore.total_expected - pipelineScore.hits_at_k),
-      droppedMustCount: dropped.length,
-      missingFromExpandedPool: expandedScoreAt20.unmatched_expected_files.length,
-      sourceNoteRank: null,
-      queryFallback: false,
-      rerankFallback: false,
-    },
-  );
-
-  assert.equal(attribution.primary, "rerank_failure");
-  assert.deepEqual(attribution.flags, ["dropped_must_from_final_top_k"]);
-});
-
 test("pipeline summary groups failure attributions by primary category and flags", () => {
   const base = {
     qmd: {
@@ -558,7 +723,13 @@ test("pipeline summary groups failure attributions by primary category and flags
         niceToHaveFiles: [],
         negativeFiles: [],
       }),
-      stability_at_k: 1,
+      stability: {
+        status: "not_measured",
+        reason: "no_comparison_report",
+        metric: "top_k_overlap",
+        top_k: 10,
+        score: null,
+      },
     },
     must_recall_sources: [
       { file: "Memory/must.md", source: "missing", in_expanded_pool: false },
@@ -575,6 +746,7 @@ test("pipeline summary groups failure attributions by primary category and flags
         dropped_must_count: 0,
       },
       failure_attribution: {
+        status: "attributed",
         primary: "retrieval_failure",
         flags: ["missing_from_expanded_pool"],
       },
@@ -589,6 +761,7 @@ test("pipeline summary groups failure attributions by primary category and flags
         dropped_must_count: 1,
       },
       failure_attribution: {
+        status: "attributed",
         primary: "rerank_failure",
         flags: ["dropped_must_from_final_top_k"],
       },
@@ -600,6 +773,7 @@ test("pipeline summary groups failure attributions by primary category and flags
   assert.equal(summary.failure_attribution_counts.query_failure, 0);
   assert.equal(summary.failure_flag_counts.missing_from_expanded_pool, 1);
   assert.equal(summary.failure_flag_counts.dropped_must_from_final_top_k, 1);
+  assert.equal(summary.unattributed_failure_count, 0);
 });
 
 test("summarize-report displays pipeline eval-v2 diagnostics", async () => {
@@ -617,7 +791,15 @@ test("summarize-report displays pipeline eval-v2 diagnostics", async () => {
       },
       avg_expanded_pool_recall_at_20: 1,
       dropped_must_count: 1,
-      avg_stability_at_10: 1,
+      avg_stability_at_10: null,
+      stability: {
+        status: "not_measured",
+        reason: "no_comparison_report",
+        metric: "top_k_overlap",
+        top_k: 10,
+        measured_cases: 0,
+        score: null,
+      },
       failure_attribution_counts: {
         retrieval_failure: 1,
         rerank_failure: 1,
@@ -639,6 +821,7 @@ test("summarize-report displays pipeline eval-v2 diagnostics", async () => {
   assert.match(result.stdout, /Expanded Pool Recall@20/);
   assert.match(result.stdout, /Dropped Must Count/);
   assert.match(result.stdout, /Stability@10/);
+  assert.match(result.stdout, /not measured \(no_comparison_report\)/i);
   assert.match(result.stdout, /Failure Attribution: retrieval_failure/);
   assert.match(result.stdout, /Trace Diagnosis: rerank_failure/);
   await rm(root, { recursive: true, force: true });
@@ -777,7 +960,7 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
   assert.equal(trace.steps.pre_rerank_candidates[1].rerank_id, "c002");
   assert.equal(trace.steps.pre_rerank_candidates[2].rerank_id, "c003");
   assert.equal(trace.steps.pre_rerank_candidates[1].content_hash.length, 64);
-  assert.equal(trace.steps.pre_rerank_candidates[1].snippet, "Must memory body.");
+  assert.equal("snippet" in trace.steps.pre_rerank_candidates[1], false);
   assert.equal(trace.steps.final_candidates[0].file, "Memory/noise.md");
   assert.deepEqual(trace.gold_positions.must[0], {
     file: "Memory/must.md",

@@ -16,3 +16,6 @@ The primary Aha benchmark should measure whether the Memory Stage surfaces usefu
 - Main case lifecycle should stay small: `active`, `draft`, and `off`.
 - Relation-judge evaluation and engineering regression fixtures should live outside the primary benchmark suite.
 - A whole source note can be benchmark input, but the case must make that explicit, for example with `input.whole_note: true`.
+- Every current case also declares a versioned `development` or frozen `holdout` suite, a `discovery` or `graph_assisted` evaluation mode, and auditable provenance. Graph-assisted cases name their known graph evidence.
+- Scoring and validation share one canonical vault-relative note identity contract. Ambiguous, unresolved, conflicting, or cross-suite duplicate cases are `not_scored`; they do not become ordinary retrieval misses.
+- Feedback pooling and seed promotion target development only. Holdout content or membership changes require an explicit version bump and reason.

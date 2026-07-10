@@ -7,7 +7,6 @@ import { basename, dirname, relative, resolve } from "node:path";
 import {
   collectResultItems,
   droppedMustFromExpandedPool,
-  failureAttributionForPipelineCase,
   filterSourceNoteFromResults,
   pathsMatch,
   pickFirstString,
@@ -21,12 +20,19 @@ import {
   textFromUnknown,
 } from "../lib/bench-cases.mjs";
 import {
+  comparePipelineStability,
+  failureAttributionFromTrace,
+  summarizePipelineEvaluationGroups,
+} from "../lib/bench-scoring.mjs";
+import {
   RELATION_JUDGE_PROMPT_VERSION,
   relationJudgeCandidatesForCase,
 } from "../aha/relation-judge.mjs";
 import { QUERY_PLAN_PROMPT_VERSION } from "../aha/query-plan.mjs";
 import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
 import {
+  PIPELINE_TRACE_SCHEMA,
+  PIPELINE_TRACE_VERSION,
   buildPipelineTrace,
   summarizeTraceDiagnoses,
   writePipelineTraceForReport,
@@ -47,6 +53,9 @@ import {
   DEFAULT_OPENAI_BASE_URL,
   DEFAULT_OPENAI_MODEL,
 } from "../lib/openai-json-agent.mjs";
+
+const WORKSPACE_ROOT = resolve(import.meta.dirname, "../..");
+const SHIPPED_WRAPPER = resolve(WORKSPACE_ROOT, "scripts/aha/run-insight-search.mjs");
 
 const DEFAULTS = {
   cases: "bench/aha-memory-cases.json",
@@ -88,6 +97,18 @@ const DEFAULTS = {
   queryMode: "multi",
   seedStrategy: "fair",
   sourceNoteFilter: true,
+  profile: "diagnostic-enhanced",
+  runtimeQmdRunner: "sdk",
+  runtimeQmdSdkModule: "",
+  runtimeQmdRerank: false,
+  runtimeCodexCommand: "codex",
+  runtimeCodexModel: "gpt-5.3-codex-spark",
+  runtimeCodexReasoningEffort: "low",
+  runtimeCodexSandbox: "danger-full-access",
+  runtimeTimeoutMs: 900_000,
+  compareReport: "",
+  suite: "all",
+  noArchive: false,
 };
 
 function usage() {
@@ -98,6 +119,10 @@ function usage() {
     "Options:",
     "  --cases <path>                 Default: bench/aha-memory-cases.json",
     "  --report <path>                Default: bench/reports/latest/pipeline.json",
+    "  --profile <diagnostic-enhanced|product-parity> Default: diagnostic-enhanced",
+    "  --suite <development|holdout|all> Default: all",
+    "  --compare-report <path>        Compatible prior report used for Stability@K",
+    "  --no-archive                   Skip the legacy timestamped archive copy",
     "  --index <name>                 Default: obsidian",
     "  --collection <name>            Default: cases file collection",
     "  --qmd <bin>                    Default: qmd",
@@ -135,6 +160,14 @@ function usage() {
     "  --query-mode <multi|raw-only>   Default: multi",
     "  --seed-strategy <fair|first>    Backlink seed strategy, default fair",
     "  --no-source-note-filter        Keep source note self-hits in scoring",
+    "  --runtime-qmd-runner <sdk|cli>  Product parity only; default: sdk (plugin default)",
+    "  --runtime-qmd-sdk-module <path> Product parity only; optional QMD SDK module",
+    "  --runtime-qmd-rerank            Product parity only; enable wrapper QMD reranking",
+    "  --runtime-codex-command <bin>   Product parity only; default: codex",
+    "  --runtime-codex-model <model>   Product parity only; default: gpt-5.3-codex-spark",
+    "  --runtime-codex-reasoning-effort <value> Product parity only; default: low",
+    "  --runtime-codex-sandbox <mode>  Product parity only; default: danger-full-access",
+    "  --runtime-timeout-ms <n>        Product parity wrapper timeout, default: 900000",
   ].join("\n");
 }
 
@@ -162,6 +195,14 @@ function parseArgs() {
     }
     if (arg === "--no-source-note-filter") {
       options.sourceNoteFilter = false;
+      continue;
+    }
+    if (arg === "--runtime-qmd-rerank") {
+      options.runtimeQmdRerank = true;
+      continue;
+    }
+    if (arg === "--no-archive") {
+      options.noArchive = true;
       continue;
     }
     if (arg === "--no-query-agent-cache") {
@@ -198,6 +239,15 @@ function parseArgs() {
         break;
       case "--report":
         options.report = value;
+        break;
+      case "--profile":
+        options.profile = value;
+        break;
+      case "--suite":
+        options.suite = value;
+        break;
+      case "--compare-report":
+        options.compareReport = value;
         break;
       case "--index":
         options.index = value;
@@ -293,12 +343,33 @@ function parseArgs() {
       case "--seed-strategy":
         options.seedStrategy = value;
         break;
+      case "--runtime-qmd-runner":
+        options.runtimeQmdRunner = value;
+        break;
+      case "--runtime-qmd-sdk-module":
+        options.runtimeQmdSdkModule = value;
+        break;
+      case "--runtime-codex-model":
+        options.runtimeCodexModel = value;
+        break;
+      case "--runtime-codex-command":
+        options.runtimeCodexCommand = value;
+        break;
+      case "--runtime-codex-reasoning-effort":
+        options.runtimeCodexReasoningEffort = value;
+        break;
+      case "--runtime-codex-sandbox":
+        options.runtimeCodexSandbox = value;
+        break;
+      case "--runtime-timeout-ms":
+        options.runtimeTimeoutMs = Number(value);
+        break;
       default:
         throw new Error(`Unknown option: ${arg}`);
     }
   }
 
-  for (const key of ["limit", "seedLimit", "backlinksPerSeed", "backlinkLimit", "qmdTimeoutMs", "obsidianTimeoutMs", "queryAgentTimeoutMs", "relationJudgeAgentTimeoutMs"]) {
+  for (const key of ["limit", "seedLimit", "backlinksPerSeed", "backlinkLimit", "qmdTimeoutMs", "obsidianTimeoutMs", "queryAgentTimeoutMs", "relationJudgeAgentTimeoutMs", "runtimeTimeoutMs"]) {
     if (!Number.isFinite(options[key]) || options[key] < 1) {
       throw new Error(`${key} must be a positive number.`);
     }
@@ -308,6 +379,15 @@ function parseArgs() {
   }
   if (!["fair", "first"].includes(options.seedStrategy)) {
     throw new Error("seedStrategy must be fair or first.");
+  }
+  if (!["diagnostic-enhanced", "product-parity"].includes(options.profile)) {
+    throw new Error("profile must be diagnostic-enhanced or product-parity.");
+  }
+  if (!["development", "holdout", "all"].includes(options.suite)) {
+    throw new Error("suite must be development, holdout, or all.");
+  }
+  if (!["sdk", "cli"].includes(options.runtimeQmdRunner)) {
+    throw new Error("runtimeQmdRunner must be sdk or cli.");
   }
   for (const [key, value] of [
     ["llmProvider", options.llmProvider],
@@ -349,7 +429,7 @@ function qmdEnv() {
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
-    cwd: resolve("."),
+    cwd: options.cwd ?? resolve("."),
     encoding: "utf-8",
     timeout: options.timeoutMs,
     env: options.env ?? process.env,
@@ -790,9 +870,32 @@ function candidateFiles(candidates) {
   return candidates.map(candidatePath).filter(Boolean);
 }
 
-function sourceForExpected(expected, candidates) {
-  const match = candidates.find((candidate) => pathsMatch(candidatePath(candidate), expected));
+function sourceForExpected(expected, candidates, resolver) {
+  const match = candidates.find((candidate) => pathsMatch(candidatePath(candidate), expected, { resolver }));
   return match ? sourceLabel(match) : "missing";
+}
+
+function isGraphOnlySource(source) {
+  const tokens = String(source ?? "").split("+").map((value) => value.trim().toLowerCase()).filter(Boolean);
+  const hasGraph = tokens.some((value) => ["obsidian_graph", "source_link", "source_backlink", "outlink", "backlink"].includes(value));
+  const hasDirectRetrieval = tokens.some((value) => value.startsWith("qmd"));
+  return hasGraph && !hasDirectRetrieval;
+}
+
+function modeEvaluationForCase(caseItem, mustSources) {
+  if (caseItem.identity_evaluation?.status !== "ready") {
+    return { status: "not_scored", reason: "identity_validation" };
+  }
+  if (caseItem.suite_evaluation?.status !== "ready") {
+    return { status: "not_scored", reason: "suite_validation" };
+  }
+  if (
+    caseItem.evaluation_mode === "discovery"
+    && (mustSources ?? []).some((item) => item.rank !== null && isGraphOnlySource(item.source))
+  ) {
+    return { status: "not_scored", reason: "graph_evidence_contradiction" };
+  }
+  return { status: "scored" };
 }
 
 function qmdSourceForCommand(command) {
@@ -861,20 +964,21 @@ function fixed(value) {
   return Number(value || 0).toFixed(3);
 }
 
-function topKFingerprint(files, topK) {
-  return createHash("sha256")
-    .update(files.slice(0, topK).join("\n"))
-    .digest("hex");
+function stabilityDisplay(stability) {
+  return stability?.status === "measured" && typeof stability.score === "number"
+    ? fixed(stability.score)
+    : `not measured (${stability?.reason || "no_comparison_report"})`;
 }
 
 function printSummary(report) {
   console.log("# Aha Memory Pipeline Bench Summary");
   console.log("");
   console.log(`Report: ${report.report}`);
+  console.log(`Profile: ${report.profile}`);
   console.log(`Cases: ${report.summary.cases}`);
   console.log(`Query mode: ${report.query_mode}`);
-  console.log(`Backlinks: ${report.backlinks_enabled ? "enabled" : "disabled"}`);
-  console.log(`Seed strategy: ${report.seed_strategy}`);
+  console.log(`Backlinks: ${report.profile === "product-parity" ? "runtime source graph" : report.backlinks_enabled ? "enabled" : "disabled"}`);
+  console.log(`Seed strategy: ${report.seed_strategy ?? "runtime"}`);
   console.log(`Source-note filter: ${report.source_note_filter_enabled ? "enabled" : "disabled"}`);
   console.log(`Relation judge: ${report.relation_judge_mode}`);
   console.log("");
@@ -892,7 +996,7 @@ function printSummary(report) {
     const evalV2 = result.pipeline.eval_v2 ?? {};
     const expandedRecall = result.expanded_pool?.recall_at_20 ?? result.expanded_pool?.score_at_20?.recall_at_k ?? result.expanded_pool?.score?.recall;
     const droppedMustCount = result.expanded_pool?.dropped_must_count ?? result.expanded_pool?.dropped_from_final_top_k?.length ?? 0;
-    console.log(`| ${result.id} | ${topK} | ${fixed(evalV2.must_recall_at_k)} | ${fixed(evalV2.useful_precision_at_k)} | ${fixed(evalV2.ndcg_at_k)} | ${fixed(evalV2.negative_rate_at_k)} | ${fixed(expandedRecall)} | ${droppedMustCount} | ${fixed(result.pipeline.stability_at_k ?? 1)} | ${missing} |`);
+    console.log(`| ${result.id} | ${topK} | ${fixed(evalV2.must_recall_at_k)} | ${fixed(evalV2.useful_precision_at_k)} | ${fixed(evalV2.ndcg_at_k)} | ${fixed(evalV2.negative_rate_at_k)} | ${fixed(expandedRecall)} | ${droppedMustCount} | ${stabilityDisplay(result.pipeline.stability)} | ${missing} |`);
   }
 
   console.log("");
@@ -908,7 +1012,8 @@ function printSummary(report) {
   console.log(`| avg worst must-rank | ${fixed(report.summary.avg_worst_must_rank, 1)} |`);
   console.log(`| avg Expanded Pool Recall@20 | ${fixed(report.summary.avg_expanded_pool_recall_at_20 ?? report.summary.avg_expanded_pool_recall)} |`);
   console.log(`| Dropped Must Count | ${report.summary.dropped_must_count ?? report.summary.expanded_pool_dropped_topk_count} |`);
-  console.log(`| avg Stability@10 | ${fixed(report.summary.avg_stability_at_10)} |`);
+  console.log(`| avg Stability@10 | ${stabilityDisplay(report.summary.stability)} |`);
+  console.log(`| Unattributed failures | ${report.summary.unattributed_failure_count ?? 0} |`);
   for (const [group, count] of Object.entries(report.summary.failure_attribution_counts ?? {})) {
     console.log(`| Failure Attribution: ${group} | ${count} |`);
   }
@@ -925,6 +1030,49 @@ function printSummary(report) {
 
 function timestampForPath() {
   return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function safePathIdentifier(pathValue) {
+  const value = String(pathValue ?? "").trim();
+  if (!value) return null;
+  const absolutePath = resolve(value);
+  for (const base of [WORKSPACE_ROOT, resolve(".")]) {
+    const relativePath = relative(base, absolutePath).replace(/\\/g, "/");
+    if (relativePath === "") return ".";
+    if (relativePath !== ".." && !relativePath.startsWith("../")) return relativePath;
+  }
+  return `sha256:${sha256(absolutePath)}`;
+}
+
+function fileContentIdentity(pathValue) {
+  const value = String(pathValue ?? "").trim();
+  if (!value) return null;
+  try {
+    return `sha256:${sha256(readFileSync(resolve(value)))}`;
+  } catch {
+    return `sha256:${sha256(`unreadable:${resolve(value)}`)}`;
+  }
+}
+
+function privateValueIdentity(value) {
+  const normalized = String(value ?? "").trim();
+  return normalized ? `sha256:${sha256(normalized)}` : null;
+}
+
+function qmdRemoteServices() {
+  const service = (urlKey, modelKey) => ({
+    endpoint_identity: privateValueIdentity(process.env[urlKey]),
+    model: process.env[modelKey]?.trim() || null,
+  });
+  return {
+    embed: service("QMD_REMOTE_EMBED_URL", "QMD_REMOTE_EMBED_MODEL"),
+    generate: service("QMD_REMOTE_GENERATE_URL", "QMD_REMOTE_GENERATE_MODEL"),
+    rerank: service("QMD_REMOTE_RERANK_URL", "QMD_REMOTE_RERANK_MODEL"),
+  };
 }
 
 function archiveReportPath(reportPath) {
@@ -964,22 +1112,21 @@ function vaultSnapshotMetadata(root = vaultRoot()) {
   try {
     walk(root);
     return {
-      root,
       markdown_file_count: markdownFileCount,
       hash: hash.digest("hex"),
     };
   } catch (error) {
     return {
-      root,
       markdown_file_count: markdownFileCount,
       hash: null,
-      error: error.message,
+      error: error?.code || error?.name || "snapshot_failed",
     };
   }
 }
 
 function commandOutput(command, args) {
   const result = spawnSync(command, args, {
+    cwd: WORKSPACE_ROOT,
     encoding: "utf-8",
     timeout: 10_000,
   });
@@ -987,12 +1134,109 @@ function commandOutput(command, args) {
   return String(result.stdout || result.stderr || "").trim().split(/\r?\n/)[0] ?? "";
 }
 
-function reportMetadata(options) {
+function runtimeTargetCandidateLimit(value) {
+  return Math.min(20, Math.max(15, Number(value) || 20));
+}
+
+function effectiveConfiguration(options, collection) {
+  if (options.profile === "product-parity") {
+    const runtimeFinal = runtimeTargetCandidateLimit(options.limit);
+    return {
+      profile: options.profile,
+      index: options.index,
+      collection: collection || null,
+      source_note_filter: options.sourceNoteFilter,
+      llm: {
+        provider: options.llmProvider,
+        model: options.llmModel,
+        endpoint_identity: privateValueIdentity(options.llmBaseUrl),
+      },
+      runtime_codex: {
+        command: basename(options.runtimeCodexCommand),
+        version: commandOutput(options.runtimeCodexCommand, ["--version"]) || null,
+        model: options.runtimeCodexModel,
+        reasoning_effort: options.runtimeCodexReasoningEffort,
+        sandbox: options.runtimeCodexSandbox,
+      },
+      qmd: {
+        runner: options.runtimeQmdRunner,
+        command: basename(options.qmd),
+        version: commandOutput(options.qmd, ["--version"]) || null,
+        rerank: options.runtimeQmdRerank,
+        sdk_module_identity: options.runtimeQmdRunner === "sdk"
+          ? fileContentIdentity(options.runtimeQmdSdkModule) || "builtin:qmd-sdk"
+          : null,
+        remote_services: qmdRemoteServices(),
+      },
+      obsidian: {
+        command: basename(options.obsidian),
+        version: commandOutput(options.obsidian, ["--version"]) || null,
+      },
+      prompt_versions: {
+        query_plan: QUERY_PLAN_PROMPT_VERSION,
+        relation_judge: RELATION_JUDGE_PROMPT_VERSION,
+      },
+      candidate_limits: {
+        requested_final: options.limit,
+        runtime_final: runtimeFinal,
+        qmd_pool: Math.max(runtimeFinal, 20),
+        query_plan: 5,
+        relation_judge: runtimeFinal,
+      },
+    };
+  }
+  return {
+    profile: options.profile,
+    index: options.index,
+    collection: collection || null,
+    candidate_limit: options.limit,
+    source_note_filter: options.sourceNoteFilter,
+    llm_provider: options.llmProvider,
+    llm_model: options.llmModel,
+    query_mode: options.profile === "diagnostic-enhanced" ? options.queryMode : "runtime",
+    seed_strategy: options.profile === "diagnostic-enhanced" ? options.seedStrategy : null,
+    relation_judge_mode: options.profile === "diagnostic-enhanced" ? options.relationJudgeMode : "runtime",
+    runtime_qmd_runner: options.profile === "product-parity" ? options.runtimeQmdRunner : null,
+    runtime_qmd_rerank: options.profile === "product-parity" ? options.runtimeQmdRerank : null,
+    prompt_versions: {
+      query_plan: QUERY_PLAN_PROMPT_VERSION,
+      relation_judge: RELATION_JUDGE_PROMPT_VERSION,
+    },
+  };
+}
+
+function reportMetadata(options, collection) {
+  const gitStatus = commandOutput("git", ["status", "--porcelain"]);
+  const vault = vaultRoot();
+  const configuration = effectiveConfiguration(options, collection);
   return {
     generated_at: new Date().toISOString(),
+    profile: options.profile,
     git_commit: commandOutput("git", ["rev-parse", "HEAD"]),
-    git_status_short: commandOutput("git", ["status", "--short"]),
+    git_clean: gitStatus.length === 0,
     pipeline_version: "aha-pipeline-bench-v2",
+    trace_schema: PIPELINE_TRACE_SCHEMA,
+    trace_version: PIPELINE_TRACE_VERSION,
+    effective_configuration: configuration,
+    effective_config_id: sha256(JSON.stringify(configuration)),
+    runtime_configuration: options.profile === "product-parity" ? {
+      entry_point: "scripts/aha/run-insight-search.mjs",
+      strategy: "pipeline",
+      llm_provider: options.llmProvider,
+      llm_model: options.llmModel,
+      llm_api_key_env: options.llmApiKeyEnv,
+      codex_command: basename(options.runtimeCodexCommand),
+      codex_model: options.runtimeCodexModel,
+      codex_reasoning_effort: options.runtimeCodexReasoningEffort,
+      codex_sandbox: options.runtimeCodexSandbox,
+      qmd_runner: options.runtimeQmdRunner,
+      qmd_sdk_module_configured: Boolean(options.runtimeQmdSdkModule),
+      qmd_sdk_module_identity: options.runtimeQmdRunner === "sdk"
+        ? fileContentIdentity(options.runtimeQmdSdkModule) || "builtin:qmd-sdk"
+        : null,
+      qmd_rerank: options.runtimeQmdRerank,
+      target_candidates: runtimeTargetCandidateLimit(options.limit),
+    } : null,
     query_prompt_version: QUERY_PLAN_PROMPT_VERSION,
     relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
     llm_provider: options.llmProvider,
@@ -1000,35 +1244,35 @@ function reportMetadata(options) {
     llm_model: options.llmModel,
     llm_api_key_env: options.llmApiKeyEnv,
     query_agent_provider: options.queryAgentProvider,
-    query_agent_bin: options.queryAgentBin,
+    query_agent_bin: basename(options.queryAgentBin),
     query_agent_version: ["codex", "codex-cli"].includes(String(options.queryAgentProvider).toLowerCase())
       ? commandOutput(options.queryAgentBin, ["--version"])
       : null,
     query_agent_model: options.queryAgentModel || options.llmModel || null,
-    query_agent_cache: options.queryAgentCache || null,
+    query_agent_cache_enabled: Boolean(options.queryAgentCache),
     relation_judge_agent_provider: options.relationJudgeAgentProvider,
-    relation_judge_agent_bin: options.relationJudgeAgentBin,
+    relation_judge_agent_bin: basename(options.relationJudgeAgentBin),
     relation_judge_agent_version: ["codex", "codex-cli"].includes(String(options.relationJudgeAgentProvider).toLowerCase())
       ? commandOutput(options.relationJudgeAgentBin, ["--version"])
       : null,
     relation_judge_agent_model: options.relationJudgeAgentModel || options.llmModel || null,
-    relation_judge_agent_cache: options.relationJudgeAgentCache || null,
-    qmd_bin: options.qmd,
+    relation_judge_agent_cache_enabled: Boolean(options.relationJudgeAgentCache),
+    qmd_bin: basename(options.qmd),
     qmd_version: commandOutput(options.qmd, ["--version"]),
-    obsidian_bin: options.obsidian,
+    obsidian_bin: basename(options.obsidian),
     obsidian_version: commandOutput(options.obsidian, ["--version"]),
-    vault_root: vaultRoot(),
-    vault_snapshot: vaultSnapshotMetadata(),
+    vault_id: createHash("sha256").update(vault).digest("hex"),
+    vault_snapshot: vaultSnapshotMetadata(vault),
     index_snapshot: {
       index: options.index,
-      collection: options.collection || null,
-      qmd_bin: options.qmd,
+      collection: collection || null,
+      qmd_bin: basename(options.qmd),
     },
   };
 }
 
-function sourceNoteEval(files, sourceNotePath, options) {
-  if (options.sourceNoteFilter) return filterSourceNoteFromResults(files, sourceNotePath);
+function sourceNoteEval(files, sourceNotePath, options, resolver) {
+  if (options.sourceNoteFilter) return filterSourceNoteFromResults(files, sourceNotePath, { resolver });
   return {
     files,
     source_note_rank: null,
@@ -1079,23 +1323,346 @@ function cloneJson(value) {
 
 function writeReportWithTraces(report, reportPath, traces) {
   const reportCopy = cloneJson(report);
-  reportCopy.report = reportPath;
+  reportCopy.report = safePathIdentifier(reportPath);
   reportCopy.results.forEach((result, index) => {
-    result.trace_json = writePipelineTraceForReport(traces[index], reportPath);
+    result.trace_json = safePathIdentifier(writePipelineTraceForReport(traces[index], reportPath));
   });
   mkdirSync(dirname(resolve(reportPath)), { recursive: true });
   writeFileSync(resolve(reportPath), `${JSON.stringify(reportCopy, null, 2)}\n`);
   return reportCopy;
 }
 
+function reportSuite(options, suiteVersions) {
+  if (options.suite === "all") {
+    return { kind: "all", versions: suiteVersions };
+  }
+  return {
+    kind: options.suite,
+    version: suiteVersions?.[options.suite] ?? null,
+  };
+}
+
+function readComparisonReport(reportPath) {
+  if (!reportPath) return null;
+  try {
+    return JSON.parse(readFileSync(resolve(reportPath), "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function productParitySource(caseItem, resolver) {
+  const sourcePath = sourceNotePathForCase(caseItem);
+  if (!sourcePath) {
+    throw new Error(`${caseItem.id}: product-parity requires input.note because the shipped plugin runtime starts from a vault note.`);
+  }
+  const resolved = sharedResolveVaultPath(sourcePath, resolver);
+  if (resolved.status !== "resolved") {
+    const detail = resolved.status === "ambiguous" ? ` (${resolved.matches.join(", ")})` : "";
+    throw new Error(`${caseItem.id}: product-parity source note could not be resolved inside the benchmark vault${detail}.`);
+  }
+  return {
+    relativePath: resolved.path,
+    absolutePath: resolve(resolver.root, resolved.path),
+  };
+}
+
+function productParityWrapperArgs(caseItem, options, resolver) {
+  const source = productParitySource(caseItem, resolver);
+  const args = [
+    SHIPPED_WRAPPER,
+    "--workspace", WORKSPACE_ROOT,
+    "--strategy", "pipeline",
+    "--source-path", source.relativePath,
+    "--source-absolute-path", source.absolutePath,
+    "--vault-root", resolver.root,
+    "--target-candidates", String(options.limit),
+    "--llm-provider", options.llmProvider,
+    "--llm-base-url", options.llmBaseUrl,
+    "--llm-model", options.llmModel,
+    "--llm-api-key-env", options.llmApiKeyEnv,
+    "--codex-command", options.runtimeCodexCommand,
+    "--codex-model", options.runtimeCodexModel,
+    "--codex-reasoning-effort", options.runtimeCodexReasoningEffort,
+    "--codex-sandbox", options.runtimeCodexSandbox,
+    "--qmd-runner", options.runtimeQmdRunner,
+    "--qmd-command", options.qmd,
+    "--qmd-index", options.index,
+    "--obsidian-command", options.obsidian,
+    "--timeout-ms", String(options.runtimeTimeoutMs),
+    "--trace",
+  ];
+  if (options.runtimeQmdSdkModule) args.push("--qmd-sdk-module", options.runtimeQmdSdkModule);
+  if (options.runtimeQmdRerank) args.push("--qmd-rerank");
+  return { args, source };
+}
+
+function runProductParityRuntime(caseItem, options, resolver) {
+  const { args, source } = productParityWrapperArgs(caseItem, options, resolver);
+  const execution = run(process.execPath, args, {
+    cwd: WORKSPACE_ROOT,
+    env: process.env,
+    timeoutMs: options.runtimeTimeoutMs + 5_000,
+  });
+  if (execution.error || execution.timedOut) {
+    throw new Error(`${caseItem.id}: shipped runtime failed to execute: ${execution.error || "timed out"}`);
+  }
+  let output;
+  try {
+    output = JSON.parse(execution.stdout);
+  } catch (error) {
+    throw new Error(`${caseItem.id}: shipped runtime returned invalid JSON: ${error.message}; ${execution.stderr.trim()}`);
+  }
+  if (!output.trace || output.trace.schema !== "PipelineTrace") {
+    throw new Error(`${caseItem.id}: shipped runtime did not return the required PipelineTrace.`);
+  }
+  const finalCandidates = Array.isArray(output.candidates) ? output.candidates : [];
+  const resultFiles = candidateFiles(finalCandidates);
+  const traceFiles = candidateFiles(output.trace.steps?.final_candidates ?? []);
+  if (JSON.stringify(resultFiles) !== JSON.stringify(traceFiles)) {
+    throw new Error(`${caseItem.id}: shipped runtime result and trace final ordering diverged.`);
+  }
+  return { execution, output, finalCandidates, source };
+}
+
+function traceStageCandidates(trace, stage) {
+  return mergeCandidates(trace.steps?.[stage] ?? [], Number.MAX_SAFE_INTEGER);
+}
+
+function qmdTraceCandidates(trace) {
+  return mergeCandidates(
+    (trace.steps?.qmd_runs ?? []).flatMap((runItem) => runItem.results ?? []),
+    Number.MAX_SAFE_INTEGER,
+  );
+}
+
+function productTraceDiagnosis(failureAttribution) {
+  const primary = failureAttribution?.primary ?? null;
+  const nextTarget = {
+    case_label_failure: "case_labels",
+    input_representation_failure: "input_representation",
+    query_failure: "query_generation",
+    retrieval_failure: "retrieval",
+    rerank_failure: "rerank",
+    relation_failure: "relation_judge",
+  }[primary] ?? (failureAttribution?.status === "unattributed" ? "trace_evidence" : "none");
+  return {
+    primary,
+    status: failureAttribution?.status ?? "not_applicable",
+    flags: failureAttribution?.flags ?? [],
+    next_target: nextTarget,
+    signals: [],
+  };
+}
+
+function productParityCase(caseItem, options, resolver, expectedInTopK, expectedNiceInTopK) {
+  const startedAt = Date.now();
+  const runtime = runProductParityRuntime(caseItem, options, resolver);
+  const runtimeTrace = runtime.output.trace;
+  const finalCandidates = runtime.finalCandidates;
+  const qmdCandidates = qmdTraceCandidates(runtimeTrace);
+  const expandedPool = traceStageCandidates(runtimeTrace, "pre_judge_candidates");
+  const topK = Number(caseItem.expected_in_top_k ?? expectedInTopK);
+  const niceTopK = Number(caseItem.nice_expected_in_top_k ?? expectedNiceInTopK);
+  const expandedPoolTopK = Number(caseItem.expanded_pool_expected_in_top_k ?? 20);
+  const sourceNotePath = runtime.source.relativePath;
+  const niceToHave = caseItem.nice_to_have ?? [];
+  const negative = caseItem.negative ?? [];
+  const qmdEval = sourceNoteEval(candidateFiles(qmdCandidates), sourceNotePath, options, resolver);
+  const pipelineEval = sourceNoteEval(candidateFiles(finalCandidates), sourceNotePath, options, resolver);
+  const expandedPoolEval = sourceNoteEval(candidateFiles(expandedPool), sourceNotePath, options, resolver);
+  const scoreOptions = { resolver };
+  const qmdScore = scoreResults(qmdEval.files, caseItem.must_recall, topK, scoreOptions);
+  const qmdNiceScore = scoreNiceToHave(qmdEval.files, niceToHave, niceTopK, scoreOptions);
+  const qmdEvalV2 = scoreEvalV2(qmdEval.files, {
+    topK,
+    mustRecallFiles: caseItem.must_recall,
+    niceToHaveFiles: niceToHave,
+    negativeFiles: negative,
+    resolver,
+  });
+  const pipelineScore = scoreResults(pipelineEval.files, caseItem.must_recall, topK, scoreOptions);
+  const pipelineNiceScore = scoreNiceToHave(pipelineEval.files, niceToHave, niceTopK, scoreOptions);
+  const pipelineEvalV2 = scoreEvalV2(pipelineEval.files, {
+    topK,
+    mustRecallFiles: caseItem.must_recall,
+    niceToHaveFiles: niceToHave,
+    negativeFiles: negative,
+    resolver,
+  });
+  const expandedPoolScore = scoreResults(
+    expandedPoolEval.files,
+    caseItem.must_recall,
+    Math.max(topK, expandedPool.length || topK),
+    scoreOptions,
+  );
+  const expandedPoolScoreAt20 = scoreResults(expandedPoolEval.files, caseItem.must_recall, expandedPoolTopK, scoreOptions);
+  const expandedPoolNiceScore = scoreNiceToHave(
+    expandedPoolEval.files,
+    niceToHave,
+    Math.max(niceTopK, expandedPool.length || niceTopK),
+    scoreOptions,
+  );
+  const expandedPoolEvalV2 = scoreEvalV2(expandedPoolEval.files, {
+    topK: expandedPoolTopK,
+    mustRecallFiles: caseItem.must_recall,
+    niceToHaveFiles: niceToHave,
+    negativeFiles: negative,
+    resolver,
+  });
+  const droppedMust = droppedMustFromExpandedPool(expandedPoolScoreAt20, pipelineScore, topK);
+  const queryStep = runtimeTrace.steps?.query_generation ?? {};
+  const judgeStep = runtimeTrace.steps?.relation_judge ?? {};
+  const finalTraceCandidates = runtimeTrace.steps?.final_candidates ?? [];
+  const trace = {
+    ...runtimeTrace,
+    profile: "product-parity",
+    runtime_profile: runtimeTrace.profile,
+    case: {
+      id: caseItem.id,
+      state: caseItem.state,
+      title_hash: createHash("sha256").update(caseItem.title || caseItem.id).digest("hex"),
+      resolved_input_hash: createHash("sha256").update(caseItem._resolved_insight_input ?? "").digest("hex"),
+    },
+  };
+  const failureAttribution = failureAttributionFromTrace(caseItem, trace, {
+    topK,
+    judgeBudget: 20,
+    resolver,
+  });
+  const traceDiagnosis = productTraceDiagnosis(failureAttribution);
+  trace.diagnosis = traceDiagnosis;
+  const qmdErrors = (runtimeTrace.steps?.qmd_runs ?? []).flatMap((runItem) => runItem.errors ?? []);
+  const sourceExpansionCandidates = runtimeTrace.steps?.source_expansion?.candidates ?? [];
+  const runtimeErrors = runtimeTrace.errors ?? [];
+  const caseResult = {
+    id: caseItem.id,
+    state: caseItem.state,
+    title: caseItem.title || caseItem.id,
+    why: caseItem.why || undefined,
+    type: caseItem.type || "real",
+    suite: caseItem.suite ?? null,
+    suite_version: caseItem._suite_version ?? null,
+    evaluation_mode: caseItem.evaluation_mode ?? null,
+    provenance_origin: caseItem.provenance?.origin ?? null,
+    profile: "product-parity",
+    runtime_status: runtimeTrace.status,
+    runtime_exit_code: runtime.execution.code,
+    runtime_input: {
+      source_note: sourceNotePath,
+      benchmark_line_slice_applied: false,
+      benchmark_thought_applied: false,
+    },
+    query: null,
+    queries: queryStep.queries ?? [],
+    query_object: null,
+    query_objects: [],
+    query_generated_by: queryStep.generated_by ?? null,
+    query_generation_fallback: !!queryStep.fallback,
+    query_generation_error: queryStep.errors?.[0] ?? null,
+    query_plan_prompt_version: queryStep.prompt_version ?? null,
+    query_mode: "runtime",
+    expected_files: caseItem.must_recall,
+    expected_in_top_k: topK,
+    nice_expected_in_top_k: niceTopK,
+    expanded_pool_expected_in_top_k: expandedPoolTopK,
+    source_note_path: sourceNotePath,
+    nice_to_have_files: niceToHave,
+    negative_files: negative,
+    qmd: {
+      score: qmdScore,
+      nice_to_have: qmdNiceScore,
+      eval_v2: qmdEvalV2,
+      source_note_rank: qmdEval.source_note_rank,
+      top_files: candidateFiles(qmdCandidates),
+      runs: (runtimeTrace.steps?.qmd_runs ?? []).map((runItem) => ({
+        kind: runItem.kind,
+        command: runItem.command,
+        query_hash: runItem.query_hash,
+        top_files: candidateFiles(runItem.results ?? []),
+        errors: runItem.errors ?? [],
+      })),
+      errors: qmdErrors,
+    },
+    pipeline: {
+      score: pipelineScore,
+      nice_to_have: pipelineNiceScore,
+      eval_v2: pipelineEvalV2,
+      source_note_rank: pipelineEval.source_note_rank,
+      relation_judge_generated_by: judgeStep.generated_by ?? null,
+      relation_judge_fallback: !!judgeStep.fallback,
+      relation_judge_error: judgeStep.errors?.[0] ?? null,
+      relation_judge_ranked_ids: (judgeStep.decisions ?? []).map((candidate) => candidate.rerank_id).filter(Boolean),
+      relation_judge_prompt_version: judgeStep.prompt_version ?? null,
+      relation_judge_reviewed_candidates: judgeStep.reviewed_candidates ?? [],
+      top_candidates: finalCandidates.map((candidate, index) => ({
+        rerankId: finalTraceCandidates[index]?.rerank_id,
+        title: candidate.noteTitle || candidate.title,
+        file: candidatePath(candidate),
+        source: finalTraceCandidates[index]?.source,
+        sources: finalTraceCandidates[index]?.sources ?? [],
+        relation: candidate.relation,
+        hit: candidate.hit,
+        why: candidate.why,
+        quotes: candidate.quotes,
+      })),
+      errors: runtimeErrors,
+    },
+    backlink_seed_strategy: null,
+    backlink_seeds: [],
+    backlink_candidates: sourceExpansionCandidates,
+    expanded_pool: {
+      score: expandedPoolScore,
+      score_at_20: expandedPoolScoreAt20,
+      nice_to_have: expandedPoolNiceScore,
+      eval_v2: expandedPoolEvalV2,
+      recall_at_20: expandedPoolScoreAt20.recall_at_k,
+      source_note_rank: expandedPoolEval.source_note_rank,
+      candidate_count: expandedPool.length,
+      qmd_candidate_count: qmdCandidates.length,
+      backlink_candidate_count: sourceExpansionCandidates.length,
+      dropped_from_final_top_k: droppedMust,
+      dropped_must_count: droppedMust.length,
+    },
+    failure_attribution: failureAttribution,
+    must_recall_sources: pipelineScore.must_recall_ranks.map((item) => ({
+      file: item.file,
+      rank: item.rank,
+      source: sourceForExpected(item.file, finalTraceCandidates, resolver),
+      in_expanded_pool: sourceForExpected(item.file, expandedPool, resolver) !== "missing",
+    })),
+    nice_to_have_sources: pipelineNiceScore.nice_to_have_ranks.map((item) => ({
+      file: item.file,
+      rank: item.rank,
+      source: sourceForExpected(item.file, finalTraceCandidates, resolver),
+      in_expanded_pool: sourceForExpected(item.file, expandedPool, resolver) !== "missing",
+    })),
+    latency_ms: Date.now() - startedAt,
+    trace_diagnosis: traceDiagnosis,
+  };
+  caseResult.mode_evaluation = modeEvaluationForCase(caseItem, caseResult.must_recall_sources);
+  caseResult.evaluation_status = caseResult.mode_evaluation.status;
+  return { caseResult, trace };
+}
+
 async function main() {
   const options = parseArgs();
-  const { cases: allCases, collection: defaultCollection, expectedInTopK, expectedNiceInTopK } = readBenchmarkCases(options.cases, {
+  const {
+    cases: allCases,
+    collection: defaultCollection,
+    expectedInTopK,
+    expectedNiceInTopK,
+    suiteEvaluation,
+    suiteVersions,
+  } = readBenchmarkCases(options.cases, {
     includeDraft: options.includeDraft,
   });
+  const suiteCases = options.suite === "all"
+    ? allCases
+    : allCases.filter((caseItem) => caseItem.suite === options.suite);
   const cases = options.only.length > 0
-    ? allCases.filter((caseItem) => options.only.includes(caseItem.id))
-    : allCases;
+    ? suiteCases.filter((caseItem) => options.only.includes(caseItem.id))
+    : suiteCases;
   if (options.only.length > 0 && cases.length === 0) {
     throw new Error(`--only matched no cases: ${options.only.join(", ")}`);
   }
@@ -1105,6 +1672,18 @@ async function main() {
   const traces = [];
 
   for (const caseItem of cases) {
+    if (options.profile === "product-parity") {
+      const { caseResult, trace } = productParityCase(
+        caseItem,
+        options,
+        resolver,
+        expectedInTopK,
+        expectedNiceInTopK,
+      );
+      results.push(caseResult);
+      traces.push(trace);
+      continue;
+    }
     const startedAt = Date.now();
     const generatedQuery = resolveQmdQueriesForCase(caseItem, options);
     const querySpecs = withDeterministicRawQuery(selectQuerySpecs(generatedQuery.queries, options), caseItem);
@@ -1155,63 +1734,65 @@ async function main() {
     const qmdFiles = candidateFiles(qmdCandidates);
     const pipelineFiles = candidateFiles(finalCandidates);
     const expandedPoolFiles = candidateFiles(expandedPool);
-    const qmdEval = sourceNoteEval(qmdFiles, sourceNotePath, options);
-    const pipelineEval = sourceNoteEval(pipelineFiles, sourceNotePath, options);
-    const expandedPoolEval = sourceNoteEval(expandedPoolFiles, sourceNotePath, options);
-    const qmdScore = scoreResults(qmdEval.files, caseItem.must_recall, topK);
-    const qmdNiceScore = scoreNiceToHave(qmdEval.files, niceToHave, niceTopK);
+    const qmdEval = sourceNoteEval(qmdFiles, sourceNotePath, options, resolver);
+    const pipelineEval = sourceNoteEval(pipelineFiles, sourceNotePath, options, resolver);
+    const expandedPoolEval = sourceNoteEval(expandedPoolFiles, sourceNotePath, options, resolver);
+    const scoreOptions = { resolver };
+    const qmdScore = scoreResults(qmdEval.files, caseItem.must_recall, topK, scoreOptions);
+    const qmdNiceScore = scoreNiceToHave(qmdEval.files, niceToHave, niceTopK, scoreOptions);
     const qmdEvalV2 = scoreEvalV2(qmdEval.files, {
       topK,
       mustRecallFiles: caseItem.must_recall,
       niceToHaveFiles: niceToHave,
       negativeFiles: negative,
+      resolver,
     });
-    const pipelineScore = scoreResults(pipelineEval.files, caseItem.must_recall, topK);
-    const pipelineNiceScore = scoreNiceToHave(pipelineEval.files, niceToHave, niceTopK);
+    const pipelineScore = scoreResults(pipelineEval.files, caseItem.must_recall, topK, scoreOptions);
+    const pipelineNiceScore = scoreNiceToHave(pipelineEval.files, niceToHave, niceTopK, scoreOptions);
     const pipelineEvalV2 = scoreEvalV2(pipelineEval.files, {
       topK,
       mustRecallFiles: caseItem.must_recall,
       niceToHaveFiles: niceToHave,
       negativeFiles: negative,
+      resolver,
     });
     const expandedPoolScore = scoreResults(
       expandedPoolEval.files,
       caseItem.must_recall,
       Math.max(topK, expandedPool.length || topK),
+      scoreOptions,
     );
     const expandedPoolScoreAt20 = scoreResults(
       expandedPoolEval.files,
       caseItem.must_recall,
       expandedPoolTopK,
+      scoreOptions,
     );
     const expandedPoolEvalV2 = scoreEvalV2(expandedPoolEval.files, {
       topK: expandedPoolTopK,
       mustRecallFiles: caseItem.must_recall,
       niceToHaveFiles: niceToHave,
       negativeFiles: negative,
+      resolver,
     });
     const expandedPoolDroppedFromTopK = droppedMustFromExpandedPool(expandedPoolScoreAt20, pipelineScore, topK);
     const expandedPoolNiceScore = scoreNiceToHave(
       expandedPoolEval.files,
       niceToHave,
       Math.max(niceTopK, expandedPool.length || niceTopK),
+      scoreOptions,
     );
-    const missingFromExpandedPool = expandedPoolScoreAt20.unmatched_expected_files.length;
-    const failureAttribution = failureAttributionForPipelineCase(caseItem, {
-      pipelineMissedAtTopKCount: Math.max(0, pipelineScore.total_expected - pipelineScore.hits_at_k),
-      droppedMustCount: expandedPoolDroppedFromTopK.length,
-      missingFromExpandedPool,
-      sourceNoteRank: pipelineEval.source_note_rank || qmdEval.source_note_rank || expandedPoolEval.source_note_rank,
-      queryFallback: !!generatedQuery.query_generation_fallback,
-      rerankFallback: !!rerankResult.relation_judge_fallback,
-    });
-
     const caseResult = {
       id: caseItem.id,
       state: caseItem.state,
       title: caseItem.title || caseItem.id,
       why: caseItem.why || undefined,
       type: caseItem.type || "real",
+      suite: caseItem.suite ?? null,
+      suite_version: caseItem._suite_version ?? null,
+      evaluation_mode: caseItem.evaluation_mode ?? null,
+      provenance_origin: caseItem.provenance?.origin ?? null,
+      profile: "diagnostic-enhanced",
       query: queryText,
       queries: querySpecs.map((query) => ({
         kind: query.kind,
@@ -1252,8 +1833,6 @@ async function main() {
         score: pipelineScore,
         nice_to_have: pipelineNiceScore,
         eval_v2: pipelineEvalV2,
-        stability_at_k: 1,
-        stability_top_k_fingerprint: topKFingerprint(pipelineEval.files, topK),
         source_note_rank: pipelineEval.source_note_rank,
         relation_judge_generated_by: rerankResult.relation_judge_generated_by,
         relation_judge_fallback: rerankResult.relation_judge_fallback,
@@ -1301,23 +1880,27 @@ async function main() {
         dropped_from_final_top_k: expandedPoolDroppedFromTopK,
         dropped_must_count: expandedPoolDroppedFromTopK.length,
       },
-      failure_attribution: failureAttribution,
       must_recall_sources: pipelineScore.must_recall_ranks.map((item) => ({
         file: item.file,
         rank: item.rank,
-        source: sourceForExpected(item.file, finalCandidates),
-        in_expanded_pool: sourceForExpected(item.file, expandedPool) !== "missing",
+        source: sourceForExpected(item.file, finalCandidates, resolver),
+        in_expanded_pool: sourceForExpected(item.file, expandedPool, resolver) !== "missing",
       })),
       nice_to_have_sources: pipelineNiceScore.nice_to_have_ranks.map((item) => ({
         file: item.file,
         rank: item.rank,
-        source: sourceForExpected(item.file, finalCandidates),
-        in_expanded_pool: sourceForExpected(item.file, expandedPool) !== "missing",
+        source: sourceForExpected(item.file, finalCandidates, resolver),
+        in_expanded_pool: sourceForExpected(item.file, expandedPool, resolver) !== "missing",
       })),
       latency_ms: Date.now() - startedAt,
     };
-    const trace = buildPipelineTrace({
-      caseItem,
+    const traceInput = {
+      caseItem: {
+        ...caseItem,
+        must_recall: caseItem.identity_evaluation?.gold?.must ?? caseItem.must_recall,
+        nice_to_have: caseItem.identity_evaluation?.gold?.nice ?? caseItem.nice_to_have,
+        negative: caseItem.identity_evaluation?.gold?.noise ?? caseItem.negative,
+      },
       generatedQuery,
       querySpecs,
       qmdRuns,
@@ -1329,9 +1912,18 @@ async function main() {
       preRerankCandidates: expandedPool,
       rerankResult,
       finalCandidates,
-      failureAttribution,
       topK,
+    };
+    const evidenceTrace = buildPipelineTrace({ ...traceInput, failureAttribution: null });
+    const failureAttribution = failureAttributionFromTrace(caseItem, evidenceTrace, {
+      topK,
+      judgeBudget: 20,
+      resolver,
     });
+    const trace = buildPipelineTrace({ ...traceInput, failureAttribution });
+    caseResult.failure_attribution = failureAttribution;
+    caseResult.mode_evaluation = modeEvaluationForCase(caseItem, caseResult.must_recall_sources);
+    caseResult.evaluation_status = caseResult.mode_evaluation.status;
     caseResult.trace_diagnosis = trace.diagnosis;
     results.push(caseResult);
     traces.push(trace);
@@ -1340,30 +1932,51 @@ async function main() {
   const report = {
     timestamp: new Date().toISOString(),
     report: options.report,
-    metadata: reportMetadata(options),
-    cases: options.cases,
+    profile: options.profile,
+    metadata: reportMetadata(options, collection),
+    suite: reportSuite(options, suiteVersions),
+    suite_validation: {
+      status: suiteEvaluation.status,
+      suite_versions: suiteVersions,
+    },
+    cases: safePathIdentifier(options.cases),
     index: options.index,
     collection,
     candidate_limit: options.limit,
     seed_limit: options.seedLimit,
     backlinks_per_seed: options.backlinksPerSeed,
     backlink_limit: options.backlinkLimit,
-    backlinks_enabled: options.backlinks,
-    query_mode: options.queryMode,
-    seed_strategy: options.seedStrategy,
+    backlinks_enabled: options.profile === "diagnostic-enhanced" ? options.backlinks : null,
+    query_mode: options.profile === "diagnostic-enhanced" ? options.queryMode : "runtime",
+    seed_strategy: options.profile === "diagnostic-enhanced" ? options.seedStrategy : null,
     source_note_filter_enabled: options.sourceNoteFilter,
-    relation_judge_mode: options.relationJudgeMode,
+    relation_judge_mode: options.profile === "diagnostic-enhanced" ? options.relationJudgeMode : "runtime",
     results,
     diagnostics: reportDiagnostics(results),
-    summary: {
-      ...summarizePipelineEvaluation(results),
-      trace_diagnosis_counts: summarizeTraceDiagnoses(results),
-    },
+  };
+  const comparisonReport = readComparisonReport(options.compareReport);
+  const stability = comparePipelineStability(report, comparisonReport, { resolver });
+  for (const result of results) {
+    result.pipeline.stability = stability.by_case[result.id]
+      ?? {
+        status: "not_measured",
+        reason: "comparison_case_missing",
+        metric: "top_k_overlap",
+        top_k: result.pipeline.score?.top_k ?? 10,
+        score: null,
+      };
+  }
+  report.summary = {
+    ...summarizePipelineEvaluation(results),
+    by_suite: summarizePipelineEvaluationGroups(results),
+    trace_diagnosis_counts: summarizeTraceDiagnoses(results),
   };
 
   const latestReport = writeReportWithTraces(report, options.report, traces);
-  const stampedReport = archiveReportPath(options.report);
-  writeReportWithTraces(report, stampedReport, traces);
+  if (!options.noArchive) {
+    const stampedReport = archiveReportPath(options.report);
+    writeReportWithTraces(report, stampedReport, traces);
+  }
   printSummary(latestReport);
 }
 

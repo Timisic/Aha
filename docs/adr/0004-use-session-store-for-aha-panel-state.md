@@ -17,3 +17,4 @@ This keeps the Memory Surface low-burden and avoids filling the vault with revie
 - The panel follows the active source note by default, with optional pinning for focused review.
 - Reruns preserve user feedback and handoff selection for repeated candidates while allowing model-generated relation text to refresh.
 - Legacy Review Migration is judged by whether the panel can recover candidates, selection, feedback, and handoff from the old notes, not by perfect Markdown preservation.
+- Benchmark seed collection reads compact Session Store feedback from plugin data by default. Review Note import is an explicit legacy-only path, and generated seeds remain development drafts pending human curation.

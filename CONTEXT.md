@@ -345,7 +345,7 @@ _Avoid_: agent action, passive response
 ### Benchmark & Evaluation
 
 **Review Benchmark Seed**:
-A reviewed memory candidate and relation result that the user explicitly saves as material for a future benchmark case, usually first as a structured entry inside an Aha Review Note. It records a real use discovery after review; it is not an automatic gold label at retrieval time or a committed benchmark case.
+A reviewed memory candidate or missed-memory action saved in the Aha Session Store as material for a future benchmark case. Collection turns supported feedback events into an ignored development draft inbox with stable provenance; a human must still confirm the input, label, identity, and evaluation mode before promotion. Review Note import is legacy-only.
 _Avoid_: auto-generated benchmark answer, unreviewed candidate, exhaustive relevance set, direct bench JSON write
 
 **Memory Candidate Recall Benchmark**:
@@ -353,8 +353,8 @@ A small retrieval benchmark that evaluates whether the Memory Stage surfaces the
 _Avoid_: full Aha quality evaluation, final-answer evaluation, summary quality score
 
 **Memory Pipeline Benchmark**:
-A benchmark that approximates the Memory Stage retrieval pipeline by running structured QMD retrieval, expanding QMD seed candidates through Obsidian backlinks, merging candidates, and scoring whether must-recall memories appear in the final candidate list.
-_Avoid_: QMD-only benchmark, final summary evaluation, human judgment quality score
+A versioned L2 benchmark with two explicit profiles. Product Parity invokes the shipped runtime and consumes its result and Pipeline Trace; Diagnostic Enhanced may add benchmark-only graph expansion and experimental ordering for development analysis. Both score whether required memories reach the review budget, but only Product Parity may become the current baseline.
+_Avoid_: QMD-only benchmark, unnamed approximation, final summary evaluation, human judgment quality score
 
 **Core Loop Benchmark**:
 A scripted benchmark for the human-in-the-loop contract across candidate display, memory review, readiness gating, summary save, source-note non-mutation, resume, and second memory search.
@@ -413,8 +413,20 @@ A brief human-maintenance note explaining why the gold labels are present. It re
 _Avoid_: annotation_note, model instruction, hidden scoring rule
 
 **Primary Benchmark Suite**:
-The local private benchmark file that scores Aha against the user's real insight workflow. It should contain only real or draft Benchmark Cases derived from actual insight inputs, not engineering edge-case tests.
+The local private benchmark document that scores Aha against the user's real insight workflow. It contains an iterative Development Suite and a frozen Holdout Suite, using real or draft Benchmark Cases rather than engineering edge-case tests.
 _Avoid_: regression fixture, synthetic test suite, path-resolution test file
+
+**Development Benchmark Suite**:
+The versioned part of the Primary Benchmark Suite used for pooling, feedback-seed promotion, diagnosis, and iterative label improvement. It is the only suite that ordinary curation workflows may change by default.
+_Avoid_: holdout, final unbiased score, automatic seed activation
+
+**Holdout Benchmark Suite**:
+The frozen, versioned part of the Primary Benchmark Suite used to check whether improvements generalize beyond pooled development cases. Any input, label, mode, or membership change requires an explicit version bump and auditable reason.
+_Avoid_: tuning set, feedback inbox, silently mutable gold
+
+**Benchmark Evaluation Mode**:
+The declared evidence boundary for a case. `discovery` measures retrieval without crediting graph-only answers; `graph_assisted` allows known source-link/backlink evidence and must declare the relevant graph target.
+_Avoid_: hidden graph boost, post-hoc mode selection, relation label
 
 **Benchmark Case State**:
 The lifecycle marker for a case inside the Primary Benchmark Suite. The allowed states are `active` for default scoring, `draft` for human curation before scoring, and `off` for retained-but-unused cases.
@@ -459,12 +471,12 @@ _Avoid_: random irrelevant note, unscored false positive, harmless tangent
 ### Pipeline Trace & Diagnosis
 
 **Pipeline Trace**:
-A structured evidence record for one Memory Pipeline Benchmark case. It shows the retrieval path from benchmark input through query generation, QMD retrieval, backlink expansion, the pre-rerank candidate pool, final ranking, gold-memory positions, and diagnosis. Its purpose is to explain where the case succeeded or failed so the next product optimization target is clear.
+A versioned, privacy-bounded structured evidence record emitted optionally by the shipped runtime and enriched by the benchmark. It records query planning, QMD rounds, source-graph expansion, candidates actually reviewed by Relation Judge, final ordering, stage errors, and benchmark-only gold positions without storing note bodies, full prompts, secrets, or private absolute paths.
 _Avoid_: agent runtime log, Markdown report, complete note backup, generic debug dump
 
 **Pre-Rerank Candidate Pool**:
-The merged candidate set available to the reranker after QMD retrieval and backlink expansion but before final ranking. It is the key boundary for separating retrieval failures from rerank failures.
-_Avoid_: final candidate list, expanded score only, hidden reranker input
+The bounded candidate state available before Relation Judge ordering. Failure attribution must distinguish this broader state from `relation_judge.reviewed_candidates`: a memory outside the actual judge budget was not dropped by reranking.
+_Avoid_: final candidate list, expanded score only, assumed judge input
 
 **Gold Position**:
 The observed stage and rank of a Required Gold Memory, Helpful Gold Memory, or Noise Gold Memory within a Pipeline Trace. Gold Position should make it clear whether a gold memory was missing entirely, present before rerank but dropped later, or surfaced inside the Review Attention Budget.
@@ -475,5 +487,9 @@ The rule-based optimization signal attached to a Pipeline Trace. It names the pr
 _Avoid_: long explanation, LLM-only summary, unsupported blame
 
 **Failure Attribution**:
-The single primary reason assigned to a benchmark miss or poor candidate ranking so the next improvement target is clear. The first Aha taxonomy is case_label_failure, input_representation_failure, query_failure, retrieval_failure, rerank_failure, and relation_failure; auxiliary flags may record secondary symptoms, but each failure should have one primary attribution.
+A single primary diagnosis derived from explicit case data and observed Pipeline Trace membership, ordering, judge decisions, or stage errors. Supported evidence can point to case/input, query, retrieval, relation judgment, or ordering; auxiliary flags are non-exclusive. Missing evidence remains `unattributed` instead of guessing.
 _Avoid_: vague bad result, multi-paragraph postmortem, metric-only failure
+
+**Benchmark Stability**:
+Canonical top-k overlap between compatible repeated reports. It is measured only when profile, suite and version, trace schema and version, effective configuration, candidate limit, and case set match; otherwise the report says `not_measured` with a machine-readable reason.
+_Avoid_: hard-coded perfect score, cross-profile comparison, fingerprint presented as repeatability

@@ -28,8 +28,8 @@
 
 ```text
 ┌─ Obsidian Plugin（Memory Surface）────────────────┐
-│  从当前笔记触发搜索 · 生成/复用 Review Note           │
-│  展示候选与关系理由 · 打开旧笔记 · 记录反馈动作         │
+│  从当前笔记触发搜索 · 展示候选与关系理由               │
+│  打开旧笔记 · Session Store 保存选择/反馈 · 可选导出     │
 └──────────────────┬───────────────────────────────┘
                    │ 调用
 ┌─ scripts/aha wrapper（机械连接层）────────────────┐
@@ -43,14 +43,14 @@
 └──────────────────────────────────────────────────┘
 ```
 
-检索层组合多路信号：LLM 生成的多条结构化 QMD 查询（含结构抽象、反例导向、同义扩展、外文关键词）、确定性的原文/thought 补充查询（不依赖 LLM 措辞的召回底线）、源笔记的链接/反链邻域、QMD top-10 种子的反链扩展。
+产品检索层组合多路信号：LLM 生成的结构化 QMD 查询、确定性的原文/thought 补充查询，以及源笔记链接图。评测中的更深 top-seed 图扩展与 judge 重排保留为显式的 `diagnostic-enhanced` profile，不冒充产品运行时。
 
 ## 仓库结构
 
 ```text
-obsidian-plugin/     Memory Surface：Obsidian 插件（触发、Review Note、Review Panel）
+obsidian-plugin/     Memory Surface：Obsidian 插件（触发、Review Panel、Session Store、可选导出）
 scripts/aha/         产品 wrapper：检索编排、Relation Judge、结果 schema 校验
-scripts/bench/       评测管线入口（run-pipeline-bench 等）
+scripts/bench/       评测工作流与底层 runner（validate / baseline / diagnostic 等）
 scripts/lib/         wrapper 与评测共享的模块（LLM 传输、代理、评分、PipelineTrace）
 bench/               评测用例与报告说明（生成物不入库）
 docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
@@ -62,29 +62,32 @@ docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
 
 个人笔记库没有标准答案，同一条旧笔记对不同 insight 的关系不同，"该召回什么"只有笔记的主人知道。Aha 把评估设计纳入到日常的 Review 行为中：
 
-1. **反馈即标注**：在 Review Note 里对候选点 `accept` / `noise` / `should_have_found`，动作被收集为 benchmark seed（`scripts/bench/collect-review-seeds.mjs`），人工确认后进入私有评测集（`gold.must` / `nice` / `noise`，本地文件不入库）。
-2. **围绕TOP10计分**：@10——`Must Recall@10`、`Useful Precision@10`、`nDCG@10`、`Negative Rate@10`。
-3. **失败归因**：每个 case 自动归因到 query / retrieval / rerank / relation / 标注 / 输入表示六类，诊断指标（`Expanded Pool Recall@20`、`Dropped Must Count`）区分"没找到"和"找到了但排丢了"——决定下一步优化哪一层。
+1. **反馈先进入草稿**：Panel 的 `accept` / `reject_as_noise` / `should_have_found` 写入紧凑 Session Record；收集器幂等地产生本地 draft seed。只有人工确认输入、标签、身份与模式后，才显式晋升到 development，绝不自动改写 canonical benchmark 或 holdout。
+2. **围绕 TOP10 计分**：`Must Recall@10`、`Useful Precision@10`、`nDCG@10`、`Negative Rate@10`；development/holdout 与 discovery/graph-assisted 分开报告。
+3. **证据先于归因**：稳定性只比较兼容的重复运行；没有比较时明确 `not_measured`。失败归因沿产品运行时 trace 中真实的 query / retrieval / relation / ordering 路径判断，证据不足就保留 `unattributed`。
 
 ```bash
-node scripts/bench/run-pipeline-bench.mjs                 # 全量评测
-node scripts/bench/run-pipeline-bench.mjs --only aha-002  # 单 case 快速迭代
-node scripts/bench/summarize-report.mjs bench/reports/latest/pipeline.json
+npm run bench:validate              # 公开 synthetic schema / privacy 验证
+npm run bench:smoke                 # 快速确定性检查
+npm run bench:diagnostic            # development，diagnostic-enhanced
+npm run bench:baseline              # product-parity，development + holdout
+node scripts/bench/summarize-report.mjs bench/reports/latest/product-parity.json
 ```
 
-每个 case 产出结构化 PipelineTrace（查询、逐路召回、池、重排、gold 位置、归因），细节见 [bench/README.md](./bench/README.md)。
+`baseline` 直接调用 shipped runtime，并为每个 case 产出 privacy-bounded `PipelineTrace`。只有同一 clean commit 上完整、兼容、全部成功且可计分的运行，才会原子更新 latest pointer。细节见 [bench/README.md](./bench/README.md)。
 
 ## 开发与验证
 
 ```bash
 node --test scripts/aha/tests/*.test.mjs   # wrapper/检索/judge/评分单测
 cd obsidian-plugin && npm run verify       # 插件构建 + 测试
+npm run verify                             # 仓库完整确定性验证
 ```
 
 ## 状态与边界
 
-已支持：Obsidian Plugin（触发、Review Note、候选跳转、反馈按钮）、多路混合召回、引句校验的关系判断、分批 judge 与检索先验保底排序、评测闭环与失败归因、review 反馈到 benchmark seed 的收集链路。
+已支持：Obsidian Plugin（触发、Review Panel、候选跳转、Session Store、可选 Review Note 导出）、多路召回、引句校验的关系判断、反馈到 development draft seed 的闭环、canonical note identity、development/holdout 与 discovery/graph-assisted 分层评估、产品同构 trace 与证据式归因。
 
 不做：自动修改 Obsidian 原文、自动沉淀总结、把候选自动写入知识库。
 
-边界：自用驱动的深度产品实验，评估基于真实个人 review 行为；检索层的 must 入池率已通过确定性手段做到 ~97%，top-10 排序质量仍在通过反馈判例持续校准。
+边界：自用驱动的深度产品实验，真实 case、笔记路径、trace 与报告只保存在本地；公开仓库只保留 synthetic fixture。评测数字必须来自当前、可复现、可审计的 baseline，不在 README 固化容易失真的快照结论。

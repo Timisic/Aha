@@ -1,5 +1,7 @@
 # Split memory surface from reasoning workflow
 
+**Status:** Superseded in part by [ADR 0004](./0004-use-session-store-for-aha-panel-state.md). The current default is Session Store + Review Panel, with Review Notes as explicit exports. The shipped wrapper owns the mechanical query/QMD/graph/judge orchestration, and product-parity evaluation invokes that exact runtime. The text below records the earlier MVP decision.
+
 Aha will move away from a Pi Extension-shaped product toward a lighter architecture where the memory surface lives near the user's notes and the reasoning workflow lives in Codex skills. The memory surface owns explicit search triggering, candidate display, relation evidence, user review choices, additional search rounds, note/span opening, benchmark seed capture, and the grill handoff; Codex plus the retrieval backend owns retrieval, relation judging, grilling, and judgment synthesis.
 
 This keeps the note environment focused on reviewing and selecting memory rather than becoming a second agent runtime. It also preserves the core human-authored, agent-retrieved boundary: old notes remain under the user's control, while agent work produces inspectable candidates, quotes, reasons, and handoff material.

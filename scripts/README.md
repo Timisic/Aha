@@ -8,13 +8,15 @@ This directory keeps executable project scripts grouped by workflow.
 scripts/
   bench/
     build-fixture.mjs       # Build a qmd bench fixture from active cases.
-    collect-review-seeds.mjs # Collect Obsidian Review Note seeds into an ignored draft case inbox.
+    collect-review-seeds.mjs # Collect Session Store feedback into an ignored development draft inbox.
     normalize-case-paths.mjs # Rewrite vault-absolute case paths to vault-relative paths.
     run-qmd-bench.mjs       # L1: QMD-only retrieval benchmark.
-    run-pipeline-bench.mjs  # L2: query plan -> QMD -> backlinks -> Relation Judge benchmark.
-    summarize-report.mjs    # Print a compact QMD bench report summary.
+    run-pipeline-bench.mjs  # Advanced L2 runner: product-parity or diagnostic-enhanced.
+    run-eval-workflow.mjs   # Stable validate/smoke/baseline/diagnostic entry point.
+    summarize-report.mjs    # Summarize a report or the verified latest pointer.
   lib/
-    *.mjs                   # Shared benchmark scoring, trace, and helper modules.
+    bench-workflow.mjs      # Run provenance, promotion gate, and latest-pointer integrity.
+    *.mjs                   # Shared benchmark scoring, identity, trace, and helpers.
   aha/
     run-insight-search.mjs  # Obsidian plugin search runner.
     query-plan.mjs          # Shared query-plan generation.
@@ -23,19 +25,28 @@ scripts/
 
 ## Common Commands
 
-Run the QMD-only benchmark:
+Use the named workflows for routine evaluation:
 
 ```bash
-cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json # first run only; then edit local private cases
-node scripts/bench/run-qmd-bench.mjs
+npm run bench:validate               # tracked synthetic schema/privacy check
+npm run bench:validate -- --private  # ignored local suite + canonical identity
+npm run bench:smoke                  # deterministic evaluation contract tests
+npm run bench:diagnostic             # diagnostic-enhanced, development only
+npm run bench:baseline               # product-parity, development + holdout
 ```
 
-Collect Obsidian Review Note seeds into a private draft case inbox:
+Collect Session Store feedback into a private development draft inbox:
 
 ```bash
 node scripts/bench/collect-review-seeds.mjs \
   --vault-root "$HOME/Obsidian Notes" \
   --output bench/aha-memory-seed-cases.json
+```
+
+Review Note import is legacy-only and must be explicit:
+
+```bash
+node scripts/bench/collect-review-seeds.mjs --legacy-review-notes
 ```
 
 Normalize private benchmark case files to the shorter vault-relative path style:
@@ -44,11 +55,12 @@ Normalize private benchmark case files to the shorter vault-relative path style:
 node scripts/bench/normalize-case-paths.mjs
 ```
 
-Run the pipeline benchmark:
+The raw runners remain available for focused investigation:
 
 ```bash
-node scripts/bench/run-pipeline-bench.mjs
+node scripts/bench/run-qmd-bench.mjs --suite development
+node scripts/bench/run-pipeline-bench.mjs --profile product-parity --suite development
+node scripts/bench/run-pipeline-bench.mjs --profile diagnostic-enhanced --suite development --only aha-001
 ```
 
-Latest benchmark reports are written to `bench/reports/latest/`.
-Timestamped historical reports are written to `bench/reports/archive/`.
+Named workflow runs are immutable under `bench/reports/runs/<run-id>/`. `bench/reports/latest/product-parity.json` is an atomic, hash-verified pointer and is updated only by a complete eligible baseline. Raw runners may still write legacy latest/archive paths when used directly.

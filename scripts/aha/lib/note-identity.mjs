@@ -4,7 +4,7 @@ import path from "node:path";
 export function notePathForObsidian(args, row) {
   const raw = String(row.file ?? row.path ?? row.uri ?? row.title ?? "unknown.md");
   if (/^qmd:\/\//i.test(raw)) {
-    return decodeURIComponent(raw.replace(/^qmd:\/\/[^/]+\//i, "").replace(/\?index=.*$/i, ""));
+    return stripPathDecorations(raw);
   }
   if (args.vaultRoot && path.isAbsolute(raw)) {
     const relative = path.relative(args.vaultRoot, raw);
@@ -21,25 +21,22 @@ export function sameNotePath(left, right, options = {}) {
 }
 
 export function normalizeNoteIdentity(value, options = {}) {
-  const normalized = decodeURIComponent(String(value ?? "")
-    .replace(/^qmd:\/\/[^/]+\//i, "")
-    .replace(/\?index=.*$/i, "")
-    .replace(/\\/g, "/")
+  const normalized = stripPathDecorations(value)
     .replace(/\.md$/i, "")
     .trim()
-    .normalize("NFC"));
+    .normalize("NFC");
   return options.caseSensitive ? normalized : normalized.toLowerCase();
 }
 
 export function stripPathDecorations(value) {
-  const cleaned = String(value ?? "")
+  const raw = String(value ?? "")
     .trim()
-    .replace(/[?#].*$/, "")
     .replace(/\\/g, "/");
-  if (!cleaned.startsWith("qmd://")) return cleaned;
-  const withoutScheme = cleaned.slice("qmd://".length);
-  const slashIndex = withoutScheme.indexOf("/");
-  return slashIndex >= 0 ? withoutScheme.slice(slashIndex + 1) : withoutScheme;
+  const undecorated = raw.replace(/[?#].*$/, "");
+  const withoutScheme = /^qmd:\/\//i.test(undecorated)
+    ? undecorated.replace(/^qmd:\/\/[^/]+\/?/i, "")
+    : undecorated;
+  return safeDecodeURIComponent(withoutScheme).normalize("NFC");
 }
 
 export function slugPath(value) {
@@ -66,9 +63,9 @@ export function buildVaultPathResolver(root) {
   const byBasename = new Map();
 
   for (const file of files) {
-    addIndex(byRelative, stripPathDecorations(file), file);
+    addIndex(byRelative, normalizeNoteIdentity(file), file);
     addIndex(bySlug, slugPath(file), file);
-    addIndex(byBasename, path.basename(file, ".md"), file);
+    addIndex(byBasename, normalizeNoteIdentity(path.basename(file, ".md")), file);
   }
 
   return { root: vaultRoot, files, byRelative, bySlug, byBasename };
@@ -77,16 +74,23 @@ export function buildVaultPathResolver(root) {
 export function resolveVaultPath(rawPath, resolver) {
   const keys = candidateKeys(rawPath, resolver);
   for (const mapLookup of [
-    (key) => lookup(resolver.byRelative, stripPathDecorations(key)),
+    (key) => lookup(resolver.byRelative, normalizeNoteIdentity(key)),
     (key) => lookup(resolver.bySlug, slugPath(key)),
-    (key) => lookup(resolver.byBasename, path.basename(key, ".md")),
+    (key) => lookup(resolver.byBasename, normalizeNoteIdentity(path.basename(key, ".md"))),
   ]) {
     const matches = [];
     for (const key of keys) {
       for (const match of mapLookup(key)) matches.push(match);
     }
     const uniqueMatches = Array.from(new Set(matches));
-    if (uniqueMatches.length === 1) return { status: "resolved", path: uniqueMatches[0], matches: uniqueMatches };
+    if (uniqueMatches.length === 1) {
+      return {
+        status: "resolved",
+        path: uniqueMatches[0],
+        identity: normalizeNoteIdentity(uniqueMatches[0]),
+        matches: uniqueMatches,
+      };
+    }
     if (uniqueMatches.length > 1) return { status: "ambiguous", matches: uniqueMatches };
   }
   return { status: "not_found", matches: [] };
@@ -153,4 +157,12 @@ function candidateKeys(rawPath, resolver) {
 
 function lookup(map, key) {
   return map.get(String(key ?? "").toLowerCase()) ?? [];
+}
+
+function safeDecodeURIComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }

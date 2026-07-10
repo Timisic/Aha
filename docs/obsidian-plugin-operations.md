@@ -5,7 +5,7 @@
 ## 失败处理与可见性
 
 - Relation Judge、QMD、wrapper 传输或超时失败不会伪装成成功轮次；wrapper 会保留结构化 `{ ok:false, error:{ message, tool, details } }`，插件会把它写成 failed search record。
-- 搜索开始时插件会立即把 running record 写入 Review Note 的 Search Results 区块；成功或失败退出后替换为最新结果，避免后台状态不可见，同时不把 review note 变成追加式审计日志。
+- 搜索开始、成功或失败都会更新当前 source note 对应的 Session Record；Panel 从这里显示最新状态。Review Note 不再是默认运行依赖，只有显式导出时才生成。
 - OpenAI 请求带传输层重试（退避 2 次），仅对网络错误与 408/429/5xx 重试；失败信息包含尝试次数与代理来源。
 
 ## 环境与进程
@@ -18,19 +18,20 @@
 ## 候选安全与过滤
 
 - 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径，避免把 vault 外文件内容带入 Relation Judge prompt。
-- wrapper 会过滤当前 Aha Review Note 和 `Aha/Reviews/` 生成物；共享排除目录默认还包含 `templates/`，可用 `AHA_EXCLUDED_FOLDERS` 扩展（见 `scripts/lib/candidate-fields.mjs`）。
+- wrapper 会过滤可选的 Aha Review Note 导出和 `Aha/Reviews/` 生成物；共享排除目录默认还包含 `templates/`，可用 `AHA_EXCLUDED_FOLDERS` 扩展（见 `scripts/lib/candidate-fields.mjs`）。
 - `--target-candidates` 在 wrapper CLI 层也会限制到 15-20，和插件 UI slider 保持一致。
 
 ## 身份与幂等
 
-- Aha Review Note 会在 frontmatter 写入 `source_id`；桌面本地文件系统可用时使用 inode 级身份，因此 source note 改名、编辑大小或 mtime 变化后仍可复用同一个 review note。若只能降级到 ctime 身份，插件会要求 `source_path` 同时匹配，避免同时间戳碰撞污染别的 review note。
-- Aha Review Note 的生成区块采用 marker-backed 替换语义；重新运行只保留最新 Search Results / Selected Memories / Grill Handoff，marker 外的人工记录不会被删除。
+- Session Store 以 source note identity 为主键；桌面本地文件系统可用时使用 inode 级身份，降级到 ctime 时同时核对 `source_path`，避免碰撞污染别的 session。
+- Rerun 会刷新模型生成的 relation 内容，但保留重复候选的 feedback 与 handoff selection。显式导出的 Review Note 仍使用 marker-backed 区块，marker 外人工内容不会被删除。
 - wrapper 的 note identity 默认大小写不敏感，匹配 macOS/Obsidian vault 常用行为；路径归一化统一处理 qmd URI 的标点混写（全角标点、弯引号、撇号、破折号），避免同一笔记以多种路径形态出现。
 
 ## 配置
 
 - 插件默认使用 OpenAI-compatible API 做 query plan 与 Relation Judge：`provider=openai`、`baseUrl=https://api.openai.com/v1`。API key 可填在插件设置里（注入 wrapper 子进程环境），留空则回退读取本地环境变量（默认 `OPENAI_API_KEY`）。
 - 直接填写在插件里的 API key 保存在当前 vault 的 Obsidian 插件数据中，只用于本机运行；不要把 `.obsidian/plugins/.../data.json` 提交到仓库。
+- 同一个 plugin data 文件还保存紧凑 Session Store。它是 Panel 状态和 feedback 的 source of truth，不保存 PipelineTrace；评测收集器默认从这里生成 ignored development draft seeds。
 - QMD 默认走 SDK runner；`qmdCommand` 保留用于 SDK module 推导和 CLI fallback。注意：QMD 的 index 是按名字独立的 sqlite 文件，重建 Obsidian 索引需显式 `qmd update --index obsidian && qmd embed --index obsidian`。
 
 ## Pi Extension（历史形态）

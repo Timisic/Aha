@@ -1,7 +1,7 @@
 import { DEFAULT_VAULT_ROOT } from "./vault-paths.mjs";
 
 export function candidatePath(candidate) {
-  return candidate?.file || candidate?.path || candidate?.slug || candidate?.title || "";
+  return candidate?.notePath || candidate?.file || candidate?.path || candidate?.slug || candidate?.title || "";
 }
 
 export const DEFAULT_EXCLUDED_CANDIDATE_FOLDERS = ["templates", "Aha/Reviews"];

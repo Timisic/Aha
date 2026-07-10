@@ -14,6 +14,7 @@ const USAGE = [
   "",
   "Options:",
   "  --include-draft",
+  "  --suite <development|holdout|all> Default: all",
   "  --query-generator <agent|rules>        Default: agent",
   "  --query-agent-bin <bin>                Default: codex",
   "  --query-agent-model <model>",
@@ -28,6 +29,7 @@ const USAGE = [
 function parseArgs() {
   const options = {
     includeDraft: false,
+    suite: "all",
     queryGenerator: undefined,
     queryAgentBin: undefined,
     queryAgentModel: undefined,
@@ -68,6 +70,9 @@ function parseArgs() {
       case "--query-generator":
         options.queryGenerator = value;
         break;
+      case "--suite":
+        options.suite = value;
+        break;
       case "--query-agent-bin":
         options.queryAgentBin = value;
         break;
@@ -90,6 +95,9 @@ function parseArgs() {
     process.exit(1);
   }
 
+  if (!["development", "holdout", "all"].includes(options.suite)) {
+    throw new Error("--suite must be development, holdout, or all.");
+  }
   return {
     inputPath: positional[0],
     outputPath: positional[1],
@@ -99,15 +107,27 @@ function parseArgs() {
 
 function main() {
   const { inputPath, outputPath, options } = parseArgs();
-  const { input, cases, collection, expectedInTopK, expectedNiceInTopK } = readBenchmarkCases(inputPath, {
+  const { input, cases: allCases, collection, expectedInTopK, expectedNiceInTopK } = readBenchmarkCases(inputPath, {
     includeDraft: options.includeDraft,
   });
+  const cases = options.suite === "all"
+    ? allCases
+    : allCases.filter((caseItem) => caseItem.suite === options.suite);
   const fixture = {
     description: input.description || "Aha Memory Candidate Recall Benchmark",
     version: input.version ?? 1,
     collection,
     queries: cases.map((caseItem) => {
       const generatedQuery = resolveQmdQueryForCase(caseItem, options);
+      const identityEvaluation = caseItem.identity_evaluation ?? {
+        status: "ready",
+        gold: {
+          must: caseItem.must_recall,
+          nice: caseItem.nice_to_have ?? [],
+          noise: caseItem.negative ?? [],
+        },
+        diagnostics: {},
+      };
       return {
         id: caseItem.id,
         query: generatedQuery.query,
@@ -119,8 +139,15 @@ function main() {
         title: caseItem.title || caseItem.id,
         why: caseItem.why || undefined,
         type: caseItem.type || "real",
+        suite: caseItem.suite ?? null,
+        suite_version: caseItem._suite_version ?? null,
+        evaluation_mode: caseItem.evaluation_mode ?? null,
         description: caseItem.title || caseItem.description || caseItem.id,
-        expected_files: caseItem.must_recall.map(qmdExpectedPath),
+        expected_files: identityEvaluation.gold.must.map(qmdExpectedPath),
+        nice_files: identityEvaluation.gold.nice.map(qmdExpectedPath),
+        noise_files: identityEvaluation.gold.noise.map(qmdExpectedPath),
+        evaluation_status: identityEvaluation.status,
+        identity_diagnostics: identityEvaluation.diagnostics,
         expected_in_top_k: Math.max(
           Number(caseItem.expected_in_top_k ?? expectedInTopK),
           Number(caseItem.nice_expected_in_top_k ?? expectedNiceInTopK),

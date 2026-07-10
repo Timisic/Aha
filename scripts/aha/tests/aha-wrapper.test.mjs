@@ -226,6 +226,128 @@ test("pipeline can use OpenAI structured output provider", async () => {
   }
 });
 
+test("pipeline trace is opt-in, privacy-bounded, and aligned with the shipped result order", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-trace-"));
+  const vault = path.join(temp, "vault");
+  const source = path.join(vault, "source.md");
+  const codex = path.join(temp, "codex-helper.mjs");
+  const qmd = path.join(temp, "qmd-helper.mjs");
+  const obsidian = path.join(temp, "obsidian-helper.mjs");
+  const privateSourceMarker = "TRACE_PRIVATE_SOURCE_BODY";
+  const privateCandidateMarker = "TRACE_PRIVATE_CANDIDATE_BODY";
+  await mkdir(path.join(vault, "Memory"), { recursive: true });
+  await writeFile(source, `# Source\n\n${privateSourceMarker}`);
+  await writeFile(path.join(vault, "Memory/Candidate.md"), `# Candidate\n\n${privateCandidateMarker}`);
+  await writePipelineHelpers({ codex, qmd, obsidian, relationJudge: "success" });
+
+  const baseArgs = [
+    wrapper,
+    "--workspace",
+    repoRoot,
+    "--llm-provider",
+    "codex-cli",
+    "--qmd-runner",
+    "cli",
+    "--source-path",
+    "source.md",
+    "--source-absolute-path",
+    source,
+    "--vault-root",
+    vault,
+    "--codex-command",
+    codex,
+    "--qmd-command",
+    qmd,
+    "--obsidian-command",
+    obsidian,
+  ];
+
+  try {
+    const defaultRun = spawnSync(process.execPath, baseArgs, { encoding: "utf8", timeout: 10000 });
+    assert.equal(defaultRun.status, 0, defaultRun.stderr);
+    const defaultOutput = JSON.parse(defaultRun.stdout);
+    assert.equal(Object.hasOwn(defaultOutput, "trace"), false);
+
+    const tracedRun = spawnSync(process.execPath, [...baseArgs, "--trace"], { encoding: "utf8", timeout: 10000 });
+    assert.equal(tracedRun.status, 0, tracedRun.stderr);
+    const tracedOutput = JSON.parse(tracedRun.stdout);
+    assert.equal(tracedOutput.trace.schema, "PipelineTrace");
+    assert.equal(tracedOutput.trace.version, 2);
+    assert.equal(tracedOutput.trace.profile, "product-runtime");
+    assert.equal(tracedOutput.trace.status, "success");
+    assert.deepEqual(
+      tracedOutput.trace.steps.final_candidates.map((candidate) => candidate.file),
+      tracedOutput.candidates.map((candidate) => candidate.notePath),
+    );
+    assert.ok(tracedOutput.trace.steps.qmd_runs.length > 0);
+    assert.ok(tracedOutput.trace.steps.pre_judge_candidates.length > 0);
+    assert.equal(typeof tracedOutput.trace.steps.query_generation.queries[0].query_hash, "string");
+
+    const serializedTrace = JSON.stringify(tracedOutput.trace);
+    assert.doesNotMatch(serializedTrace, new RegExp(privateSourceMarker));
+    assert.doesNotMatch(serializedTrace, new RegExp(privateCandidateMarker));
+    assert.doesNotMatch(serializedTrace, new RegExp(escapeRegExp(vault)));
+    assert.doesNotMatch(serializedTrace, /Safe vault evidence/);
+    assert.equal(hasForbiddenTraceKey(tracedOutput.trace), false);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("pipeline relation-judge failure returns a privacy-bounded partial trace", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-failure-trace-"));
+  const vault = path.join(temp, "vault");
+  const source = path.join(vault, "source.md");
+  const codex = path.join(temp, "codex-helper.mjs");
+  const qmd = path.join(temp, "qmd-helper.mjs");
+  const obsidian = path.join(temp, "obsidian-helper.mjs");
+  await mkdir(vault, { recursive: true });
+  await writeFile(source, "# Source\n\nA current insight with enough text for query planning.");
+  await writeSafeCandidate(vault);
+  await writePipelineHelpers({ codex, qmd, obsidian, relationJudge: "fail" });
+
+  try {
+    const result = spawnSync(process.execPath, [
+      wrapper,
+      "--workspace",
+      repoRoot,
+      "--llm-provider",
+      "codex-cli",
+      "--qmd-runner",
+      "cli",
+      "--source-path",
+      "source.md",
+      "--source-absolute-path",
+      source,
+      "--vault-root",
+      vault,
+      "--codex-command",
+      codex,
+      "--qmd-command",
+      qmd,
+      "--obsidian-command",
+      obsidian,
+      "--trace",
+    ], { encoding: "utf8", timeout: 10000 });
+
+    assert.equal(result.status, 2, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.trace.status, "failed");
+    assert.equal(output.trace.errors.at(-1).stage, "relation_judge");
+    assert.ok(output.trace.steps.qmd_runs.length > 0);
+    assert.ok(output.trace.steps.pre_judge_candidates.length > 0);
+    assert.deepEqual(
+      output.trace.steps.final_candidates.map((candidate) => candidate.file),
+      output.candidates.map((candidate) => candidate.notePath),
+    );
+    assert.doesNotMatch(JSON.stringify(output.trace), /judge failed intentionally/);
+    assert.doesNotMatch(JSON.stringify(output.trace), new RegExp(escapeRegExp(vault)));
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("pipeline uses Codex CLI fallback when OpenAI query planning fails", async () => {
   const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-openai-plan-fallback-"));
   const vault = path.join(temp, "vault");
@@ -1181,6 +1303,17 @@ test("pipeline rejects qmd uri candidates that resolve through symlink outside v
 
 async function readFixture(name) {
   return import("node:fs/promises").then(({ readFile }) => readFile(path.join(repoRoot, "scripts/aha/fixtures", name), "utf8"));
+}
+
+function hasForbiddenTraceKey(value) {
+  if (Array.isArray(value)) return value.some((item) => hasForbiddenTraceKey(item));
+  if (!value || typeof value !== "object") return false;
+  const forbidden = new Set(["content", "snippet", "hit", "why", "quotes", "prompt", "query", "qmd", "input"]);
+  return Object.entries(value).some(([key, item]) => forbidden.has(key) || hasForbiddenTraceKey(item));
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function writeOkCommand(filePath) {

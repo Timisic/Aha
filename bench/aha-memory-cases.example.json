@@ -14,13 +14,27 @@
     },
     "维护字段": {
       "state": "active 默认计分；draft 候选待确认；off 保留但不使用。",
+      "suite": "development 可持续 pooling；holdout 冻结并通过 suites.holdout.version 显式版本化。",
+      "evaluation_mode": "discovery 只计纯召回；graph_assisted 必须声明 graph_evidence。",
+      "provenance": "记录 case 来源与纳入理由；公共示例只能使用 synthetic。",
       "title": "人类可读短标题，不参与评分。",
       "why": "标注理由，不参与评分。"
     }
   },
   "description": "Aha Memory Candidate Recall Benchmark - sanitized v3 examples",
   "version": 3,
+  "privacy": "sanitized-synthetic",
   "collection": "obsidian",
+  "suites": {
+    "development": {
+      "version": "dev-example-v1"
+    },
+    "holdout": {
+      "version": "holdout-example-v1",
+      "frozen": true,
+      "change_reason": "Initial synthetic holdout example."
+    }
+  },
   "expected_in_top_k": 10,
   "nice_expected_in_top_k": 20,
   "expanded_pool_expected_in_top_k": 20,
@@ -28,6 +42,12 @@
     {
       "id": "aha-example-001",
       "state": "draft",
+      "suite": "development",
+      "evaluation_mode": "discovery",
+      "provenance": {
+        "origin": "synthetic",
+        "reason": "Repository-owned sanitized development example."
+      },
       "title": "Source-note excerpt case",
       "input": {
         "note": "Sanitized/Source Insight.md",
@@ -53,6 +73,12 @@
     {
       "id": "aha-example-002",
       "state": "draft",
+      "suite": "holdout",
+      "evaluation_mode": "discovery",
+      "provenance": {
+        "origin": "synthetic",
+        "reason": "Repository-owned sanitized frozen holdout example."
+      },
       "title": "Standalone thought case",
       "input": {
         "thought": "A sanitized realistic standalone insight goes here. Keep real personal text only in ignored local files."
@@ -71,6 +97,18 @@
     {
       "id": "aha-example-003",
       "state": "draft",
+      "suite": "development",
+      "evaluation_mode": "graph_assisted",
+      "graph_evidence": [
+        {
+          "target": "Sanitized/Whole Note Must Recall.md",
+          "kind": "backlink"
+        }
+      ],
+      "provenance": {
+        "origin": "synthetic",
+        "reason": "Repository-owned sanitized graph-assisted example."
+      },
       "title": "Explicit whole-note case",
       "input": {
         "note": "Sanitized/Whole Note Insight.md",

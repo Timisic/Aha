@@ -9,7 +9,8 @@
 | [product.md](./product.md) | 产品定义：用户、目的、设计原则、反面参照 |
 | [../CONTEXT.md](../CONTEXT.md) | 领域术语表：insight/judgment 工作流、检索、评测各环节的统一语言 |
 | [obsidian-plugin-operations.md](./obsidian-plugin-operations.md) | 插件运行细节：失败可见性、代理与重试、候选安全、身份幂等 |
-| [obsidian-plugin-smoke.md](./obsidian-plugin-smoke.md) | 插件 MVP 的手工 smoke 验证清单 |
+| [obsidian-plugin-smoke.md](./obsidian-plugin-smoke.md) | 当前 Session Store + Review Panel 路径的手工 smoke 清单 |
+| [../bench/README.md](../bench/README.md) | 反馈闭环、suite/profile、trace/metrics 与 named workflows |
 
 ## PRD（`prd/`）
 
@@ -26,6 +27,7 @@
 | [0001](./adr/0001-split-memory-surface-from-reasoning-workflow.md) | Memory Surface（插件）与 Reasoning Workflow（wrapper/LLM）分层 |
 | [0002](./adr/0002-primary-benchmark-schema.md) | benchmark case 的主 schema 边界 |
 | [0003](./adr/0003-use-a-single-pipeline-trace-schema.md) | 单一 PipelineTrace schema 贯穿评测与诊断 |
+| [0004](./adr/0004-use-session-store-for-aha-panel-state.md) | Session Store 是 Panel 状态与 feedback 的 source of truth |
 
 ## 归档（`archive/`）
 

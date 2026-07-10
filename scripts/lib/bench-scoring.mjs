@@ -1,16 +1,13 @@
 import { benchVaultRoot, expandHome } from "./vault-paths.mjs";
+import {
+  normalizeNoteIdentity,
+  resolveVaultPath,
+} from "../aha/lib/note-identity.mjs";
 
 export { expandHome };
 
 export function normalizePathForScore(path) {
-  let normalized = String(path ?? "");
-  if (normalized.startsWith("qmd://")) {
-    const withoutScheme = normalized.slice("qmd://".length);
-    const slashIdx = withoutScheme.indexOf("/");
-    normalized = slashIdx >= 0 ? withoutScheme.slice(slashIdx + 1) : withoutScheme;
-  }
-  normalized = normalized.replace(/[?#].*$/, "");
-  return normalized.toLowerCase().replace(/^\/+|\/+$/g, "");
+  return normalizeNoteIdentity(path).replace(/^\/+|\/+$/g, "");
 }
 
 function vaultRelativePath(path) {
@@ -39,7 +36,14 @@ export function qmdExpectedPath(path) {
   return slugPath(path);
 }
 
-export function pathsMatch(result, expected) {
+export function pathsMatch(result, expected, options = {}) {
+  if (options.resolver) {
+    const resolvedResult = resolveVaultPath(result, options.resolver);
+    const resolvedExpected = resolveVaultPath(expected, options.resolver);
+    return resolvedResult.status === "resolved"
+      && resolvedExpected.status === "resolved"
+      && resolvedResult.identity === resolvedExpected.identity;
+  }
   const nr = normalizePathForScore(result);
   const ne = normalizePathForScore(expected);
   const sr = slugPath(result);
@@ -48,6 +52,40 @@ export function pathsMatch(result, expected) {
   if (nr === ne) return true;
   if (sr === se) return true;
   return false;
+}
+
+export function canonicalizeResultFiles(resultFiles, options = {}) {
+  const files = [];
+  const seen = new Map();
+  const diagnostics = {
+    ambiguous: [],
+    not_found: [],
+    duplicates: [],
+  };
+  for (const rawFile of resultFiles ?? []) {
+    const file = String(rawFile ?? "").trim();
+    if (!file) continue;
+    let canonicalFile = file;
+    let identity = qmdExpectedPath(file);
+    if (options.resolver) {
+      const resolved = resolveVaultPath(file, options.resolver);
+      if (resolved.status === "resolved") {
+        canonicalFile = resolved.path;
+        identity = `resolved:${resolved.identity}`;
+      } else {
+        identity = `${resolved.status}:${normalizeNoteIdentity(file)}`;
+        diagnostics[resolved.status].push({ reference: file, matches: resolved.matches ?? [] });
+      }
+    }
+    const first = seen.get(identity);
+    if (first) {
+      diagnostics.duplicates.push({ identity, references: [first, file] });
+      continue;
+    }
+    seen.set(identity, file);
+    files.push(canonicalFile);
+  }
+  return { files, diagnostics };
 }
 
 export function sourceNotePathForCase(caseItem) {
@@ -68,7 +106,7 @@ export function emptyFailureAttributionCounts() {
   return Object.fromEntries(FAILURE_ATTRIBUTION_GROUPS.map((group) => [group, 0]));
 }
 
-export function filterSourceNoteFromResults(resultFiles, sourceNotePath) {
+export function filterSourceNoteFromResults(resultFiles, sourceNotePath, options = {}) {
   const sourcePath = String(sourceNotePath ?? "").trim();
   if (!sourcePath) {
     return {
@@ -80,7 +118,7 @@ export function filterSourceNoteFromResults(resultFiles, sourceNotePath) {
   let sourceNoteRank = null;
   const files = [];
   for (const [index, file] of resultFiles.entries()) {
-    if (pathsMatch(file, sourcePath)) {
+    if (pathsMatch(file, sourcePath, options)) {
       if (sourceNoteRank === null) sourceNoteRank = index + 1;
       continue;
     }
@@ -93,18 +131,18 @@ export function filterSourceNoteFromResults(resultFiles, sourceNotePath) {
   };
 }
 
-function hitsWithin(resultFiles, expectedFiles, k) {
+function hitsWithin(resultFiles, expectedFiles, k, options = {}) {
   const topKResults = resultFiles.slice(0, k);
   let hits = 0;
   for (const expected of expectedFiles) {
-    if (topKResults.some((result) => pathsMatch(result, expected))) hits += 1;
+    if (topKResults.some((result) => pathsMatch(result, expected, options))) hits += 1;
   }
   return hits;
 }
 
-function targetRanks(resultFiles, expectedFiles) {
+function targetRanks(resultFiles, expectedFiles, options = {}) {
   return expectedFiles.map((expected) => {
-    const index = resultFiles.findIndex((result) => pathsMatch(result, expected));
+    const index = resultFiles.findIndex((result) => pathsMatch(result, expected, options));
     return {
       file: expected,
       rank: index >= 0 ? index + 1 : null,
@@ -119,18 +157,18 @@ function foundRanks(ranks) {
     .sort((a, b) => a - b);
 }
 
-function firstMatchingLabel(path, labelSets) {
+function firstMatchingLabel(path, labelSets, options = {}) {
   for (const labelSet of labelSets) {
-    if (labelSet.files.some((expected) => pathsMatch(path, expected))) {
+    if (labelSet.files.some((expected) => pathsMatch(path, expected, options))) {
       return labelSet;
     }
   }
   return null;
 }
 
-function targetHitsWithin(resultFiles, expectedFiles, topK) {
+function targetHitsWithin(resultFiles, expectedFiles, topK, options = {}) {
   const topKResults = resultFiles.slice(0, topK);
-  return targetRanks(topKResults, expectedFiles)
+  return targetRanks(topKResults, expectedFiles, options)
     .filter((item) => item.rank !== null)
     .map((item) => item.file);
 }
@@ -144,13 +182,15 @@ function dcg(relevanceValues) {
 
 export function scoreEvalV2(resultFiles, config = {}) {
   const topK = Number(config.topK ?? 10);
-  const mustRecallFiles = config.mustRecallFiles ?? config.must_recall ?? [];
-  const niceToHaveFiles = config.niceToHaveFiles ?? config.nice_to_have ?? [];
-  const negativeFiles = config.negativeFiles ?? config.negative ?? [];
-  const topKResults = resultFiles.slice(0, topK);
-  const mustHits = targetHitsWithin(topKResults, mustRecallFiles, topK);
-  const niceHits = targetHitsWithin(topKResults, niceToHaveFiles, topK);
-  const negativeHits = targetHitsWithin(topKResults, negativeFiles, topK);
+  const matchOptions = { resolver: config.resolver };
+  const canonicalResults = canonicalizeResultFiles(resultFiles, matchOptions).files;
+  const mustRecallFiles = canonicalizeResultFiles(config.mustRecallFiles ?? config.must_recall ?? [], matchOptions).files;
+  const niceToHaveFiles = canonicalizeResultFiles(config.niceToHaveFiles ?? config.nice_to_have ?? [], matchOptions).files;
+  const negativeFiles = canonicalizeResultFiles(config.negativeFiles ?? config.negative ?? [], matchOptions).files;
+  const topKResults = canonicalResults.slice(0, topK);
+  const mustHits = targetHitsWithin(topKResults, mustRecallFiles, topK, matchOptions);
+  const niceHits = targetHitsWithin(topKResults, niceToHaveFiles, topK, matchOptions);
+  const negativeHits = targetHitsWithin(topKResults, negativeFiles, topK, matchOptions);
   const usefulHitCount = new Set(
     [...mustHits, ...niceHits].map((file) => qmdExpectedPath(file)),
   ).size;
@@ -159,7 +199,7 @@ export function scoreEvalV2(resultFiles, config = {}) {
     { label: "must_recall", relevance: 2, files: mustRecallFiles },
     { label: "nice_to_have", relevance: 1, files: niceToHaveFiles },
   ];
-  const rankedRelevance = topKResults.map((file) => firstMatchingLabel(file, relevanceLabels)?.relevance ?? 0);
+  const rankedRelevance = topKResults.map((file) => firstMatchingLabel(file, relevanceLabels, matchOptions)?.relevance ?? 0);
   const idealRelevance = [
     ...mustRecallFiles.map(() => 2),
     ...niceToHaveFiles.map(() => 1),
@@ -198,26 +238,265 @@ export function droppedMustFromExpandedPool(expandedPoolScore, pipelineScore, to
   );
 }
 
-export function failureFlagsForPipelineCase(caseItem, diagnostics) {
-  const flags = new Set();
-  if (diagnostics.sourceNoteRank) flags.add("source_self_hit");
-  if (caseItem.query_generation_fallback || diagnostics.queryFallback || diagnostics.rerankFallback) flags.add("runtime_fallback");
-  if (diagnostics.droppedMustCount > 0) flags.add("dropped_must_from_final_top_k");
-  if (diagnostics.missingFromExpandedPool > 0) flags.add("missing_from_expanded_pool");
-  return Array.from(flags);
+export function comparePipelineStability(currentReport, comparisonReport, options = {}) {
+  const topK = Number(
+    currentReport?.summary?.eval_v2?.top_k
+      ?? currentReport?.results?.[0]?.pipeline?.score?.top_k
+      ?? 10,
+  );
+  const currentResults = currentReport?.results ?? [];
+  const notMeasured = (reason) => ({
+    summary: stabilitySummary("not_measured", reason, topK, 0, null),
+    by_case: Object.fromEntries(currentResults.map((result) => [
+      result.id,
+      stabilityCase("not_measured", reason, topK, null),
+    ])),
+  });
+
+  if (!comparisonReport) return notMeasured("no_comparison_report");
+  const incompatibility = stabilityIncompatibility(currentReport, comparisonReport);
+  if (incompatibility) return notMeasured(incompatibility);
+
+  const comparisonById = new Map((comparisonReport.results ?? []).map((result) => [result.id, result]));
+  const byCase = {};
+  const measured = [];
+  for (const current of currentResults) {
+    const comparison = comparisonById.get(current.id);
+    if (!comparison) {
+      byCase[current.id] = stabilityCase("not_measured", "comparison_case_missing", topK, null);
+      continue;
+    }
+    const currentFiles = pipelineCandidateFiles(current).slice(0, topK);
+    const comparisonFiles = pipelineCandidateFiles(comparison).slice(0, topK);
+    if (currentFiles.length === 0 || comparisonFiles.length === 0) {
+      byCase[current.id] = stabilityCase("not_measured", "empty_candidate_set", topK, null);
+      continue;
+    }
+    const currentIdentities = canonicalIdentitySet(currentFiles, options);
+    const comparisonIdentities = canonicalIdentitySet(comparisonFiles, options);
+    const overlap = Array.from(currentIdentities).filter((identity) => comparisonIdentities.has(identity)).length;
+    const denominator = Math.max(currentIdentities.size, comparisonIdentities.size);
+    const score = denominator > 0 ? overlap / denominator : null;
+    byCase[current.id] = stabilityCase("measured", null, topK, score, {
+      overlap_count: overlap,
+      current_count: currentIdentities.size,
+      comparison_count: comparisonIdentities.size,
+    });
+    if (typeof score === "number") measured.push(score);
+  }
+
+  if (measured.length === 0) {
+    return {
+      summary: stabilitySummary("not_measured", "no_comparable_cases", topK, 0, null),
+      by_case: byCase,
+    };
+  }
+  return {
+    summary: stabilitySummary("measured", null, topK, measured.length, average(measured, null)),
+    by_case: byCase,
+  };
 }
 
-export function failureAttributionForPipelineCase(caseItem, diagnostics) {
+export function failureAttributionFromTrace(caseItem, trace, options = {}) {
   const explicit = normalizeFailureAttribution(caseItem.failure_attribution, caseItem.id);
-  if (explicit) return explicit;
-  if (diagnostics.pipelineMissedAtTopKCount < 1) return null;
+  if (explicit) {
+    return attributedFailure(explicit.primary, explicit.flags, {
+      stage: "human_review",
+      source: "explicit_case_attribution",
+    });
+  }
 
-  const primary = diagnostics.droppedMustCount > 0
-    ? "rerank_failure"
-    : "retrieval_failure";
+  const identityDiagnostics = caseItem.identity_evaluation?.diagnostics ?? {};
+  if ((identityDiagnostics.schema_conflicts?.length ?? 0) > 0 || (identityDiagnostics.label_conflicts?.length ?? 0) > 0) {
+    return attributedFailure("case_label_failure", [], {
+      stage: "case_validation",
+      schema_conflict_count: identityDiagnostics.schema_conflicts?.length ?? 0,
+      label_conflict_count: identityDiagnostics.label_conflicts?.length ?? 0,
+    });
+  }
+  if ((identityDiagnostics.ambiguous?.length ?? 0) > 0 || (identityDiagnostics.not_found?.length ?? 0) > 0) {
+    return attributedFailure("input_representation_failure", [], {
+      stage: "identity_resolution",
+      ambiguous_count: identityDiagnostics.ambiguous?.length ?? 0,
+      not_found_count: identityDiagnostics.not_found?.length ?? 0,
+    });
+  }
+
+  const mustFiles = caseItem.identity_evaluation?.gold?.must ?? caseItem.must_recall ?? [];
+  if (mustFiles.length === 0) return null;
+  const topK = Number(options.topK ?? 10);
+  const steps = trace?.steps;
+  if (!steps) return unattributedFailure(["steps"]);
+
+  const finalCandidates = Array.isArray(steps.final_candidates) ? steps.final_candidates : [];
+  const missedMust = mustFiles.filter((file) => {
+    const rank = traceRank(finalCandidates, file, options);
+    return rank === null || rank > topK;
+  });
+  if (missedMust.length === 0) return null;
+
+  if (steps.query_generation?.status === "failed" || (steps.query_generation?.errors?.length ?? 0) > 0) {
+    return attributedFailure("query_failure", [], {
+      stage: "query_generation",
+      missed_must_count: missedMust.length,
+      error_categories: traceErrorCategories(steps.query_generation?.errors),
+    });
+  }
+
+  const reviewed = steps.relation_judge?.reviewed_candidates;
+  if (!Array.isArray(reviewed)) {
+    return unattributedFailure(["relation_judge.reviewed_candidates"]);
+  }
+  const judgeBudget = Number(options.judgeBudget ?? 20);
+  const reviewedWithinBudget = reviewed.slice(0, judgeBudget);
+  const preJudge = Array.isArray(steps.pre_judge_candidates)
+    ? steps.pre_judge_candidates
+    : Array.isArray(steps.pre_rerank_candidates)
+      ? steps.pre_rerank_candidates
+      : [];
+  const reviewedMisses = missedMust.filter((file) => traceRank(reviewedWithinBudget, file, options) !== null);
+  const beyondJudgeBudget = missedMust.filter((file) =>
+    traceRank(preJudge, file, options) !== null && traceRank(reviewedWithinBudget, file, options) === null,
+  );
+  if (reviewedMisses.length < missedMust.length) {
+    const flags = [];
+    if (beyondJudgeBudget.length > 0) flags.push("found_beyond_judge_budget");
+    if (beyondJudgeBudget.length === 0) flags.push("missing_from_expanded_pool");
+    return attributedFailure("retrieval_failure", flags, {
+      stage: "candidate_selection",
+      missed_must_count: missedMust.length,
+      reviewed_must_count: reviewedMisses.length,
+      must_found_beyond_judge_budget: beyondJudgeBudget.length,
+      judge_budget: judgeBudget,
+      qmd_run_count: Array.isArray(steps.qmd_runs) ? steps.qmd_runs.length : 0,
+    });
+  }
+
+  const judgeFailed = steps.relation_judge?.status === "failed" || steps.relation_judge?.fallback === true;
+  const relationMismatches = relationTargetMismatches(caseItem, steps.relation_judge?.decisions, options);
+  if (judgeFailed || relationMismatches > 0) {
+    return attributedFailure("relation_failure", judgeFailed ? ["relation_judge_failed"] : ["relation_mismatch"], {
+      stage: "relation_judge",
+      reviewed_must_count: reviewedMisses.length,
+      judge_budget: judgeBudget,
+      relation_mismatch_count: relationMismatches,
+      fallback: steps.relation_judge?.fallback === true,
+      error_categories: traceErrorCategories(steps.relation_judge?.errors),
+    });
+  }
+
+  return attributedFailure("rerank_failure", ["dropped_must_from_final_top_k"], {
+    stage: "ordering",
+    missed_must_count: missedMust.length,
+    reviewed_must_count: reviewedMisses.length,
+    judge_budget: judgeBudget,
+  });
+}
+
+function stabilityIncompatibility(current, comparison) {
+  const checks = [
+    ["profile", current?.profile, comparison?.profile],
+    ["suite", current?.suite?.kind, comparison?.suite?.kind],
+    ["suite_version", current?.suite?.version, comparison?.suite?.version],
+    ["trace_schema", current?.metadata?.trace_schema, comparison?.metadata?.trace_schema],
+    ["trace_version", current?.metadata?.trace_version, comparison?.metadata?.trace_version],
+    ["effective_config", current?.metadata?.effective_config_id, comparison?.metadata?.effective_config_id],
+    ["candidate_limit", current?.candidate_limit, comparison?.candidate_limit],
+  ];
+  for (const [label, left, right] of checks) {
+    if (left === undefined || left === null || right === undefined || right === null || left !== right) {
+      return `incompatible_${label}`;
+    }
+  }
+  const currentIds = (current.results ?? []).map((result) => result.id).sort();
+  const comparisonIds = (comparison.results ?? []).map((result) => result.id).sort();
+  if (currentIds.length !== comparisonIds.length || currentIds.some((id, index) => id !== comparisonIds[index])) {
+    return "incompatible_case_set";
+  }
+  return null;
+}
+
+function stabilitySummary(status, reason, topK, measuredCases, score) {
   return {
+    status,
+    ...(reason ? { reason } : {}),
+    metric: "top_k_overlap",
+    top_k: topK,
+    measured_cases: measuredCases,
+    score,
+  };
+}
+
+function stabilityCase(status, reason, topK, score, counts = {}) {
+  return {
+    status,
+    ...(reason ? { reason } : {}),
+    metric: "top_k_overlap",
+    top_k: topK,
+    score,
+    ...counts,
+  };
+}
+
+function pipelineCandidateFiles(result) {
+  return (result?.pipeline?.top_candidates ?? result?.candidates ?? [])
+    .map((candidate) => typeof candidate === "string"
+      ? candidate
+      : candidate?.file ?? candidate?.notePath ?? candidate?.path ?? "")
+    .filter(Boolean);
+}
+
+function canonicalIdentitySet(files, options) {
+  const canonical = canonicalizeResultFiles(files, { resolver: options.resolver }).files;
+  return new Set(canonical.map((file) => normalizeNoteIdentity(file)));
+}
+
+function traceRank(candidates, expected, options) {
+  const index = (candidates ?? []).findIndex((candidate) => {
+    const file = typeof candidate === "string" ? candidate : candidate?.file ?? candidate?.notePath ?? candidate?.path;
+    return pathsMatch(file, expected, { resolver: options.resolver });
+  });
+  return index < 0 ? null : Number(candidates[index]?.rank ?? index + 1);
+}
+
+function relationTargetMismatches(caseItem, decisions, options) {
+  if (!Array.isArray(caseItem.relation_targets) || !Array.isArray(decisions)) return 0;
+  let mismatches = 0;
+  for (const target of caseItem.relation_targets) {
+    if (!target?.relation) continue;
+    const path = target.note_path ?? target.notePath;
+    const decision = decisions.find((candidate) => {
+      const file = candidate?.file ?? candidate?.notePath ?? candidate?.path;
+      return pathsMatch(file, path, { resolver: options.resolver });
+    });
+    if (decision && decision.relation !== target.relation) mismatches += 1;
+  }
+  return mismatches;
+}
+
+function traceErrorCategories(errors) {
+  return Array.from(new Set((errors ?? []).map((error) => error?.category).filter(Boolean)));
+}
+
+function attributedFailure(primary, flags, evidence) {
+  return {
+    status: "attributed",
     primary,
-    flags: failureFlagsForPipelineCase(caseItem, diagnostics),
+    evidence,
+    flags: Array.from(new Set(flags ?? [])),
+  };
+}
+
+function unattributedFailure(missingTraceFields) {
+  return {
+    status: "unattributed",
+    primary: null,
+    reason: "insufficient_trace_evidence",
+    evidence: {
+      stage: "unknown",
+      missing_trace_fields: missingTraceFields,
+    },
+    flags: [],
   };
 }
 
@@ -261,7 +540,11 @@ export function normalizeFailureAttribution(input, caseId = "(unknown case)") {
   };
 }
 
-export function scoreResults(resultFiles, expectedFiles, topK) {
+export function scoreResults(resultFiles, expectedFiles, topK, options = {}) {
+  const canonicalResults = canonicalizeResultFiles(resultFiles, options).files;
+  const canonicalExpected = canonicalizeResultFiles(expectedFiles, options).files;
+  resultFiles = canonicalResults;
+  expectedFiles = canonicalExpected;
   if (expectedFiles.length === 0) {
     return {
       top_k: topK,
@@ -284,7 +567,7 @@ export function scoreResults(resultFiles, expectedFiles, topK) {
       unmatched_expected_files: [],
     };
   }
-  const mustRecallRanks = targetRanks(resultFiles, expectedFiles);
+  const mustRecallRanks = targetRanks(resultFiles, expectedFiles, options);
   const hitsAtK = mustRecallRanks.filter((item) => item.rank !== null && item.rank <= topK).length;
   const matchedFiles = mustRecallRanks
     .filter((item) => item.rank !== null)
@@ -305,9 +588,9 @@ export function scoreResults(resultFiles, expectedFiles, topK) {
     precision_at_k: precisionAtK,
     target_coverage_at_k: targetCoverageAtK,
     recall,
-    recall_at_1: expectedFiles.length > 0 ? hitsWithin(resultFiles, expectedFiles, 1) / expectedFiles.length : 0,
-    recall_at_3: expectedFiles.length > 0 ? hitsWithin(resultFiles, expectedFiles, 3) / expectedFiles.length : 0,
-    recall_at_5: expectedFiles.length > 0 ? hitsWithin(resultFiles, expectedFiles, 5) / expectedFiles.length : 0,
+    recall_at_1: expectedFiles.length > 0 ? hitsWithin(resultFiles, expectedFiles, 1, options) / expectedFiles.length : 0,
+    recall_at_3: expectedFiles.length > 0 ? hitsWithin(resultFiles, expectedFiles, 3, options) / expectedFiles.length : 0,
+    recall_at_5: expectedFiles.length > 0 ? hitsWithin(resultFiles, expectedFiles, 5, options) / expectedFiles.length : 0,
     recall_at_k: expectedFiles.length > 0 ? hitsAtK / expectedFiles.length : 0,
     must_recall_ranks: mustRecallRanks,
     found_must_recall_ranks: rankedHits,
@@ -324,8 +607,10 @@ export function scoreResults(resultFiles, expectedFiles, topK) {
   };
 }
 
-export function scoreNiceToHave(resultFiles, niceToHaveFiles, topK) {
-  const niceRanks = targetRanks(resultFiles, niceToHaveFiles);
+export function scoreNiceToHave(resultFiles, niceToHaveFiles, topK, options = {}) {
+  resultFiles = canonicalizeResultFiles(resultFiles, options).files;
+  niceToHaveFiles = canonicalizeResultFiles(niceToHaveFiles, options).files;
+  const niceRanks = targetRanks(resultFiles, niceToHaveFiles, options);
   const rankedHits = foundRanks(niceRanks);
   const hitsAtK = niceRanks.filter((item) => item.rank !== null && item.rank <= topK).length;
   const foundFiles = niceRanks
@@ -359,6 +644,65 @@ function numericValues(values) {
   return values.filter((value) => typeof value === "number" && Number.isFinite(value));
 }
 
+function identityDiagnostics(caseDiagnostics = {}, resultDiagnostics = {}) {
+  return {
+    ambiguous: caseDiagnostics.ambiguous ?? [],
+    not_found: caseDiagnostics.not_found ?? [],
+    duplicates: caseDiagnostics.duplicates ?? [],
+    schema_conflicts: caseDiagnostics.schema_conflicts ?? [],
+    label_conflicts: caseDiagnostics.label_conflicts ?? [],
+    result_ambiguous: resultDiagnostics.ambiguous ?? [],
+    result_not_found: resultDiagnostics.not_found ?? [],
+    result_duplicates: resultDiagnostics.duplicates ?? [],
+  };
+}
+
+function markStatsNotScored(stats, config) {
+  const topK = Number(config.topK ?? 10);
+  const niceTopK = Number(config.niceTopK ?? 20);
+  for (const key of [
+    "precision_at_k",
+    "target_coverage_at_k",
+    "recall",
+    "recall_at_1",
+    "recall_at_3",
+    "recall_at_5",
+    "recall_at_k",
+    "worst_must_rank",
+    "all_must_recalled_at_k",
+    "missing_must_count",
+    "hits_at_k",
+    "total_expected",
+    "f1",
+  ]) {
+    stats[key] = null;
+  }
+  stats.must_recall_ranks = [];
+  stats.found_must_recall_ranks = [];
+  stats.matched_files = [];
+  stats.unmatched_expected_files = [];
+  stats.nice_to_have = {
+    status: "not_scored",
+    top_k: niceTopK,
+    total_nice_to_have: null,
+    hits_at_k: null,
+    recall: null,
+    recall_at_k: null,
+    nice_to_have_ranks: [],
+    found_nice_to_have_ranks: [],
+    matched_files: [],
+    missing_nice_to_have_files: [],
+  };
+  stats.eval_v2 = {
+    status: "not_scored",
+    top_k: topK,
+    must_recall_at_k: null,
+    useful_precision_at_k: null,
+    ndcg_at_k: null,
+    negative_rate_at_k: null,
+  };
+}
+
 export function applyBenchEvaluationPolicy(report, config) {
   for (const result of report.results ?? []) {
     const caseConfig = config.caseById.get(result.id) ?? {};
@@ -376,20 +720,45 @@ export function applyBenchEvaluationPolicy(report, config) {
     result.nice_expected_in_top_k = niceTopK;
     result.nice_to_have_files = niceToHaveFiles;
     result.negative_files = negativeFiles;
+    result.suite = caseConfig.suite ?? null;
+    result.suite_version = caseConfig.suiteVersion ?? null;
+    result.evaluation_mode = caseConfig.evaluationMode ?? null;
+    result.suite_evaluation = caseConfig.suiteEvaluation ?? { status: "ready" };
     for (const stats of Object.values(result.backends ?? {})) {
-      const filtered = filterSourceNoteFromResults(stats.top_files ?? [], caseConfig.sourceNotePath);
-      const score = scoreResults(filtered.files, expectedFiles, topK);
-      const niceScore = scoreNiceToHave(filtered.files, niceToHaveFiles, niceTopK);
+      const scoringOptions = { resolver: config.identityResolver };
+      const canonicalResults = canonicalizeResultFiles(stats.top_files ?? [], scoringOptions);
+      const filtered = filterSourceNoteFromResults(canonicalResults.files, caseConfig.sourceNotePath, scoringOptions);
+      const caseIdentity = caseConfig.identityEvaluation ?? { status: "ready", diagnostics: {} };
+      const suiteEvaluation = caseConfig.suiteEvaluation ?? { status: "ready" };
+      stats.evaluation_status = caseIdentity.status === "ready" && suiteEvaluation.status === "ready"
+        ? "scored"
+        : "not_scored";
+      stats.evaluation_reason = caseIdentity.status !== "ready"
+        ? "identity_validation"
+        : suiteEvaluation.status !== "ready"
+          ? "suite_validation"
+          : null;
+      stats.identity_diagnostics = identityDiagnostics(caseIdentity.diagnostics, canonicalResults.diagnostics);
+      stats.duplicate_result_count = canonicalResults.diagnostics.duplicates.length;
+      stats.evaluation_top_files = filtered.files;
+      stats.top_k = topK;
+      stats.nice_top_k = niceTopK;
+      stats.evaluation_excludes_source_note = !!caseConfig.sourceNotePath;
+      stats.source_note_rank = filtered.source_note_rank;
+      if (stats.evaluation_status === "not_scored") {
+        markStatsNotScored(stats, { topK, niceTopK });
+        delete stats[String.fromCharCode(109, 114, 114)];
+        continue;
+      }
+      const score = scoreResults(filtered.files, expectedFiles, topK, scoringOptions);
+      const niceScore = scoreNiceToHave(filtered.files, niceToHaveFiles, niceTopK, scoringOptions);
       const evalV2Score = scoreEvalV2(filtered.files, {
         topK,
         mustRecallFiles: expectedFiles,
         niceToHaveFiles,
         negativeFiles,
+        resolver: config.identityResolver,
       });
-      stats.top_k = topK;
-      stats.nice_top_k = niceTopK;
-      stats.evaluation_excludes_source_note = !!caseConfig.sourceNotePath;
-      stats.source_note_rank = filtered.source_note_rank;
       stats.precision_at_k = score.precision_at_k;
       stats.target_coverage_at_k = score.target_coverage_at_k;
       stats.recall = score.recall;
@@ -414,11 +783,12 @@ export function applyBenchEvaluationPolicy(report, config) {
   }
 
   for (const [backend, summary] of Object.entries(report.summary ?? {})) {
-    const backendStats = (report.results ?? [])
+    const allBackendStats = (report.results ?? [])
       .map((result) => result.backends?.[backend])
       .filter(Boolean);
-    const topKValues = numericValues(backendStats.map((stats) => stats.top_k));
-    const niceTopKValues = numericValues(backendStats.map((stats) => stats.nice_top_k));
+    const backendStats = allBackendStats.filter((stats) => stats.evaluation_status !== "not_scored");
+    const topKValues = numericValues(allBackendStats.map((stats) => stats.top_k));
+    const niceTopKValues = numericValues(allBackendStats.map((stats) => stats.nice_top_k));
     const recallValues = numericValues(backendStats.map((stats) => stats.recall_at_k));
     const precisionValues = numericValues(backendStats.map((stats) => stats.precision_at_k));
     const coverageValues = numericValues(backendStats.map((stats) => stats.target_coverage_at_k));
@@ -430,27 +800,25 @@ export function applyBenchEvaluationPolicy(report, config) {
     const evalV2UsefulPrecisionValues = numericValues(backendStats.map((stats) => stats.eval_v2?.useful_precision_at_k));
     const evalV2NdcgValues = numericValues(backendStats.map((stats) => stats.eval_v2?.ndcg_at_k));
     const evalV2NegativeRateValues = numericValues(backendStats.map((stats) => stats.eval_v2?.negative_rate_at_k));
+    summary.scored_cases = backendStats.length;
+    summary.not_scored_cases = allBackendStats.length - backendStats.length;
     summary.top_k = topKValues[0] ?? 10;
     summary.nice_top_k = niceTopKValues[0] ?? 20;
-    if (recallValues.length > 0) {
-      summary.avg_recall_at_k = average(recallValues, 0);
-    } else if (typeof summary.avg_recall === "number") {
-      summary.avg_recall_at_k = summary.avg_recall;
-    }
-    summary.avg_precision = average(precisionValues, 0);
-    summary.avg_target_coverage_at_k = average(coverageValues, 0);
-    summary.avg_f1 = average(f1Values, 0);
-    summary.avg_worst_must_rank = average(worstRankValues, 0);
+    summary.avg_recall_at_k = average(recallValues, null);
+    summary.avg_precision = average(precisionValues, null);
+    summary.avg_target_coverage_at_k = average(coverageValues, null);
+    summary.avg_f1 = average(f1Values, null);
+    summary.avg_worst_must_rank = average(worstRankValues, null);
     summary.cases_with_must_miss = missingCountValues.filter((count) => count > 0).length;
     summary.avg_nice_to_have_recall_at_k = niceRecallValues.length > 0
       ? average(niceRecallValues, 0)
       : null;
     summary.eval_v2 = {
       top_k: summary.top_k,
-      avg_must_recall_at_k: average(evalV2MustRecallValues, 0),
-      avg_useful_precision_at_k: average(evalV2UsefulPrecisionValues, 0),
-      avg_ndcg_at_k: average(evalV2NdcgValues, 0),
-      avg_negative_rate_at_k: average(evalV2NegativeRateValues, 0),
+      avg_must_recall_at_k: average(evalV2MustRecallValues, null),
+      avg_useful_precision_at_k: average(evalV2UsefulPrecisionValues, null),
+      avg_ndcg_at_k: average(evalV2NdcgValues, null),
+      avg_negative_rate_at_k: average(evalV2NegativeRateValues, null),
     };
     delete summary[`avg_${String.fromCharCode(109, 114, 114)}`];
   }
@@ -462,6 +830,8 @@ export function summarizePipelineEvaluation(results) {
   if (results.length === 0) {
     return {
       cases: 0,
+      scored_cases: 0,
+      not_scored_cases: 0,
       avg_qmd_recall_at_k: 0,
       avg_pipeline_recall_at_k: 0,
       avg_pipeline_nice_to_have_recall_at_k: 0,
@@ -469,15 +839,48 @@ export function summarizePipelineEvaluation(results) {
       avg_expanded_pool_recall: 0,
       avg_expanded_pool_recall_at_20: 0,
       dropped_must_count: 0,
-      avg_stability_at_10: 0,
+      avg_stability_at_10: null,
+      stability: stabilitySummary("not_measured", "no_results", 10, 0, null),
       failure_attribution_counts: emptyFailureAttributionCounts(),
       failure_flag_counts: {},
+      unattributed_failure_count: 0,
       eval_v2: {
         top_k: 10,
         avg_must_recall_at_k: 0,
         avg_useful_precision_at_k: 0,
         avg_ndcg_at_k: 0,
         avg_negative_rate_at_k: 0,
+      },
+      qmd_direct_matches: 0,
+      backlink_matches: 0,
+      missing_matches: 0,
+      expanded_pool_dropped_topk_count: 0,
+    };
+  }
+
+  const scoredResults = results.filter((result) => result.evaluation_status !== "not_scored");
+  const failureSummary = summarizeFailureAttributions(results);
+  if (scoredResults.length === 0) {
+    return {
+      cases: results.length,
+      scored_cases: 0,
+      not_scored_cases: results.length,
+      avg_qmd_recall_at_k: null,
+      avg_pipeline_recall_at_k: null,
+      avg_pipeline_nice_to_have_recall_at_k: null,
+      avg_worst_must_rank: null,
+      avg_expanded_pool_recall: null,
+      avg_expanded_pool_recall_at_20: null,
+      dropped_must_count: 0,
+      avg_stability_at_10: null,
+      stability: stabilitySummary("not_measured", "no_scored_cases", 10, 0, null),
+      ...failureSummary,
+      eval_v2: {
+        top_k: results[0]?.pipeline?.eval_v2?.top_k ?? results[0]?.pipeline?.score?.top_k ?? 10,
+        avg_must_recall_at_k: null,
+        avg_useful_precision_at_k: null,
+        avg_ndcg_at_k: null,
+        avg_negative_rate_at_k: null,
       },
       qmd_direct_matches: 0,
       backlink_matches: 0,
@@ -494,7 +897,8 @@ export function summarizePipelineEvaluation(results) {
   let worstMustRankCount = 0;
   let expandedRecall = 0;
   let expandedRecallAt20 = 0;
-  let stabilityAt10 = 0;
+  const stabilityValues = [];
+  let stabilityReason = null;
   let evalV2MustRecall = 0;
   let evalV2UsefulPrecision = 0;
   let evalV2Ndcg = 0;
@@ -504,10 +908,8 @@ export function summarizePipelineEvaluation(results) {
   let missingMatches = 0;
   let expandedPoolDroppedTopK = 0;
   let droppedMustCount = 0;
-  const failureAttributionCounts = emptyFailureAttributionCounts();
-  const failureFlagCounts = {};
 
-  for (const result of results) {
+  for (const result of scoredResults) {
     qmdRecallAtK += result.qmd.score.recall_at_k;
     pipelineRecallAtK += result.pipeline.score.recall_at_k;
     evalV2MustRecall += result.pipeline.eval_v2?.must_recall_at_k ?? result.pipeline.score.recall_at_k ?? 0;
@@ -524,16 +926,13 @@ export function summarizePipelineEvaluation(results) {
     }
     expandedRecall += result.expanded_pool.score.recall;
     expandedRecallAt20 += result.expanded_pool.recall_at_20 ?? result.expanded_pool.score_at_20?.recall_at_k ?? result.expanded_pool.score.recall_at_k ?? 0;
-    stabilityAt10 += result.pipeline.stability_at_k ?? result.pipeline.stability_at_10 ?? 1;
+    if (result.pipeline.stability?.status === "measured" && typeof result.pipeline.stability.score === "number") {
+      stabilityValues.push(result.pipeline.stability.score);
+    } else if (!stabilityReason && result.pipeline.stability?.reason) {
+      stabilityReason = result.pipeline.stability.reason;
+    }
     expandedPoolDroppedTopK += result.expanded_pool.dropped_from_final_top_k?.length ?? 0;
     droppedMustCount += result.expanded_pool.dropped_must_count ?? result.expanded_pool.dropped_from_final_top_k?.length ?? 0;
-    if (result.failure_attribution?.primary) {
-      failureAttributionCounts[result.failure_attribution.primary] =
-        (failureAttributionCounts[result.failure_attribution.primary] ?? 0) + 1;
-      for (const flag of result.failure_attribution.flags ?? []) {
-        failureFlagCounts[flag] = (failureFlagCounts[flag] ?? 0) + 1;
-      }
-    }
     for (const match of result.must_recall_sources) {
       const source = String(match.source ?? "");
       if (source === "missing") {
@@ -547,28 +946,85 @@ export function summarizePipelineEvaluation(results) {
 
   return {
     cases: results.length,
-    avg_qmd_recall_at_k: qmdRecallAtK / results.length,
-    avg_pipeline_recall_at_k: pipelineRecallAtK / results.length,
+    scored_cases: scoredResults.length,
+    not_scored_cases: results.length - scoredResults.length,
+    avg_qmd_recall_at_k: qmdRecallAtK / scoredResults.length,
+    avg_pipeline_recall_at_k: pipelineRecallAtK / scoredResults.length,
     avg_pipeline_nice_to_have_recall_at_k: pipelineNiceRecallCount > 0
       ? pipelineNiceRecallAtK / pipelineNiceRecallCount
       : null,
     avg_worst_must_rank: worstMustRankCount > 0 ? worstMustRank / worstMustRankCount : 0,
-    avg_expanded_pool_recall: expandedRecall / results.length,
-    avg_expanded_pool_recall_at_20: expandedRecallAt20 / results.length,
+    avg_expanded_pool_recall: expandedRecall / scoredResults.length,
+    avg_expanded_pool_recall_at_20: expandedRecallAt20 / scoredResults.length,
     dropped_must_count: droppedMustCount,
-    avg_stability_at_10: stabilityAt10 / results.length,
-    failure_attribution_counts: failureAttributionCounts,
-    failure_flag_counts: failureFlagCounts,
+    avg_stability_at_10: average(stabilityValues, null),
+    stability: stabilityValues.length > 0
+      ? stabilitySummary(
+          "measured",
+          null,
+          scoredResults[0]?.pipeline?.stability?.top_k ?? 10,
+          stabilityValues.length,
+          average(stabilityValues, null),
+        )
+      : stabilitySummary(
+          "not_measured",
+          stabilityReason ?? "no_comparison_report",
+          scoredResults[0]?.pipeline?.stability?.top_k ?? 10,
+          0,
+          null,
+        ),
+    ...failureSummary,
     eval_v2: {
-      top_k: results[0]?.pipeline?.eval_v2?.top_k ?? results[0]?.pipeline?.score?.top_k ?? 10,
-      avg_must_recall_at_k: evalV2MustRecall / results.length,
-      avg_useful_precision_at_k: evalV2UsefulPrecision / results.length,
-      avg_ndcg_at_k: evalV2Ndcg / results.length,
-      avg_negative_rate_at_k: evalV2NegativeRate / results.length,
+      top_k: scoredResults[0]?.pipeline?.eval_v2?.top_k ?? scoredResults[0]?.pipeline?.score?.top_k ?? 10,
+      avg_must_recall_at_k: evalV2MustRecall / scoredResults.length,
+      avg_useful_precision_at_k: evalV2UsefulPrecision / scoredResults.length,
+      avg_ndcg_at_k: evalV2Ndcg / scoredResults.length,
+      avg_negative_rate_at_k: evalV2NegativeRate / scoredResults.length,
     },
     qmd_direct_matches: qmdDirectMatches,
     backlink_matches: backlinkMatches,
     missing_matches: missingMatches,
     expanded_pool_dropped_topk_count: expandedPoolDroppedTopK,
   };
+}
+
+function summarizeFailureAttributions(results) {
+  const failureAttributionCounts = emptyFailureAttributionCounts();
+  const failureFlagCounts = {};
+  let unattributedFailureCount = 0;
+  for (const result of results) {
+    if (result.failure_attribution?.primary) {
+      failureAttributionCounts[result.failure_attribution.primary] =
+        (failureAttributionCounts[result.failure_attribution.primary] ?? 0) + 1;
+      for (const flag of result.failure_attribution.flags ?? []) {
+        failureFlagCounts[flag] = (failureFlagCounts[flag] ?? 0) + 1;
+      }
+    } else if (result.failure_attribution?.status === "unattributed") {
+      unattributedFailureCount += 1;
+    }
+  }
+  return {
+    failure_attribution_counts: failureAttributionCounts,
+    failure_flag_counts: failureFlagCounts,
+    unattributed_failure_count: unattributedFailureCount,
+  };
+}
+
+export function summarizePipelineEvaluationGroups(results) {
+  const bySuite = {};
+  for (const result of results ?? []) {
+    const suite = result.suite || "unassigned";
+    const mode = result.evaluation_mode || "unassigned";
+    bySuite[suite] ??= { results: [], by_mode: {} };
+    bySuite[suite].results.push(result);
+    bySuite[suite].by_mode[mode] ??= [];
+    bySuite[suite].by_mode[mode].push(result);
+  }
+  return Object.fromEntries(Object.entries(bySuite).map(([suite, group]) => [suite, {
+    summary: summarizePipelineEvaluation(group.results),
+    by_mode: Object.fromEntries(Object.entries(group.by_mode).map(([mode, modeResults]) => [
+      mode,
+      summarizePipelineEvaluation(modeResults),
+    ])),
+  }]));
 }

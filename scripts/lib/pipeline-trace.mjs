@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
-import { pathsMatch } from "./bench-scoring.mjs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { sameNotePath } from "../aha/lib/note-identity.mjs";
 import {
   annotateCandidateRerankIds,
   candidatePath,
@@ -9,22 +9,11 @@ import {
   candidateSourceList,
 } from "./candidate-fields.mjs";
 
-const TRACE_SCHEMA = "PipelineTrace";
-const TRACE_VERSION = 1;
-const DEFAULT_SNIPPET_CHARS = 300;
+export const PIPELINE_TRACE_SCHEMA = "PipelineTrace";
+export const PIPELINE_TRACE_VERSION = 2;
 
 function sha256(value) {
   return createHash("sha256").update(String(value ?? "")).digest("hex");
-}
-
-function compactWhitespace(value) {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
-}
-
-function boundedSnippet(value, maxChars = DEFAULT_SNIPPET_CHARS) {
-  const compact = compactWhitespace(value);
-  if (compact.length <= maxChars) return compact;
-  return `${compact.slice(0, maxChars).trimEnd()}...`;
 }
 
 function candidateIdentityKey(candidate) {
@@ -41,48 +30,122 @@ function rerankIdLookup(candidates) {
   return byKey;
 }
 
-function traceCandidate(candidate, index, rerankIdsByKey = new Map()) {
+function traceCandidate(candidate, index, rerankIdsByKey = new Map(), options = {}) {
   const content = String(candidate?.content ?? "");
-  const sources = candidateSourceList(candidate);
+  const sources = Array.isArray(candidate?._traceSources)
+    ? candidate._traceSources.map((source) => source?.kind || source?.source).filter(Boolean)
+    : candidateSourceList(candidate);
   const key = candidateIdentityKey(candidate);
+  const file = safeNoteIdentity(candidatePath(candidate), options.vaultRoot);
+  const score = firstFiniteNumber(candidate?._traceScore, candidate?.finalScore, candidate?.bestScore, candidate?.score);
+  const quoteHashes = Array.isArray(candidate?.quotes)
+    ? candidate.quotes.filter((quote) => typeof quote === "string" && quote.trim()).map(sha256)
+    : [];
   return {
     rank: index + 1,
     rerank_id: candidate?.rerankId ?? rerankIdsByKey.get(key),
-    title: candidate?.title,
-    file: candidatePath(candidate),
+    file,
+    identity_hash: sha256(file || key),
+    title_hash: candidate?.title || candidate?.noteTitle ? sha256(candidate.title || candidate.noteTitle) : undefined,
+    score,
     source: candidateSourceLabel(candidate),
     sources,
-    expansion_from: candidate?.expansionFrom || undefined,
+    expansion_from_hash: candidate?.expansionFrom ? sha256(candidate.expansionFrom) : undefined,
     query_kind: candidate?.queryKind || undefined,
     query_command: candidate?.queryCommand || undefined,
     relation: candidate?.relation || undefined,
-    hit: candidate?.hit ? boundedSnippet(candidate.hit, 180) : undefined,
-    why: candidate?.why ? boundedSnippet(candidate.why, 260) : undefined,
-    quotes: Array.isArray(candidate?.quotes) ? candidate.quotes.map((quote) => boundedSnippet(quote, 180)) : undefined,
-    snippet: boundedSnippet(content),
     content_hash: sha256(content),
+    evidence: {
+      hit_hash: candidate?.hit ? sha256(candidate.hit) : undefined,
+      why_hash: candidate?.why ? sha256(candidate.why) : undefined,
+      quote_hashes: quoteHashes,
+      quote_count: quoteHashes.length,
+    },
   };
 }
 
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function safeNoteIdentity(value, vaultRoot = "") {
+  let raw = String(value ?? "").trim().replace(/\\/g, "/");
+  if (!raw) return "";
+  if (/^qmd:\/\//i.test(raw)) {
+    const withoutScheme = raw.slice("qmd://".length);
+    const slash = withoutScheme.indexOf("/");
+    raw = slash >= 0 ? withoutScheme.slice(slash + 1) : withoutScheme;
+    try {
+      raw = decodeURIComponent(raw);
+    } catch {
+      // Keep the original encoded identity when decoding fails.
+    }
+  }
+  raw = raw.replace(/[?#].*$/, "").replace(/^\/+/, "");
+  const resolvedVault = String(vaultRoot || "").trim();
+  if (resolvedVault && isAbsolute(String(value ?? ""))) {
+    const relativePath = relative(resolve(resolvedVault), resolve(String(value))).replace(/\\/g, "/");
+    if (relativePath && !relativePath.startsWith("../") && !isAbsolute(relativePath)) return relativePath;
+  }
+  if (isAbsolute(String(value ?? ""))) return `private-${sha256(value).slice(0, 16)}`;
+  const normalized = raw.replace(/^\.\//, "");
+  return normalized === ".." || normalized.startsWith("../")
+    ? `private-${sha256(value).slice(0, 16)}`
+    : normalized;
+}
+
+function queryTrace(query) {
+  const payload = query?.query || query?.text || JSON.stringify(query?.qmd ?? {});
+  return {
+    kind: query?.kind || "unknown",
+    command: query?.command || "qmd query",
+    query_hash: sha256(payload),
+  };
+}
+
+function errorCategory(value) {
+  const text = String(value ?? "").toLowerCase();
+  if (text.includes("timed out") || text.includes("timeout")) return "timeout";
+  if (text.includes("no usable candidates") || text.includes("no vault-contained")) return "empty_candidates";
+  return "stage_error";
+}
+
+function traceError(stage, value) {
+  const detail = value instanceof Error ? value.message : String(value ?? "");
+  return {
+    stage,
+    category: errorCategory(detail),
+    detail_hash: sha256(detail),
+  };
+}
+
+function traceErrors(stage, values) {
+  return (values ?? []).filter(Boolean).map((value) => traceError(stage, value));
+}
+
 function rankOf(candidates, file) {
-  const index = candidates.findIndex((candidate) => pathsMatch(candidatePath(candidate), file));
+  const index = candidates.findIndex((candidate) => sameNotePath(candidatePath(candidate), file));
   return index >= 0 ? index + 1 : null;
 }
 
 function sourceFor(file, candidateGroups) {
   for (const candidates of candidateGroups) {
-    const match = candidates.find((candidate) => pathsMatch(candidatePath(candidate), file));
+    const match = candidates.find((candidate) => sameNotePath(candidatePath(candidate), file));
     if (!match) continue;
     return candidateSourceLabel(match) || "unknown";
   }
   return "missing";
 }
 
-function goldPositions(files, qmdCandidates, expandedPool, finalCandidates, topK) {
+function goldPositions(files, qmdCandidates, expandedPool, finalCandidates, topK, vaultRoot = "") {
   return files.map((file) => {
     const finalRank = rankOf(finalCandidates, file);
     return {
-      file,
+      file: safeNoteIdentity(file, vaultRoot),
       qmd_rank: rankOf(qmdCandidates, file),
       expanded_pool_rank: rankOf(expandedPool, file),
       final_rank: finalRank,
@@ -90,6 +153,89 @@ function goldPositions(files, qmdCandidates, expandedPool, finalCandidates, topK
       source: sourceFor(file, [finalCandidates, expandedPool, qmdCandidates]),
     };
   });
+}
+
+export function buildRuntimePipelineTrace({
+  profile = "product-runtime",
+  status = "success",
+  sourcePath = "",
+  vaultRoot = "",
+  generatedQuery = null,
+  queryResults = [],
+  queryErrors = [],
+  graphExpansion = null,
+  preJudgeCandidates = [],
+  relationJudge = null,
+  finalCandidates = [],
+  errors = [],
+} = {}) {
+  const tracePreJudgeCandidates = annotateCandidateRerankIds(preJudgeCandidates ?? []);
+  const rerankIdsByKey = rerankIdLookup([...tracePreJudgeCandidates, ...(finalCandidates ?? [])]);
+  const toTraceCandidate = (candidate, index) => traceCandidate(candidate, index, rerankIdsByKey, { vaultRoot });
+  const normalizedErrors = [
+    ...traceErrors("qmd_retrieval", queryErrors),
+    ...traceErrors("source_expansion", graphExpansion?.errors ?? graphExpansion?.warnings),
+    ...(errors ?? []).map((error) => traceError(error?.stage || "runtime", error?.error ?? error?.detail ?? error)),
+  ];
+  if (relationJudge && relationJudge.ok === false && relationJudge.error) {
+    normalizedErrors.push(traceError("relation_judge", relationJudge.error));
+  }
+
+  const sourceFile = safeNoteIdentity(sourcePath, vaultRoot);
+  const relationCandidates = relationJudge?.candidates ?? finalCandidates ?? [];
+  const reviewedCandidates = Array.isArray(relationJudge?.reviewedCandidates)
+    ? relationJudge.reviewedCandidates
+    : relationCandidates;
+  return {
+    schema: PIPELINE_TRACE_SCHEMA,
+    version: PIPELINE_TRACE_VERSION,
+    profile,
+    status,
+    source: {
+      file: sourceFile,
+      identity_hash: sha256(sourceFile),
+    },
+    steps: {
+      query_generation: {
+        status: generatedQuery ? "success" : "failed",
+        generated_by: generatedQuery?.query_generated_by ?? null,
+        fallback: !!generatedQuery?.query_generation_fallback,
+        prompt_version: generatedQuery?.query_plan_prompt_version ?? null,
+        query_count: generatedQuery?.queries?.length ?? 0,
+        queries: (generatedQuery?.queries ?? []).map(queryTrace),
+        errors: generatedQuery?.query_generation_error
+          ? [traceError("query_generation", generatedQuery.query_generation_error)]
+          : [],
+      },
+      qmd_runs: (queryResults ?? []).map((runItem, index) => ({
+        index: runItem.index ?? index,
+        ...queryTrace(runItem.query ?? runItem),
+        status: (runItem.errors ?? []).length > 0 ? "partial" : "success",
+        result_count: (runItem.rows ?? runItem.candidates ?? []).length,
+        results: (runItem.rows ?? runItem.candidates ?? []).map(toTraceCandidate),
+        errors: traceErrors("qmd_retrieval", runItem.errors),
+      })),
+      source_expansion: {
+        mode: graphExpansion?.mode ?? "source-links-and-backlinks",
+        candidate_count: (graphExpansion?.rows ?? graphExpansion?.candidates ?? []).length,
+        candidates: (graphExpansion?.rows ?? graphExpansion?.candidates ?? []).map(toTraceCandidate),
+        errors: traceErrors("source_expansion", graphExpansion?.errors ?? graphExpansion?.warnings),
+      },
+      pre_judge_candidates: tracePreJudgeCandidates.map(toTraceCandidate),
+      relation_judge: {
+        status: relationJudge ? (relationJudge.ok === false ? "failed" : "success") : "not_run",
+        generated_by: relationJudge?.relation_judge_generated_by ?? null,
+        fallback: !!relationJudge?.relation_judge_fallback,
+        prompt_version: relationJudge?.relation_judge_prompt_version ?? null,
+        reviewed_count: Number(relationJudge?.reviewedCount ?? reviewedCandidates.length ?? 0),
+        reviewed_candidates: reviewedCandidates.map(toTraceCandidate),
+        decisions: relationCandidates.map(toTraceCandidate),
+        errors: relationJudge?.error ? [traceError("relation_judge", relationJudge.error)] : [],
+      },
+      final_candidates: (finalCandidates ?? []).map(toTraceCandidate),
+    },
+    errors: normalizedErrors,
+  };
 }
 
 function nextTargetFor(primary) {
@@ -155,78 +301,84 @@ export function buildPipelineTrace({
   failureAttribution,
   topK,
 }) {
+  const vaultRoot = process.env.AHA_BENCH_VAULT_ROOT || "";
   const tracePreRerankCandidates = annotateCandidateRerankIds(preRerankCandidates ?? expandedPool ?? []);
   const rerankIdsByKey = rerankIdLookup([...tracePreRerankCandidates, ...(finalCandidates ?? [])]);
-  const toTraceCandidate = (candidate, index) => traceCandidate(candidate, index, rerankIdsByKey);
+  const toTraceCandidate = (candidate, index) => traceCandidate(candidate, index, rerankIdsByKey, { vaultRoot });
   const positions = {
-    must: goldPositions(caseItem.must_recall ?? [], qmdCandidates, expandedPool, finalCandidates, topK),
-    nice: goldPositions(caseItem.nice_to_have ?? [], qmdCandidates, expandedPool, finalCandidates, topK),
-    noise: goldPositions(caseItem.negative ?? [], qmdCandidates, expandedPool, finalCandidates, topK),
+    must: goldPositions(caseItem.must_recall ?? [], qmdCandidates, expandedPool, finalCandidates, topK, vaultRoot),
+    nice: goldPositions(caseItem.nice_to_have ?? [], qmdCandidates, expandedPool, finalCandidates, topK, vaultRoot),
+    noise: goldPositions(caseItem.negative ?? [], qmdCandidates, expandedPool, finalCandidates, topK, vaultRoot),
   };
   const primary = failureAttribution?.primary ?? null;
   const diagnosis = {
     primary,
+    status: failureAttribution?.status ?? "not_applicable",
     flags: failureAttribution?.flags ?? [],
     next_target: nextTargetFor(primary),
     signals: diagnosisSignals(failureAttribution, positions),
   };
 
+  const runtimeTrace = buildRuntimePipelineTrace({
+    profile: "diagnostic-enhanced",
+    status: "success",
+    sourcePath: caseItem.source_note_path ?? caseItem.input?.note ?? "",
+    vaultRoot,
+    generatedQuery: {
+      ...generatedQuery,
+      queries: querySpecs,
+    },
+    queryResults: qmdRuns.map((runItem) => ({
+      index: runItem.index,
+      query: runItem,
+      candidates: runItem.candidates,
+      errors: runItem.errors,
+    })),
+    queryErrors: qmdRuns.flatMap((runItem) => runItem.errors ?? []),
+    graphExpansion: {
+      mode: "diagnostic-top-seeds-and-source-neighbors",
+      candidates: backlinkResult.candidates,
+      errors: backlinkResult.errors,
+    },
+    preJudgeCandidates: tracePreRerankCandidates,
+    relationJudge: {
+      ok: !rerankResult.relation_judge_error,
+      candidates: finalCandidates,
+      relation_judge_generated_by: rerankResult.relation_judge_generated_by,
+      relation_judge_fallback: rerankResult.relation_judge_fallback,
+      relation_judge_prompt_version: rerankResult.relation_judge_prompt_version,
+      error: rerankResult.relation_judge_error,
+    },
+    finalCandidates,
+  });
+
   return {
-    schema: TRACE_SCHEMA,
-    version: TRACE_VERSION,
+    ...runtimeTrace,
     case: {
       id: caseItem.id,
       state: caseItem.state,
-      title: caseItem.title || caseItem.id,
-      input: caseItem.input ?? {},
+      title_hash: sha256(caseItem.title || caseItem.id),
       resolved_input_hash: sha256(caseItem._resolved_insight_input ?? ""),
-      resolved_input_preview: boundedSnippet(caseItem._resolved_insight_input ?? ""),
-      why: caseItem.why || undefined,
     },
     steps: {
-      query_generation: {
-        generated_by: generatedQuery.query_generated_by,
-        fallback: !!generatedQuery.query_generation_fallback,
-        error: generatedQuery.query_generation_error ?? null,
-        prompt_version: generatedQuery.query_plan_prompt_version,
-        query_object: generatedQuery.query_object,
-        query_objects: generatedQuery.query_objects,
-        queries: querySpecs.map((query) => ({
-          kind: query.kind,
-          command: query.command,
-          text: query.text,
-          query: query.query,
-          qmd: query.qmd,
-        })),
-      },
-      qmd_runs: qmdRuns.map((runItem) => ({
-        index: runItem.index,
-        kind: runItem.kind,
-        command: runItem.command,
-        query: runItem.query,
-        qmd: runItem.qmd,
-        results: runItem.candidates.map(toTraceCandidate),
-        errors: runItem.errors,
-      })),
+      ...runtimeTrace.steps,
       backlink_expansion: {
         seed_strategy: seedStrategy,
         seeds: backlinkSeeds.map(toTraceCandidate),
         candidates: backlinkResult.candidates.map(toTraceCandidate),
-        errors: backlinkResult.errors,
+        errors: traceErrors("source_expansion", backlinkResult.errors),
       },
       pre_rerank_candidates: tracePreRerankCandidates.map(toTraceCandidate),
       rerank: {
         generated_by: rerankResult.relation_judge_generated_by,
         fallback: !!rerankResult.relation_judge_fallback,
-        error: rerankResult.relation_judge_error ?? null,
+        errors: rerankResult.relation_judge_error ? [traceError("relation_judge", rerankResult.relation_judge_error)] : [],
         ranked_ids: rerankResult.relation_judge_ranked_ids ?? [],
         relation_judge_generated_by: rerankResult.relation_judge_generated_by,
         relation_judge_fallback: !!rerankResult.relation_judge_fallback,
-        relation_judge_error: rerankResult.relation_judge_error ?? null,
         relation_judge_ranked_ids: rerankResult.relation_judge_ranked_ids ?? [],
         relation_judge_prompt_version: rerankResult.relation_judge_prompt_version,
       },
-      final_candidates: finalCandidates.map(toTraceCandidate),
     },
     gold_positions: positions,
     diagnosis,

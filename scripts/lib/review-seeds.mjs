@@ -1,11 +1,13 @@
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
-import { benchVaultRoot, expandHome, normalizeSlash, toVaultRelativePath } from "./vault-paths.mjs";
+import { benchVaultRoot, expandHome, normalizeSlash, splitPathDecorations, toVaultRelativePath } from "./vault-paths.mjs";
 
 export const DEFAULT_REVIEW_FOLDER = "Aha/Reviews";
 export const DEFAULT_SEED_CASES_PATH = "bench/aha-memory-seed-cases.json";
 export const DEFAULT_COLLECTION = "obsidian";
+export const DEFAULT_PLUGIN_ID = "aha-memory-surface";
+export const SEED_INBOX_SUITE_VERSION = "seed-inbox-v1";
 
 const LABEL_FOR_ACTION = {
   accept: "nice_to_have",
@@ -92,15 +94,167 @@ export function buildReviewSeedCaseDocument(reviewNotes, options = {}) {
     description: "Aha Review Benchmark Seeds - generated private draft cases",
     version: 3,
     collection: options.collection || DEFAULT_COLLECTION,
+    suites: {
+      development: { version: SEED_INBOX_SUITE_VERSION },
+    },
     expected_in_top_k: 10,
     nice_expected_in_top_k: 20,
     expanded_pool_expected_in_top_k: 20,
     generated_at: generatedAt.toISOString(),
     source: "review-benchmark-seeds",
-    review_seed_policy: "Generated from Obsidian Review Note actions. Treat as draft; inspect labels before promoting to active benchmark cases.",
+    review_seed_policy: "Generated from Obsidian Review Note actions. Treat as a development draft; inspect labels and mode before activation. Never promote directly into holdout.",
     cases,
     warnings: warnings.length > 0 ? warnings : undefined,
   });
+}
+
+export function buildSessionFeedbackSeedCaseDocument(pluginData, options = {}) {
+  const sessionStore = requireSessionStore(pluginData);
+  const generatedAt = options.generatedAt instanceof Date ? options.generatedAt : new Date(options.generatedAt ?? Date.now());
+  const warnings = [];
+  const groups = new Map();
+  const seenEventIds = new Set();
+  let seen = 0;
+
+  for (const [recordKey, record] of Object.entries(sessionStore.records).sort(([left], [right]) => left.localeCompare(right))) {
+    const recordLabel = sessionRecordLabel(recordKey);
+    if (!isRecord(record) || record.schemaVersion !== 1 || !isRecord(record.source)) {
+      warnings.push(`${recordLabel}: skipped malformed Session Record.`);
+      continue;
+    }
+    if (!Array.isArray(record.feedback)) {
+      warnings.push(`${recordLabel}: skipped Session Record without a feedback array.`);
+      continue;
+    }
+
+    for (const [feedbackIndex, feedback] of record.feedback.entries()) {
+      const feedbackLabel = `${recordLabel} feedback[${feedbackIndex}]`;
+      if (!isRecord(feedback)) {
+        warnings.push(`${feedbackLabel}: skipped malformed feedback entry.`);
+        continue;
+      }
+      const action = typeof feedback.action === "string" ? feedback.action : "";
+      if (!Object.hasOwn(LABEL_FOR_ACTION, action)) {
+        warnings.push(`${feedbackLabel}: skipped unsupported action.`);
+        continue;
+      }
+      const createdAt = normalizedTimestamp(feedback.createdAt);
+      if (!createdAt) {
+        warnings.push(`${feedbackLabel}: skipped feedback with invalid createdAt.`);
+        continue;
+      }
+      const rawSourcePath = typeof feedback.sourcePath === "string" && feedback.sourcePath.trim()
+        ? feedback.sourcePath
+        : typeof record.source.path === "string"
+          ? record.source.path
+          : "";
+      const sourceResult = cleanSessionFeedbackPath(rawSourcePath, options);
+      const sourcePath = sourceResult.path;
+      if (sourceResult.vaultExternalAbsolute) {
+        warnings.push(`${feedbackLabel}: skipped feedback with vault-external absolute source path.`);
+        continue;
+      }
+      if (!sourcePath) {
+        warnings.push(`${feedbackLabel}: skipped feedback without source path.`);
+        continue;
+      }
+      const memoryResult = cleanSessionFeedbackPath(typeof feedback.memory === "string" ? feedback.memory : "", options);
+      const memoryPath = memoryResult.path;
+      if (memoryResult.vaultExternalAbsolute) {
+        warnings.push(`${feedbackLabel}: skipped ${LABEL_FOR_ACTION[action]} feedback with vault-external absolute memory path.`);
+        continue;
+      }
+      if (!memoryPath) {
+        warnings.push(`${feedbackLabel}: skipped ${LABEL_FOR_ACTION[action]} feedback without memory path.`);
+        continue;
+      }
+
+      const eventId = sessionFeedbackEventId({ action, createdAt, sourcePath, memoryPath });
+      if (seenEventIds.has(eventId)) {
+        warnings.push(`${feedbackLabel}: ignored duplicate feedback event ${eventId}.`);
+        continue;
+      }
+      seenEventIds.add(eventId);
+      seen += 1;
+
+      const sourceTitle = typeof feedback.sourceTitle === "string" && feedback.sourceTitle.trim()
+        ? feedback.sourceTitle.trim()
+        : typeof record.source.title === "string" && record.source.title.trim()
+          ? record.source.title.trim()
+          : titleFromPath(sourcePath);
+      if (!groups.has(sourcePath)) {
+        groups.set(sourcePath, makeEmptyGroup(sourcePath, sourceTitle));
+      }
+      addSeedToGroup(groups.get(sourcePath), {
+        action,
+        label: LABEL_FOR_ACTION[action],
+        createdAt,
+        eventId,
+        memoryPath,
+        seen,
+        sourcePath,
+        sourceTitle,
+      });
+    }
+  }
+
+  const cases = Array.from(groups.values())
+    .map(groupToCase)
+    .filter(Boolean)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  if (seenEventIds.size === 0) {
+    warnings.push("No supported Session Store feedback events were found; the draft seed inbox is empty.");
+  }
+
+  return compactObject({
+    _说明: {
+      用途: "Aha Session Store 反馈动作生成的本地私有 draft cases；只作为 seed inbox，不会自动进入主 benchmark。",
+      输入字段: {
+        "input.note": "Session Record 记录的 source note 路径；目前没有行号时显式 whole_note，人工提升到主 benchmark 前应补 lines。",
+        "input.whole_note": "显式表示当前 seed 暂时使用整篇 source note；不是漏写 lines 的隐式结果。",
+      },
+      评分字段: {
+        "gold.must": "should_have_found feedback",
+        "gold.nice": "accept feedback",
+        "gold.noise": "reject_as_noise feedback",
+      },
+    },
+    description: "Aha Session Feedback Seeds - generated private draft cases",
+    version: 3,
+    collection: options.collection || DEFAULT_COLLECTION,
+    suites: {
+      development: { version: SEED_INBOX_SUITE_VERSION },
+    },
+    expected_in_top_k: 10,
+    nice_expected_in_top_k: 20,
+    expanded_pool_expected_in_top_k: 20,
+    generated_at: generatedAt.toISOString(),
+    source: "session-feedback-seeds",
+    review_seed_policy: "Generated from compact Aha Session Store feedback. Treat as a development draft; inspect labels and mode before activation. Never promote directly into holdout.",
+    cases,
+    warnings: warnings.length > 0 ? warnings : undefined,
+  });
+}
+
+export function collectSessionFeedbackSeedCases(options = {}) {
+  const vaultRoot = resolve(options.vaultRoot ? expandHome(options.vaultRoot) : benchVaultRoot());
+  const pluginDataPath = options.pluginDataPath
+    ? resolve(expandHome(options.pluginDataPath))
+    : resolve(vaultRoot, ".obsidian", "plugins", options.pluginId || DEFAULT_PLUGIN_ID, "data.json");
+  let pluginData;
+  try {
+    pluginData = JSON.parse(readFileSync(pluginDataPath, "utf-8"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not read valid Aha plugin data from ${pluginDataPath}: ${message}`);
+  }
+  const document = buildSessionFeedbackSeedCaseDocument(pluginData, { ...options, vaultRoot });
+  return {
+    vaultRoot,
+    pluginDataPath,
+    feedbackEventCount: document.cases.reduce((total, caseItem) => total + caseItem.seed_provenance.seed_count, 0),
+    ...document,
+  };
 }
 
 export function collectReviewSeedCasesFromVault(options = {}) {
@@ -124,9 +278,20 @@ export function collectReviewSeedCasesFromVault(options = {}) {
 }
 
 export function writeReviewSeedCaseDocument(document, outputPath = DEFAULT_SEED_CASES_PATH) {
+  for (const caseItem of document?.cases ?? []) {
+    if (caseItem?.state !== "draft" || caseItem?.suite !== "development") {
+      throw new Error("Seed inbox only accepts draft development cases; holdout and active cases require a separate curated workflow.");
+    }
+  }
   const resolved = resolve(outputPath);
   mkdirSync(dirname(resolved), { recursive: true });
-  writeFileSync(resolved, `${JSON.stringify(document, null, 2)}\n`);
+  const temporaryPath = resolve(dirname(resolved), `.${basename(resolved)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(document, null, 2)}\n`, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+    renameSync(temporaryPath, resolved);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
   return resolved;
 }
 
@@ -212,9 +377,27 @@ function groupToCase(group) {
   if (mustRecall.length + niceToHave.length + negative.length === 0) return null;
 
   const createdAtValues = group.seeds.map((seed) => seed.createdAt).filter(Boolean).sort();
+  const feedbackEvents = group.seeds
+    .filter((seed) => seed.eventId)
+    .map((seed) => ({
+      event_id: seed.eventId,
+      action: seed.action,
+      created_at: seed.createdAt,
+    }))
+    .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.event_id.localeCompare(right.event_id));
+  const fromSessionStore = feedbackEvents.length > 0;
   return compactObject({
     id: seedCaseId(group.sourcePath, Array.from(group.reviewNotePaths), createdAtValues[0]),
     state: "draft",
+    suite: "development",
+    evaluation_mode: "discovery",
+    mode_review_required: true,
+    provenance: {
+      origin: fromSessionStore ? "session_feedback" : "legacy_review_note",
+      reason: fromSessionStore
+        ? "Uncurated Session Store feedback seed; verify labels, input range, and discovery mode before activation."
+        : "Uncurated Review Note feedback seed; verify labels, input range, and discovery mode before activation.",
+    },
     title: `Review feedback seeds for ${group.sourceTitle || group.sourcePath}`,
     input: {
       note: group.sourcePath,
@@ -226,16 +409,52 @@ function groupToCase(group) {
       nice: niceToHave,
       noise: negative,
     },
-    why: `Generated from ${seedCount} Obsidian Review Benchmark Seed${seedCount === 1 ? "" : "s"}; inspect labels and replace whole_note with line range before changing state to active.`,
+    why: fromSessionStore
+      ? `Generated from ${seedCount} compact Aha Session Store feedback event${seedCount === 1 ? "" : "s"}; inspect labels and replace whole_note with line range before promotion.`
+      : `Generated from ${seedCount} Obsidian Review Benchmark Seed${seedCount === 1 ? "" : "s"}; inspect labels and replace whole_note with line range before changing state to active.`,
     seed_label_conflicts: conflicts.length > 0 ? conflicts : undefined,
     seed_provenance: {
-      review_note_paths: Array.from(group.reviewNotePaths).sort(),
+      review_note_paths: fromSessionStore ? undefined : Array.from(group.reviewNotePaths).sort(),
+      feedback_events: fromSessionStore ? feedbackEvents : undefined,
       seed_count: seedCount,
       actions: Array.from(group.actions).sort(),
       first_seed_at: createdAtValues[0] || undefined,
       last_seed_at: createdAtValues.at(-1) || undefined,
     },
   });
+}
+
+function requireSessionStore(pluginData) {
+  if (!isRecord(pluginData)) {
+    throw new Error("Aha plugin data must be a JSON object.");
+  }
+  const sessionStore = pluginData.sessionStore;
+  if (!isRecord(sessionStore) || sessionStore.schemaVersion !== 1) {
+    throw new Error("Aha plugin data must contain Session Store schemaVersion 1.");
+  }
+  if (!isRecord(sessionStore.records)) {
+    throw new Error("Aha Session Store must contain a records object.");
+  }
+  return sessionStore;
+}
+
+function normalizedTimestamp(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? "" : timestamp.toISOString();
+}
+
+function sessionFeedbackEventId({ action, createdAt, sourcePath, memoryPath }) {
+  const hash = createHash("sha256")
+    .update(["aha-session-feedback-v1", createdAt, action, sourcePath, memoryPath].join("\0"))
+    .digest("hex")
+    .slice(0, 24);
+  return `session-feedback-${hash}`;
+}
+
+function sessionRecordLabel(recordKey) {
+  const hash = createHash("sha256").update(String(recordKey)).digest("hex").slice(0, 10);
+  return `Session Record ${hash}`;
 }
 
 function resolveLabelConflicts(labels) {
@@ -337,6 +556,30 @@ function cleanPath(value, options = {}) {
   return toVaultRelativePath(raw.replace(/^<|>$/g, "").trim(), options);
 }
 
+function cleanSessionFeedbackPath(value, options = {}) {
+  const raw = stripWrappingBackticks(String(value ?? "").trim());
+  if (!raw) return { path: "", vaultExternalAbsolute: false };
+  const parsed = parseObsidianMarkdownLink(raw);
+  const target = parsed?.path || raw.replace(/^<|>$/g, "").trim();
+  const { path: undecoratedPath } = splitPathDecorations(target);
+  const expandedPath = expandHome(undecoratedPath);
+  if (isAbsolute(expandedPath)) {
+    const configuredRoot = String(options.vaultRoot ?? "").trim();
+    if (!configuredRoot || isOutsideRoot(expandedPath, configuredRoot)) {
+      return { path: "", vaultExternalAbsolute: true };
+    }
+  }
+  return {
+    path: toVaultRelativePath(target, options),
+    vaultExternalAbsolute: false,
+  };
+}
+
+function isOutsideRoot(candidatePath, rootPath) {
+  const rel = normalizeSlash(relative(resolve(expandHome(rootPath)), resolve(expandHome(candidatePath))));
+  return rel === ".." || rel.startsWith("../") || isAbsolute(rel);
+}
+
 function canonicalPathKey(value) {
   return cleanPath(value).replace(/[?#].*$/, "").replace(/^qmd:\/\/[^/]+\//, "").toLowerCase();
 }
@@ -389,4 +632,8 @@ function compactObject(value) {
       .filter(([, entry]) => entry !== undefined)
       .map(([key, entry]) => [key, compactObject(entry)]),
   );
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

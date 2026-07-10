@@ -5,6 +5,10 @@
   "type": "module",
   "description": "Workspace verification for the Aha Obsidian memory surface.",
   "scripts": {
+    "bench:validate": "node scripts/bench/run-eval-workflow.mjs validate",
+    "bench:smoke": "node scripts/bench/run-eval-workflow.mjs smoke",
+    "bench:baseline": "node scripts/bench/run-eval-workflow.mjs baseline",
+    "bench:diagnostic": "node scripts/bench/run-eval-workflow.mjs diagnostic",
     "lint": "eslint \"scripts/**/*.mjs\" \"obsidian-plugin/*.mjs\"",
     "check:scripts": "find scripts obsidian-plugin -name '*.mjs' -not -path '*/node_modules/*' -print0 | xargs -0 -n 1 node --check",
     "test": "node --test scripts/aha/tests/*.test.mjs",
