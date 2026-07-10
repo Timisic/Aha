@@ -730,7 +730,23 @@ function assertManifestOpenAiTransport(value, verifiedBySuite) {
 }
 
 function sameOpenAiTransportStats(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  const normalizedLeft = normalizeOpenAiTransportStats(left);
+  const normalizedRight = normalizeOpenAiTransportStats(right);
+  if (
+    normalizedLeft.request_count !== normalizedRight.request_count
+    || normalizedLeft.attempt_count !== normalizedRight.attempt_count
+    || normalizedLeft.retry_count !== normalizedRight.retry_count
+  ) {
+    return false;
+  }
+  const categories = new Set([
+    ...Object.keys(normalizedLeft.retry_categories),
+    ...Object.keys(normalizedRight.retry_categories),
+  ]);
+  return [...categories].every((category) => (
+    (normalizedLeft.retry_categories[category] ?? 0)
+    === (normalizedRight.retry_categories[category] ?? 0)
+  ));
 }
 
 function assertDigest(value, label) {

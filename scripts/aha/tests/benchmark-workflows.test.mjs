@@ -290,6 +290,52 @@ test("baseline promotion requires clean current complete product-parity evidence
   await rm(root, { recursive: true, force: true });
 });
 
+test("baseline promotion compares retry category counts independent of key order", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-workflow-retry-order-"));
+  const casesPath = path.join(root, "cases.json");
+  await writeFile(casesPath, "{}\n");
+  const developmentReportPath = await writeSuiteArtifact(root, "development", ["case-1"]);
+  const holdoutReportPath = await writeSuiteArtifact(root, "holdout", ["case-2"]);
+  const tracePath = path.join(root, "development/traces/case-1.json");
+  const report = JSON.parse(await readFile(developmentReportPath, "utf8"));
+  const trace = JSON.parse(await readFile(tracePath, "utf8"));
+  const query = transportStats({ requestCount: 1, retryCount: 1, category: "transport" });
+  const relation = transportStats({ requestCount: 1, retryCount: 1, category: "timeout" });
+  const total = mergeTransportStats([query, relation]);
+
+  report.results[0].openai_transport = { query_generation: query, relation_judge: relation, total };
+  report.diagnostics.openai_transport = { query_generation: query, relation_judge: relation, total };
+  trace.steps.query_generation = { ...query };
+  trace.steps.relation_judge = { ...relation };
+  await writeFile(developmentReportPath, JSON.stringify(report));
+  await writeFile(tracePath, JSON.stringify(trace));
+
+  const hash = await sha256File(casesPath);
+  assert.deepEqual(evaluateBaselinePromotion({
+    workflow: "baseline",
+    profile: "product-parity",
+    startState: { head: "abc123", clean: true },
+    endState: { head: "abc123", clean: true },
+    casesHashStart: hash,
+    casesHashEnd: hash,
+    suiteValidationStatus: "ready",
+    identitiesReady: true,
+    suiteVersions: { development: "dev-v1", holdout: "holdout-v1" },
+    expectedCaseIds: { development: ["case-1"], holdout: ["case-2"] },
+    artifacts: {
+      development: { reportPath: developmentReportPath },
+      holdout: { reportPath: holdoutReportPath },
+    },
+    holdoutTransition: { status: "unchanged", reasons: [] },
+    repoRoot: root,
+  }), {
+    eligible: true,
+    reasons: [],
+    warnings: ["recovered_openai_retries:development:2"],
+  });
+  await rm(root, { recursive: true, force: true });
+});
+
 test("holdout transition requires a versioned, explained semantic change", () => {
   const previous = {
     version: "holdout-v1",
