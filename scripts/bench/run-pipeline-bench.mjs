@@ -44,6 +44,10 @@ import {
   isExcludedCandidatePath,
 } from "../lib/candidate-fields.mjs";
 import {
+  mergeOpenAiTransportStats,
+  normalizeOpenAiTransportStats,
+} from "../lib/openai-transport.mjs";
+import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
   resolveVaultPath as sharedResolveVaultPath,
 } from "../aha/lib/note-identity.mjs";
@@ -1303,6 +1307,12 @@ function reportDiagnostics(results) {
   const relationJudgeFallbacks = countBy(results, (result) => !!result.pipeline?.relation_judge_fallback);
   const qmdTimeouts = countErrors(results, /qmd query timed out/i);
   const obsidianTimeouts = countErrors(results, /obsidian backlinks timed out/i);
+  const queryTransport = mergeOpenAiTransportStats(
+    ...results.map((result) => result.openai_transport?.query_generation),
+  );
+  const relationTransport = mergeOpenAiTransportStats(
+    ...results.map((result) => result.openai_transport?.relation_judge),
+  );
 
   return {
     query_cache_hits: queryCacheHits,
@@ -1315,6 +1325,11 @@ function reportDiagnostics(results) {
     qmd_timeout_count: qmdTimeouts,
     obsidian_timeout_count: obsidianTimeouts,
     timeout_count: qmdTimeouts + obsidianTimeouts,
+    openai_transport: {
+      query_generation: queryTransport,
+      relation_judge: relationTransport,
+      total: mergeOpenAiTransportStats(queryTransport, relationTransport),
+    },
   };
 }
 
@@ -1469,6 +1484,50 @@ function productTraceDiagnosis(failureAttribution) {
   };
 }
 
+function terminalRuntimeFailureAttribution(trace) {
+  if (trace?.status !== "failed") return null;
+  const steps = trace.steps ?? {};
+  const topLevelErrors = Array.isArray(trace.errors) ? trace.errors : [];
+  const topErrorsFor = (...stages) => topLevelErrors.filter((error) => stages.includes(error?.stage));
+  const attributed = (primary, stage, errors) => ({
+    status: "attributed",
+    primary,
+    evidence: {
+      stage,
+      source: "terminal_runtime_trace",
+      error_categories: Array.from(new Set((errors ?? []).map((error) => error?.category).filter(Boolean))),
+    },
+    flags: [],
+  });
+
+  const relationErrors = [
+    ...(steps.relation_judge?.errors ?? []),
+    ...topErrorsFor("relation_judge"),
+  ];
+  if (steps.relation_judge?.status === "failed" || relationErrors.length > 0) {
+    return attributed("relation_failure", "relation_judge", relationErrors);
+  }
+
+  const retrievalErrors = [
+    ...(steps.qmd_runs ?? []).flatMap((runItem) => runItem.errors ?? []),
+    ...(steps.source_expansion?.errors ?? []),
+    ...topErrorsFor("qmd_retrieval", "source_expansion", "retrieval"),
+  ];
+  if (retrievalErrors.length > 0) {
+    return attributed("retrieval_failure", "retrieval", retrievalErrors);
+  }
+
+  const queryErrors = [
+    ...(steps.query_generation?.errors ?? []),
+    ...topErrorsFor("query_generation"),
+  ];
+  if (steps.query_generation?.status === "failed" || queryErrors.length > 0) {
+    return attributed("query_failure", "query_generation", queryErrors);
+  }
+
+  return null;
+}
+
 function productParityCase(caseItem, options, resolver, expectedInTopK, expectedNiceInTopK) {
   const startedAt = Date.now();
   const runtime = runProductParityRuntime(caseItem, options, resolver);
@@ -1527,6 +1586,13 @@ function productParityCase(caseItem, options, resolver, expectedInTopK, expected
   const droppedMust = droppedMustFromExpandedPool(expandedPoolScoreAt20, pipelineScore, topK);
   const queryStep = runtimeTrace.steps?.query_generation ?? {};
   const judgeStep = runtimeTrace.steps?.relation_judge ?? {};
+  const queryTransport = normalizeOpenAiTransportStats(queryStep);
+  const relationTransport = normalizeOpenAiTransportStats(judgeStep);
+  const openAiTransport = {
+    query_generation: queryTransport,
+    relation_judge: relationTransport,
+    total: mergeOpenAiTransportStats(queryTransport, relationTransport),
+  };
   const finalTraceCandidates = runtimeTrace.steps?.final_candidates ?? [];
   const trace = {
     ...runtimeTrace,
@@ -1539,11 +1605,12 @@ function productParityCase(caseItem, options, resolver, expectedInTopK, expected
       resolved_input_hash: createHash("sha256").update(caseItem._resolved_insight_input ?? "").digest("hex"),
     },
   };
-  const failureAttribution = failureAttributionFromTrace(caseItem, trace, {
-    topK,
-    judgeBudget: 20,
-    resolver,
-  });
+  const failureAttribution = terminalRuntimeFailureAttribution(runtimeTrace)
+    ?? failureAttributionFromTrace(caseItem, trace, {
+      topK,
+      judgeBudget: 20,
+      resolver,
+    });
   const traceDiagnosis = productTraceDiagnosis(failureAttribution);
   trace.diagnosis = traceDiagnosis;
   const qmdErrors = (runtimeTrace.steps?.qmd_runs ?? []).flatMap((runItem) => runItem.errors ?? []);
@@ -1560,6 +1627,7 @@ function productParityCase(caseItem, options, resolver, expectedInTopK, expected
     evaluation_mode: caseItem.evaluation_mode ?? null,
     provenance_origin: caseItem.provenance?.origin ?? null,
     profile: "product-parity",
+    openai_transport: openAiTransport,
     runtime_status: runtimeTrace.status,
     runtime_exit_code: runtime.execution.code,
     runtime_error: runtime.output.error ? {

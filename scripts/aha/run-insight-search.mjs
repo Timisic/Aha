@@ -22,14 +22,30 @@ import {
 } from "./query-plan.mjs";
 import { judgeCandidateRelations, normalizeStructuredResult } from "./relation-judge.mjs";
 import { isNoProxyHost, parseMacProxyConfig } from "../lib/https-proxy.mjs";
-import { extractOpenAiOutputText, openAiResponsesUrl } from "../lib/openai-json-agent.mjs";
+import {
+  DEFAULT_OPENAI_MAX_ATTEMPTS,
+  extractOpenAiOutputText,
+  openAiResponsesUrl,
+} from "../lib/openai-json-agent.mjs";
 import { buildRuntimePipelineTrace } from "../lib/pipeline-trace.mjs";
+import {
+  emptyOpenAiTransportStats,
+  isRetryableOpenAiTransportError,
+  mergeOpenAiTransportStats,
+  normalizeOpenAiAttemptFragment,
+  normalizeOpenAiTransportStats,
+  openAiTransportCategory,
+  wrapOpenAiCurlFallbackError,
+} from "../lib/openai-transport.mjs";
 
 const JSON_BEGIN = "AHA_RESULT_JSON_BEGIN";
 const JSON_END = "AHA_RESULT_JSON_END";
 const MIN_TARGET_CANDIDATES = 15;
 const MAX_TARGET_CANDIDATES = 20;
 const DEFAULT_MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
+const OPENAI_RETRY_BACKOFF_MS = [250, 750];
+const OPENAI_INVALID_JSON_ERROR = "OpenAI API returned invalid JSON.";
+const OPENAI_MISSING_OUTPUT_ERROR = "OpenAI API response did not include structured output.";
 const DEFAULT_QMD_QUERY_TIMEOUT_MS = 30_000;
 const DEFAULT_QMD_CANDIDATE_LIMIT = 20;
 const DEFAULT_LLM_PROVIDER = "openai";
@@ -431,48 +447,275 @@ async function runOpenAi(args, prompt, options = {}) {
   }
 
   const timeoutMs = Number(options.timeoutMs ?? args.timeoutMs);
-  const response = await postJson(openAiResponsesUrl(args.llmBaseUrl), requestBody, {
-    "Authorization": `Bearer ${apiKey}`,
-  }, timeoutMs);
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`OpenAI API exited ${response.statusCode}: ${compactLine(response.body, 500) || response.statusMessage}`);
+  let request;
+  try {
+    request = await postOpenAiJsonWithRetry(openAiResponsesUrl(args.llmBaseUrl), requestBody, {
+      "Authorization": `Bearer ${apiKey}`,
+    }, timeoutMs);
+  } catch (error) {
+    recordOpenAiTransport(args, options.transportStage, error.openAiTransport);
+    throw error;
   }
-  const payload = JSON.parse(response.body);
+  recordOpenAiTransport(args, options.transportStage, request.transport);
+  // A 2xx response with malformed or missing output is a contract failure, not a transient request.
+  let payload;
+  try {
+    payload = JSON.parse(request.response.body);
+  } catch {
+    throw new Error(OPENAI_INVALID_JSON_ERROR);
+  }
   if (process.env.AHA_LOG_USAGE === "1" && payload?.usage) {
     process.stderr.write(`AHA_USAGE ${JSON.stringify({ model: payload.model, usage: payload.usage })}\n`);
   }
+  let outputText;
+  try {
+    outputText = extractOpenAiOutputText(payload);
+  } catch {
+    throw new Error(OPENAI_MISSING_OUTPUT_ERROR);
+  }
   return {
     code: 0,
-    stdout: extractOpenAiOutputText(payload),
+    stdout: outputText,
     stderr: "",
   };
 }
 
-async function postJson(url, payload, headers, timeoutMs) {
-  const target = new URL(url);
-  const body = JSON.stringify(payload);
-  try {
-    const proxyUrl = proxyUrlFor(target);
-    if (proxyUrl && target.protocol === "https:") {
-      const socket = await openHttpsProxyTunnel(target, proxyUrl, timeoutMs);
-      return await postJsonWithRequest(httpsRequest, target, body, headers, timeoutMs, {
-        createConnection: () => socket,
-        agent: false,
-      }).catch((error) => {
-        socket.destroy();
-        throw error;
-      });
+async function postOpenAiJsonWithRetry(url, payload, headers, timeoutMs) {
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs || 120_000));
+  const transport = { ...emptyOpenAiTransportStats(), request_count: 1 };
+  let lastError = null;
+  let pendingRetryCategory = null;
+  for (let attempt = 1; attempt <= DEFAULT_OPENAI_MAX_ATTEMPTS; attempt += 1) {
+    const remaining = remainingDeadlineMs(deadline);
+    if (remaining <= 0) throw withOpenAiTransport(openAiDeadlineError(), transport);
+    if (pendingRetryCategory) {
+      transport.retry_count += 1;
+      transport.retry_categories[pendingRetryCategory] = (transport.retry_categories[pendingRetryCategory] ?? 0) + 1;
+      pendingRetryCategory = null;
     }
-    const requestFn = target.protocol === "http:" ? httpRequest : httpsRequest;
-    return await postJsonWithRequest(requestFn, target, body, headers, timeoutMs);
-  } catch (error) {
-    if (target.protocol !== "https:") throw error;
-    return postJsonWithCurl(target, body, headers, timeoutMs, error);
+    let response;
+    try {
+      response = await postJson(
+        url,
+        payload,
+        headers,
+        dividedDeadline(deadline, DEFAULT_OPENAI_MAX_ATTEMPTS - attempt + 1),
+      );
+      mergeAttemptTransport(transport, response.openAiAttempt);
+    } catch (error) {
+      mergeAttemptTransport(transport, error.openAiAttempt);
+      if (!isRetryableOpenAiTransportError(error) || attempt === DEFAULT_OPENAI_MAX_ATTEMPTS) {
+        throw withOpenAiTransport(openAiAttemptsError(error, attempt), transport);
+      }
+      lastError = error;
+      pendingRetryCategory = openAiTransportCategory(error);
+      await waitForOpenAiRetry(attempt, null, deadline, transport);
+      continue;
+    }
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return { response, transport: normalizeOpenAiTransportStats(transport) };
+    }
+    const error = new Error(
+      `OpenAI API request failed (${isInsufficientQuotaResponse(response.body)
+        ? "permanent_quota"
+        : httpFailureCategory(response.statusCode)}).`,
+    );
+    if (
+      !isTransientOpenAiHttpResponse(response)
+      || attempt === DEFAULT_OPENAI_MAX_ATTEMPTS
+    ) {
+      throw withOpenAiTransport(openAiAttemptsError(error, attempt), transport);
+    }
+    lastError = error;
+    pendingRetryCategory = retryCategoryForHttpStatus(response.statusCode);
+    await waitForOpenAiRetry(attempt, response.headers, deadline, transport);
+  }
+  throw withOpenAiTransport(
+    openAiAttemptsError(lastError ?? new Error("OpenAI API request failed."), DEFAULT_OPENAI_MAX_ATTEMPTS),
+    transport,
+  );
+}
+
+function isTransientOpenAiHttpResponse(response) {
+  if (response.statusCode === 429 && isInsufficientQuotaResponse(response.body)) return false;
+  return response.statusCode === 408
+    || response.statusCode === 429
+    || (response.statusCode >= 500 && response.statusCode <= 599);
+}
+
+function openAiAttemptsError(error, attempts) {
+  const message = String(error?.message ?? error ?? "");
+  const safeMessage = /^OpenAI API request failed \([a-z0-9_]+\)\.$/.test(message)
+    ? message
+    : `OpenAI API request failed (${openAiTransportCategory(error)}).`;
+  return new Error(attempts <= 1 ? safeMessage : `${safeMessage} (after ${attempts} attempts)`);
+}
+
+async function waitForOpenAiRetry(attempt, headers, deadline, transport) {
+  const defaultDelay = OPENAI_RETRY_BACKOFF_MS[Math.min(attempt - 1, OPENAI_RETRY_BACKOFF_MS.length - 1)];
+  const delayMs = Math.max(defaultDelay, retryAfterMs(headers));
+  if (delayMs >= remainingDeadlineMs(deadline)) {
+    throw withOpenAiTransport(openAiDeadlineError(), transport);
+  }
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
+}
+
+function recordOpenAiTransport(args, stage, value) {
+  if (!stage || !value || !args._openAiTransport) return;
+  args._openAiTransport[stage] = mergeOpenAiTransportStats(args._openAiTransport[stage], value);
+}
+
+function mergeAttemptTransport(transport, attempt) {
+  const normalized = normalizeOpenAiAttemptFragment(attempt ?? { attempt_count: 1 });
+  transport.attempt_count += normalized.attempt_count || 1;
+  transport.retry_count += normalized.retry_count;
+  for (const [category, count] of Object.entries(normalized.retry_categories)) {
+    transport.retry_categories[category] = (transport.retry_categories[category] ?? 0) + count;
   }
 }
 
-function postJsonWithRequest(requestFn, target, body, headers, timeoutMs, extraOptions = {}) {
+function withOpenAiTransport(error, transport) {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  normalized.openAiTransport = normalizeOpenAiTransportStats(transport);
+  return normalized;
+}
+
+function withAttemptTransport(response, attemptCount, retryCategory = null) {
+  return {
+    ...response,
+    openAiAttempt: {
+      request_count: 0,
+      attempt_count: attemptCount,
+      retry_count: Math.max(0, attemptCount - 1),
+      retry_categories: retryCategory && attemptCount > 1 ? { [retryCategory]: attemptCount - 1 } : {},
+    },
+  };
+}
+
+function withAttemptError(error, attemptCount, retryCategory = null) {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  normalized.openAiAttempt = withAttemptTransport({}, attemptCount, retryCategory).openAiAttempt;
+  return normalized;
+}
+
+function retryCategoryForHttpStatus(statusCode) {
+  if (statusCode === 408) return "timeout";
+  if (statusCode === 429) return "http_429";
+  return "http_5xx";
+}
+
+function httpFailureCategory(statusCode) {
+  if (statusCode === 408) return "timeout";
+  if (statusCode === 429) return "http_429";
+  if (statusCode >= 500) return "http_5xx";
+  return "http_4xx";
+}
+
+function isInsufficientQuotaResponse(body) {
+  try {
+    const payload = JSON.parse(String(body ?? "{}"));
+    return payload?.error?.code === "insufficient_quota" || payload?.error?.type === "insufficient_quota";
+  } catch {
+    return false;
+  }
+}
+
+function retryAfterMs(headers) {
+  const raw = headers?.["retry-after"];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (value === undefined || value === null || String(value).trim() === "") return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000);
+  const date = Date.parse(String(value));
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
+}
+
+function remainingDeadlineMs(deadline) {
+  return Math.max(0, deadline - Date.now());
+}
+
+function requireRemainingDeadline(deadline) {
+  const remaining = remainingDeadlineMs(deadline);
+  if (remaining <= 0) throw openAiDeadlineError();
+  return remaining;
+}
+
+function dividedDeadline(deadline, remainingSlots) {
+  const remaining = requireRemainingDeadline(deadline);
+  const budget = Math.max(1, Math.floor(remaining / Math.max(1, remainingSlots)));
+  return Math.min(deadline, Date.now() + budget);
+}
+
+function openAiDeadlineError() {
+  return Object.assign(new Error("OpenAI API timed out within the shared request deadline."), { code: "ETIMEDOUT" });
+}
+
+async function postJson(url, payload, headers, deadline) {
+  const target = new URL(url);
+  const body = JSON.stringify(payload);
+  try {
+    const nodeDeadline = deadline;
+    const proxyUrl = proxyUrlFor(target, dividedDeadline(nodeDeadline, 2));
+    if (proxyUrl && target.protocol === "https:") {
+      const socket = await openHttpsProxyTunnel(
+        target,
+        proxyUrl,
+        requireRemainingDeadline(nodeDeadline),
+      );
+      return withAttemptTransport(await postJsonWithRequest(
+        httpsRequest,
+        target,
+        body,
+        headers,
+        nodeDeadline,
+        {
+          createConnection: () => socket,
+          agent: false,
+        },
+      ).catch((error) => {
+        socket.destroy();
+        throw error;
+      }), 1);
+    }
+    const requestFn = target.protocol === "http:" ? httpRequest : httpsRequest;
+    return withAttemptTransport(
+      await postJsonWithRequest(requestFn, target, body, headers, nodeDeadline),
+      1,
+    );
+  } catch (error) {
+    if (target.protocol !== "https:") throw withAttemptError(error, 1);
+    const category = openAiTransportCategory(error);
+    if (category === "timeout" || remainingDeadlineMs(deadline) <= 0) {
+      throw withAttemptError(error, 1);
+    }
+    try {
+      const response = await postJsonWithCurl(
+        target,
+        body,
+        headers,
+        deadline,
+        error,
+      );
+      return withAttemptTransport(response, 2, category);
+    } catch (curlError) {
+      throw withAttemptError(wrapOpenAiCurlFallbackError(error, curlError), 2, category);
+    }
+  }
+}
+
+function postJsonWithRequest(requestFn, target, body, headers, deadline, extraOptions = {}) {
+  const timeoutMs = requireRemainingDeadline(deadline);
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let deadlineTimer;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadlineTimer);
+      if (error) reject(error);
+      else resolve(value);
+    };
     const request = requestFn({
       protocol: target.protocol,
       hostname: target.hostname,
@@ -494,27 +737,36 @@ function postJsonWithRequest(requestFn, target, body, headers, timeoutMs, extraO
         responseBody += chunk;
       });
       response.on("end", () => {
-        resolve({
+        finish(null, {
           statusCode: response.statusCode ?? 0,
           statusMessage: response.statusMessage ?? "",
           body: responseBody,
+          headers: response.headers ?? {},
         });
       });
+      response.on("aborted", () => finish(Object.assign(
+        new Error("OpenAI response stream aborted."),
+        { code: "ECONNRESET" },
+      )));
+      response.on("error", (error) => finish(error));
     });
+    deadlineTimer = setTimeout(() => {
+      request.destroy(openAiDeadlineError());
+    }, timeoutMs);
     request.on("timeout", () => {
-      request.destroy(new Error(`OpenAI API timed out after ${timeoutMs}ms.`));
+      request.destroy(openAiDeadlineError());
     });
-    request.on("error", reject);
+    request.on("error", (error) => finish(error));
     request.end(body);
   });
 }
 
-function proxyUrlFor(target) {
+function proxyUrlFor(target, deadline) {
   if (isNoProxyHost(target.hostname, process.env.NO_PROXY || process.env.no_proxy || "")) return null;
   const rawProxy = target.protocol === "https:"
     ? process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy
     : process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy;
-  const raw = rawProxy || systemProxyUrlFor(target);
+  const raw = rawProxy || systemProxyUrlFor(target, deadline);
   if (!raw) return null;
   try {
     const proxy = new URL(raw);
@@ -524,11 +776,11 @@ function proxyUrlFor(target) {
   }
 }
 
-function systemProxyUrlFor(target) {
+function systemProxyUrlFor(target, deadline) {
   if (process.platform !== "darwin") return "";
   const result = spawnSync("scutil", ["--proxy"], {
     encoding: "utf8",
-    timeout: 2_000,
+    timeout: Math.min(2_000, requireRemainingDeadline(deadline)),
     stdio: ["ignore", "pipe", "ignore"],
   });
   if (result.status !== 0 || !result.stdout) return "";
@@ -591,9 +843,10 @@ function openHttpsProxyTunnel(target, proxy, timeoutMs) {
   });
 }
 
-async function postJsonWithCurl(target, body, headers, timeoutMs, nodeError) {
+async function postJsonWithCurl(target, body, headers, deadline, nodeError) {
   const tempDir = await mkdtemp(path.join(tmpdir(), "aha-openai-curl-"));
   const bodyPath = path.join(tempDir, "body.json");
+  const headersPath = path.join(tempDir, "headers.txt");
   const statusMarker = "\nAHA_CURL_HTTP_STATUS:";
   try {
     await writeFile(bodyPath, body, { mode: 0o600 });
@@ -605,19 +858,22 @@ async function postJsonWithCurl(target, body, headers, timeoutMs, nodeError) {
       'header = "Connection: close"',
       "",
     ].join("\n");
+    const timeoutMs = requireRemainingDeadline(deadline);
     const result = await runCurl([
       "-q",
       "-sS",
       "--no-progress-meter",
       "--max-time",
-      String(Math.max(1, Math.ceil(timeoutMs / 1000))),
+      (Math.max(1, timeoutMs) / 1_000).toFixed(3),
+      "--dump-header",
+      headersPath,
       "--config",
       "-",
       "--data-binary",
       `@${bodyPath}`,
       "--write-out",
       `${statusMarker}%{http_code}`,
-    ], config, timeoutMs + 5_000);
+    ], config, timeoutMs);
     const statusIndex = result.stdout.lastIndexOf(statusMarker);
     if (result.code !== 0 || statusIndex === -1) {
       const detail = firstLine(result.stderr || result.stdout) || `curl exited ${result.code ?? "unknown"}`;
@@ -627,10 +883,23 @@ async function postJsonWithCurl(target, body, headers, timeoutMs, nodeError) {
       statusCode: Number(result.stdout.slice(statusIndex + statusMarker.length).trim()) || 0,
       statusMessage: "",
       body: result.stdout.slice(0, statusIndex),
+      headers: parseCurlHeaders(await readFile(headersPath, "utf8").catch(() => "")),
     };
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+function parseCurlHeaders(value) {
+  const blocks = String(value ?? "").trim().split(/\r?\n\r?\n/).filter(Boolean);
+  const lines = (blocks.at(-1) ?? "").split(/\r?\n/).slice(1);
+  const headers = {};
+  for (const line of lines) {
+    const separator = line.indexOf(":");
+    if (separator <= 0) continue;
+    headers[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
+  }
+  return headers;
 }
 
 function runCurl(args, stdin, timeoutMs) {
@@ -756,6 +1025,10 @@ async function qmdRecall(args, sourceText) {
 }
 
 async function pipelineRecall(args, sourceText) {
+  args._openAiTransport = {
+    query_generation: emptyOpenAiTransportStats(),
+    relation_judge: emptyOpenAiTransportStats(),
+  };
   const traceState = {
     generatedQuery: null,
     queryResults: [],
@@ -783,6 +1056,7 @@ async function pipelineRecall(args, sourceText) {
         preJudgeCandidates: traceState.preJudgeCandidates,
         relationJudge: traceState.relationJudge,
         finalCandidates: traceState.finalCandidates,
+        openAiTransport: args._openAiTransport,
         errors,
       }),
     };
@@ -1013,6 +1287,7 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
         isolateCwd: true,
         ignoreRules: true,
         skipGitRepoCheck: true,
+        transportStage: "relation_judge",
       });
       if (llmOutput.code !== 0) {
         throw new Error(firstLine(llmOutput.stderr || llmOutput.stdout) || `${llmDisplayName(args)} exited ${llmOutput.code}`);
@@ -1055,6 +1330,7 @@ function queryPlanAdapter(args) {
       isolateCwd: true,
       ignoreRules: true,
       skipGitRepoCheck: true,
+      transportStage: "query_generation",
     });
     if (llmOutput.code !== 0) {
       throw new Error(firstLine(llmOutput.stderr || llmOutput.stdout) || `${llmDisplayName(args)} exited ${llmOutput.code}`);

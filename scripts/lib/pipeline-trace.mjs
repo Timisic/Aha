@@ -8,6 +8,7 @@ import {
   candidateSourceLabel,
   candidateSourceList,
 } from "./candidate-fields.mjs";
+import { normalizeOpenAiTransportStats } from "./openai-transport.mjs";
 
 export const PIPELINE_TRACE_SCHEMA = "PipelineTrace";
 export const PIPELINE_TRACE_VERSION = 2;
@@ -167,6 +168,7 @@ export function buildRuntimePipelineTrace({
   preJudgeCandidates = [],
   relationJudge = null,
   finalCandidates = [],
+  openAiTransport = {},
   errors = [],
 } = {}) {
   const tracePreJudgeCandidates = annotateCandidateRerankIds(preJudgeCandidates ?? []);
@@ -206,6 +208,7 @@ export function buildRuntimePipelineTrace({
         errors: generatedQuery?.query_generation_error
           ? [traceError("query_generation", generatedQuery.query_generation_error)]
           : [],
+        ...normalizeOpenAiTransportStats(openAiTransport.query_generation),
       },
       qmd_runs: (queryResults ?? []).map((runItem, index) => ({
         index: runItem.index ?? index,
@@ -231,6 +234,7 @@ export function buildRuntimePipelineTrace({
         reviewed_candidates: reviewedCandidates.map(toTraceCandidate),
         decisions: relationCandidates.map(toTraceCandidate),
         errors: relationJudge?.error ? [traceError("relation_judge", relationJudge.error)] : [],
+        ...normalizeOpenAiTransportStats(openAiTransport.relation_judge),
       },
       final_candidates: (finalCandidates ?? []).map(toTraceCandidate),
     },

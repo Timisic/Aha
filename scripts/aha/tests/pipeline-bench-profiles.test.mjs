@@ -20,6 +20,8 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
   const qmdSdkModule = path.join(root, "private-qmd-sdk.mjs");
   const productReportPath = path.join(root, "bench/reports/latest/product-parity.json");
   const failedProductReportPath = path.join(root, "bench/reports/latest/product-parity-failed.json");
+  const retrievalFailureReportPath = path.join(root, "bench/reports/latest/product-parity-retrieval-failed.json");
+  const queryTimeoutReportPath = path.join(root, "bench/reports/latest/product-parity-query-timeout.json");
   const diagnosticReportPath = path.join(root, "bench/reports/latest/diagnostic-enhanced.json");
 
   await mkdir(path.join(vault, "Memory"), { recursive: true });
@@ -174,6 +176,12 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
     assert.deepEqual(traceFiles, resultFiles);
     assert.equal(productTrace.steps.source_expansion.mode, "source-links-and-backlinks");
     assert.equal(productTrace.steps.relation_judge.status, "success");
+    assert.deepEqual(productResult.openai_transport, {
+      query_generation: { request_count: 0, attempt_count: 0, retry_count: 0, retry_categories: {} },
+      relation_judge: { request_count: 0, attempt_count: 0, retry_count: 0, retry_categories: {} },
+      total: { request_count: 0, attempt_count: 0, retry_count: 0, retry_categories: {} },
+    });
+    assert.deepEqual(productReport.diagnostics.openai_transport, productResult.openai_transport);
     assert.deepEqual(
       productTrace.steps.relation_judge.reviewed_candidates.map((candidate) => candidate.file),
       ["Memory/Second.md", "Memory/First.md"],
@@ -208,6 +216,72 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
     });
     assert.match(failedProductResult.runtime_error.details_hash, /^[a-f0-9]{64}$/);
     assert.equal(failedProductReport.case_counts.not_scored, 1);
+    assert.equal(failedProductResult.failure_attribution.primary, "relation_failure");
+    assert.equal(failedProductResult.trace_diagnosis.primary, "relation_failure");
+    const failedProductTrace = JSON.parse(await readFile(
+      path.resolve(path.dirname(failedProductReportPath), failedProductResult.trace_json),
+      "utf8",
+    ));
+    assert.equal(failedProductTrace.diagnosis.primary, "relation_failure");
+
+    const retrievalFailureRun = spawnSync(process.execPath, [
+      ...commonArgs,
+      "--profile", "product-parity",
+      "--report", retrievalFailureReportPath,
+      "--runtime-qmd-runner", "sdk",
+      "--runtime-qmd-sdk-module", qmdSdkModule,
+      "--runtime-codex-command", codex,
+      "--runtime-codex-model", "codex-product-test",
+    ], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...env, AHA_TEST_EMPTY_QMD: "1" },
+      timeout: 30_000,
+    });
+
+    assert.equal(retrievalFailureRun.status, 0, retrievalFailureRun.stderr);
+    const retrievalFailureReport = JSON.parse(await readFile(retrievalFailureReportPath, "utf8"));
+    const retrievalFailureResult = retrievalFailureReport.results[0];
+    assert.equal(retrievalFailureResult.runtime_status, "failed");
+    assert.equal(retrievalFailureResult.failure_attribution.primary, "retrieval_failure");
+    assert.equal(retrievalFailureResult.trace_diagnosis.primary, "retrieval_failure");
+    const retrievalFailureTrace = JSON.parse(await readFile(
+      path.resolve(path.dirname(retrievalFailureReportPath), retrievalFailureResult.trace_json),
+      "utf8",
+    ));
+    assert.equal(retrievalFailureTrace.diagnosis.primary, "retrieval_failure");
+    assert.ok(retrievalFailureTrace.errors.some((error) => error.stage === "qmd_retrieval"));
+
+    const queryTimeoutRun = spawnSync(process.execPath, [
+      ...commonArgs,
+      "--profile", "product-parity",
+      "--report", queryTimeoutReportPath,
+      "--runtime-qmd-runner", "sdk",
+      "--runtime-qmd-sdk-module", qmdSdkModule,
+      "--runtime-codex-command", codex,
+      "--runtime-codex-model", "codex-product-test",
+    ], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...env, AHA_TEST_QUERY_TIMEOUT: "1" },
+      timeout: 30_000,
+    });
+
+    assert.equal(queryTimeoutRun.status, 0, queryTimeoutRun.stderr);
+    const queryTimeoutReport = JSON.parse(await readFile(queryTimeoutReportPath, "utf8"));
+    const queryTimeoutResult = queryTimeoutReport.results[0];
+    assert.equal(queryTimeoutResult.runtime_status, "failed");
+    assert.equal(queryTimeoutResult.failure_attribution.primary, "query_failure");
+    assert.equal(queryTimeoutResult.trace_diagnosis.primary, "query_failure");
+    const queryTimeoutTrace = JSON.parse(await readFile(
+      path.resolve(path.dirname(queryTimeoutReportPath), queryTimeoutResult.trace_json),
+      "utf8",
+    ));
+    assert.equal(
+      queryTimeoutTrace.errors.find((error) => error.stage === "query_generation")?.category,
+      "timeout",
+    );
+    assert.equal(queryTimeoutTrace.diagnosis.primary, "query_failure");
 
     const diagnosticRun = spawnSync(process.execPath, [
       ...commonArgs,
@@ -255,6 +329,7 @@ async function writeRuntimeHelpers({ codex, qmd, obsidian }) {
     "const outputIndex = args.indexOf('--output-last-message');",
     "const outputFile = outputIndex === -1 ? '' : args[outputIndex + 1];",
     "if (outputFile.endsWith('query-plan.json')) {",
+    "  if (process.env.AHA_TEST_QUERY_TIMEOUT === '1') { console.error('planned query timed out'); process.exit(2); }",
     "  writeFileSync(outputFile, JSON.stringify({ queries: [",
     "    { kind: 'raw', command: 'qmd query', qmd: { intent: 'raw', lex: ['source'], vec: 'source insight', hyde: 'old source insight' } },",
     "    { kind: 'abstracted_judgment', command: 'qmd query', qmd: { intent: 'abstracted', lex: ['candidate'], vec: 'candidate evidence', hyde: 'old candidate evidence' } },",
@@ -306,8 +381,8 @@ async function writeQmdSdkModule(file) {
     "];",
     "export async function createStore() {",
     "  return {",
-    "    async searchLex() { return rows; },",
-    "    async search() { return rows; },",
+    "    async searchLex() { return process.env.AHA_TEST_EMPTY_QMD === '1' ? [] : rows; },",
+    "    async search() { return process.env.AHA_TEST_EMPTY_QMD === '1' ? [] : rows; },",
     "    close() {},",
     "  };",
     "}",
