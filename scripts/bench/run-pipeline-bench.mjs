@@ -1415,14 +1415,17 @@ function runProductParityRuntime(caseItem, options, resolver) {
     env: process.env,
     timeoutMs: options.runtimeTimeoutMs + 5_000,
   });
-  if (execution.error || execution.timedOut || execution.code !== 0) {
-    throw new Error(`${caseItem.id}: shipped runtime failed to execute: ${execution.error || (execution.timedOut ? "timed out" : `exit ${execution.code}`)}`);
+  if (execution.error || execution.timedOut) {
+    throw new Error(`${caseItem.id}: shipped runtime failed to execute: ${execution.error || "timed out"}`);
   }
   let output;
   try {
     output = JSON.parse(execution.stdout);
   } catch (error) {
     throw new Error(`${caseItem.id}: shipped runtime returned invalid JSON: ${error.message}; ${execution.stderr.trim()}`);
+  }
+  if (execution.code !== 0 && output.ok !== false) {
+    throw new Error(`${caseItem.id}: shipped runtime exited ${execution.code} without a structured failure result.`);
   }
   if (!output.trace || output.trace.schema !== "PipelineTrace") {
     throw new Error(`${caseItem.id}: shipped runtime did not return the required PipelineTrace.`);
@@ -1559,6 +1562,11 @@ function productParityCase(caseItem, options, resolver, expectedInTopK, expected
     profile: "product-parity",
     runtime_status: runtimeTrace.status,
     runtime_exit_code: runtime.execution.code,
+    runtime_error: runtime.output.error ? {
+      tool: runtime.output.error.tool ?? "runtime",
+      message: runtime.output.error.message ?? "Aha runtime failed.",
+      details_hash: sha256(runtime.output.error.details ?? runtime.output.error.message ?? "runtime failure"),
+    } : null,
     runtime_input: {
       source_note: sourceNotePath,
       benchmark_line_slice_applied: false,
@@ -1651,7 +1659,9 @@ function productParityCase(caseItem, options, resolver, expectedInTopK, expected
     latency_ms: Date.now() - startedAt,
     trace_diagnosis: traceDiagnosis,
   };
-  caseResult.mode_evaluation = modeEvaluationForCase(caseItem, caseResult.must_recall_sources);
+  caseResult.mode_evaluation = runtimeTrace.status === "success"
+    ? modeEvaluationForCase(caseItem, caseResult.must_recall_sources)
+    : { status: "not_scored", reason: "runtime_failure" };
   caseResult.evaluation_status = caseResult.mode_evaluation.status;
   return { caseResult, trace };
 }

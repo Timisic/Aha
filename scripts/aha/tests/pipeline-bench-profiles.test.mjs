@@ -19,6 +19,7 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
   const obsidian = path.join(bin, "obsidian");
   const qmdSdkModule = path.join(root, "private-qmd-sdk.mjs");
   const productReportPath = path.join(root, "bench/reports/latest/product-parity.json");
+  const failedProductReportPath = path.join(root, "bench/reports/latest/product-parity-failed.json");
   const diagnosticReportPath = path.join(root, "bench/reports/latest/diagnostic-enhanced.json");
 
   await mkdir(path.join(vault, "Memory"), { recursive: true });
@@ -179,6 +180,35 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
     );
     assert.ok(!Object.hasOwn(productTrace.steps, "backlink_expansion"));
 
+    const failedProductRun = spawnSync(process.execPath, [
+      ...commonArgs,
+      "--profile", "product-parity",
+      "--report", failedProductReportPath,
+      "--runtime-qmd-runner", "sdk",
+      "--runtime-qmd-sdk-module", qmdSdkModule,
+      "--runtime-codex-command", codex,
+      "--runtime-codex-model", "codex-product-test",
+    ], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...env, AHA_TEST_RELATION_FAILURE: "1" },
+      timeout: 30_000,
+    });
+
+    assert.equal(failedProductRun.status, 0, failedProductRun.stderr);
+    const failedProductReport = JSON.parse(await readFile(failedProductReportPath, "utf8"));
+    const failedProductResult = failedProductReport.results[0];
+    assert.equal(failedProductResult.runtime_status, "failed");
+    assert.equal(failedProductResult.evaluation_status, "not_scored");
+    assert.equal(failedProductResult.mode_evaluation.reason, "runtime_failure");
+    assert.deepEqual(failedProductResult.runtime_error, {
+      tool: "codex",
+      message: "Aha Relation Judge failed.",
+      details_hash: failedProductResult.runtime_error.details_hash,
+    });
+    assert.match(failedProductResult.runtime_error.details_hash, /^[a-f0-9]{64}$/);
+    assert.equal(failedProductReport.case_counts.not_scored, 1);
+
     const diagnosticRun = spawnSync(process.execPath, [
       ...commonArgs,
       "--profile", "diagnostic-enhanced",
@@ -233,6 +263,7 @@ async function writeRuntimeHelpers({ codex, qmd, obsidian }) {
     "  process.exit(0);",
     "}",
     "if (outputFile.endsWith('relation-judge.json')) {",
+    "  if (process.env.AHA_TEST_RELATION_FAILURE === '1') { console.error('planned relation failure'); process.exit(2); }",
     "  writeFileSync(outputFile, JSON.stringify({ ok: true, sourcePath: 'Source.md', summary: 'judge ok', warnings: [], candidates: [",
     "    { notePath: 'Memory/First.md', noteTitle: 'First', relation: 'supports', hit: '\"First candidate evidence.\"', why: 'The judge returns First before Second.', quotes: ['First candidate evidence.'], selected: true },",
     "    { notePath: 'Memory/Second.md', noteTitle: 'Second', relation: 'supports', hit: '\"Second candidate evidence.\"', why: 'The judge returns Second after First.', quotes: ['Second candidate evidence.'], selected: true }",
