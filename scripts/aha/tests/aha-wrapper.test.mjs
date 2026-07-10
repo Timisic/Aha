@@ -67,6 +67,38 @@ test("wrapper emits fixture JSON without running Codex", async () => {
   }
 });
 
+test("wrapper flushes a large trace-sized JSON result before exiting", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-large-output-"));
+  const source = path.join(temp, "source.md");
+  const fixturePath = path.join(temp, "large-fixture.json");
+  const fixture = JSON.parse(await readFixture("stub-result.json"));
+  fixture.candidates = Array.from({ length: 20 }, (_, index) => ({
+    ...fixture.candidates[index % fixture.candidates.length],
+    notePath: `Memory/Large Candidate ${index + 1}.md`,
+    noteTitle: `Large Candidate ${index + 1}`,
+    hit: `evidence-${index}-${"证据".repeat(2_000)}`,
+    why: `reason-${index}-${"理由".repeat(2_000)}`,
+  }));
+  await writeFile(source, "# Source\n\nA current insight.");
+  await writeFile(fixturePath, JSON.stringify(fixture));
+  try {
+    const result = spawnSync(process.execPath, [
+      wrapper,
+      "--workspace", repoRoot,
+      "--source-path", "source.md",
+      "--source-absolute-path", source,
+      "--fixture", fixturePath,
+    ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.candidates.length, 20);
+    assert.ok(result.stdout.length > 100_000);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("readiness reports missing tools clearly", async () => {
   const result = spawnSync(process.execPath, [
     wrapper,

@@ -433,6 +433,7 @@ function run(command, args, options = {}) {
     encoding: "utf-8",
     timeout: options.timeoutMs,
     env: options.env ?? process.env,
+    maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
   });
   return {
     stdout: result.stdout ?? "",
@@ -1414,8 +1415,8 @@ function runProductParityRuntime(caseItem, options, resolver) {
     env: process.env,
     timeoutMs: options.runtimeTimeoutMs + 5_000,
   });
-  if (execution.error || execution.timedOut) {
-    throw new Error(`${caseItem.id}: shipped runtime failed to execute: ${execution.error || "timed out"}`);
+  if (execution.error || execution.timedOut || execution.code !== 0) {
+    throw new Error(`${caseItem.id}: shipped runtime failed to execute: ${execution.error || (execution.timedOut ? "timed out" : `exit ${execution.code}`)}`);
   }
   let output;
   try {

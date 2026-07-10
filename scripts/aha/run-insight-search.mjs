@@ -1902,8 +1902,8 @@ function clampPositiveInteger(value, fallback) {
 }
 
 function emitJson(value, exitCode = 0) {
+  process.exitCode = exitCode;
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-  process.exit(exitCode);
 }
 
 function failedAhaResult({
