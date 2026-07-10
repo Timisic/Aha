@@ -43,6 +43,45 @@ test("stability uses canonical top-k overlap only for compatible reports", () =>
   assert.equal(incompatible.summary.reason, "incompatible_profile");
 });
 
+test("stability honors each case top-k and refuses a mismatched comparison budget", () => {
+  const current = pipelineReport(["Memory/A.md", "Memory/B.md", "Memory/C.md"]);
+  const baseline = pipelineReport(["Memory/A.md", "Memory/B.md", "Memory/C.md"]);
+  baseline.results[0].pipeline.score.top_k = 5;
+
+  const comparison = comparePipelineStability(current, baseline);
+
+  assert.deepEqual(comparison.by_case["case-1"], {
+    status: "not_measured",
+    reason: "incompatible_top_k",
+    metric: "top_k_overlap",
+    top_k: 10,
+    comparison_top_k: 5,
+    score: null,
+  });
+  assert.equal(comparison.summary.status, "not_measured");
+  assert.equal(comparison.summary.reason, "no_comparable_cases");
+});
+
+test("stability reports mixed per-case top-k budgets without pretending they share one K", () => {
+  const current = pipelineReport(["Memory/A.md", "Memory/B.md"]);
+  const baseline = pipelineReport(["Memory/A.md", "Memory/C.md"]);
+  current.results.push(pipelineResult("case-2", 5, ["Memory/D.md", "Memory/E.md"]));
+  baseline.results.push(pipelineResult("case-2", 5, ["Memory/D.md", "Memory/F.md"]));
+
+  const comparison = comparePipelineStability(current, baseline);
+
+  assert.equal(comparison.by_case["case-1"].top_k, 10);
+  assert.equal(comparison.by_case["case-2"].top_k, 5);
+  assert.deepEqual(comparison.summary, {
+    status: "measured",
+    metric: "top_k_overlap",
+    top_k: null,
+    top_ks: [5, 10],
+    measured_cases: 2,
+    score: 0.5,
+  });
+});
+
 test("trace attribution treats a deep unreviewed hit as retrieval evidence, not rerank", () => {
   const trace = pipelineTrace({
     preJudge: rankedCandidates("Other", 44).concat(candidate("Memory/Must.md", 45)),
@@ -134,13 +173,17 @@ function pipelineReport(files) {
       effective_config_id: "config-v1",
     },
     summary: { eval_v2: { top_k: 10 } },
-    results: [{
-      id: "case-1",
-      pipeline: {
-        score: { top_k: 10 },
-        top_candidates: files.map((file) => ({ file })),
-      },
-    }],
+    results: [pipelineResult("case-1", 10, files)],
+  };
+}
+
+function pipelineResult(id, topK, files) {
+  return {
+    id,
+    pipeline: {
+      score: { top_k: topK },
+      top_candidates: files.map((file) => ({ file })),
+    },
   };
 }
 

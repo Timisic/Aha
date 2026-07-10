@@ -9,6 +9,7 @@ import {
   buildWorkflowProvenance,
   evaluateBaselinePromotion,
   evaluateHoldoutSnapshotTransition,
+  loadPluginRuntimeConfiguration,
   promoteLatestPointer,
   resolveLatestPointer,
   sha256File,
@@ -75,6 +76,59 @@ test("workflow provenance records reproducibility facts without private strings"
   assert.ok(!encoded.includes("Private Note"));
   assert.ok(!encoded.includes("do-not-record"));
   assert.ok(!encoded.includes("personal note body"));
+});
+
+test("product-parity configuration is loaded from plugin settings without exposing its API key", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-plugin-runtime-settings-"));
+  const pluginDataPath = path.join(root, "data.json");
+  const secret = "test-secret-value";
+  await writeFile(pluginDataPath, JSON.stringify({
+    settings: {
+      ahaWorkspace: repoRoot,
+      llmProvider: "openai",
+      llmBaseUrl: "https://example.invalid/v1",
+      llmModel: "model-current",
+      llmApiKey: secret,
+      llmApiKeyEnv: "AHA_TEST_PLUGIN_KEY",
+      codexCommand: "/opt/tools/codex-current",
+      codexModel: "codex-current",
+      codexReasoningEffort: "high",
+      codexSandbox: "read-only",
+      qmdRunner: "sdk",
+      qmdCommand: "/opt/tools/qmd-current",
+      qmdIndex: "obsidian-current",
+      qmdSdkModule: "/opt/tools/qmd-sdk.mjs",
+      qmdRerank: true,
+      obsidianCommand: "/opt/tools/obsidian-current",
+      wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
+      targetCandidates: 17,
+      useFixtureResult: false,
+    },
+    sessionStore: { private: "must-not-affect-runtime-settings" },
+  }));
+
+  const loaded = loadPluginRuntimeConfiguration(pluginDataPath, { repoRoot });
+  const args = loaded.runnerArgs.join(" ");
+  assert.match(args, /--runtime-codex-model codex-current/);
+  assert.match(args, /--runtime-codex-reasoning-effort high/);
+  assert.match(args, /--runtime-qmd-runner sdk/);
+  assert.match(args, /--qmd \/opt\/tools\/qmd-current/);
+  assert.match(args, /--obsidian \/opt\/tools\/obsidian-current/);
+  assert.match(args, /--index obsidian-current/);
+  assert.match(args, /--limit 17/);
+  assert.equal(loaded.environment.AHA_TEST_PLUGIN_KEY, secret);
+  assert.match(loaded.settingsId, /^[a-f0-9]{64}$/);
+  assert.ok(!args.includes(secret));
+  assert.ok(!JSON.stringify(loaded.provenance).includes(secret));
+
+  const fixture = JSON.parse(await readFile(pluginDataPath, "utf8"));
+  fixture.settings.useFixtureResult = true;
+  await writeFile(pluginDataPath, JSON.stringify(fixture));
+  assert.throws(
+    () => loadPluginRuntimeConfiguration(pluginDataPath, { repoRoot }),
+    /fixture result.*product-parity/i,
+  );
+  await rm(root, { recursive: true, force: true });
 });
 
 test("baseline promotion requires clean current complete product-parity evidence", async () => {
@@ -294,6 +348,52 @@ test("validate workflow checks a sanitized synthetic suite without a private vau
   assert.notEqual(repeated.status, 0);
   assert.match(repeated.stderr, /run directory already exists/i);
   assert.equal(await readFile(path.join(reportsRoot, "runs/validate-test/manifest.json"), "utf8"), manifestBefore);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("validate workflow rejects invalid off cases without making them runnable", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-workflow-off-validation-"));
+  const casesPath = path.join(root, "cases.json");
+  const reportsRoot = path.join(root, "reports");
+  await writeFile(casesPath, JSON.stringify({
+    privacy: "sanitized-synthetic",
+    version: 3,
+    collection: "obsidian",
+    suites: { development: { version: "dev-synthetic-v1" } },
+    cases: [
+      {
+        id: "active-valid",
+        state: "active",
+        suite: "development",
+        evaluation_mode: "discovery",
+        provenance: { origin: "synthetic", reason: "Runnable synthetic case." },
+        input: { thought: "Synthetic active thought." },
+        gold: { must: ["Sanitized/Must.md"], nice: [], noise: [] },
+      },
+      {
+        id: "off-invalid",
+        state: "off",
+        suite: "development",
+        evaluation_mode: "unsupported-mode",
+        provenance: { origin: "synthetic", reason: "Disabled but still schema-validated." },
+        input: { thought: "Synthetic disabled thought." },
+        gold: { must: ["Sanitized/Off.md"], nice: [], noise: [] },
+      },
+    ],
+  }));
+
+  const result = spawnSync(process.execPath, [
+    "scripts/bench/run-eval-workflow.mjs",
+    "validate",
+    "--cases", casesPath,
+    "--reports-root", reportsRoot,
+    "--run-id", "validate-off-test",
+  ], { cwd: repoRoot, encoding: "utf8" });
+
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(result.stderr, /invalid_evaluation_mode/i);
+  const manifest = JSON.parse(await readFile(path.join(reportsRoot, "runs/validate-off-test/manifest.json"), "utf8"));
+  assert.equal(manifest.status, "failed");
   await rm(root, { recursive: true, force: true });
 });
 

@@ -79,6 +79,10 @@ test("chunked relation judging fans out concurrently and reassembles all candida
     assert.equal(reranked.relation_judge_generated_by, "agent");
     assert.equal(reranked.relation_judge_fallback, false);
     assert.equal(reranked.candidates.length, 9);
+    assert.deepEqual(
+      reranked.relation_judge_reviewed_candidates.map((candidate) => candidate.notePath),
+      candidates.map((candidate) => candidate.file),
+    );
     // Every candidate must come back judged (echo server labels all supports).
     assert.ok(reranked.candidates.every((candidate) => candidate.relation === "supports"));
     // Equal strength everywhere -> retrieval pool order must be preserved.

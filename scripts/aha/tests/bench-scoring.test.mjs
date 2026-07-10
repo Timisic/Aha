@@ -16,6 +16,8 @@ import {
   summarizePipelineEvaluation,
   validateCase,
 } from "../../lib/bench-cases.mjs";
+import { buildVaultPathResolver, resolveVaultPath } from "../lib/note-identity.mjs";
+import { writePipelineTraceForReport } from "../../lib/pipeline-trace.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const previousVaultRoot = process.env.AHA_BENCH_VAULT_ROOT;
@@ -203,6 +205,30 @@ test("benchmark reader resolves current and legacy labels through one canonical 
   await rm(root, { recursive: true, force: true });
 });
 
+test("canonical identity never aliases an absolute path outside the vault by slug or basename", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-canonical-outside-vault-"));
+  const vaultRoot = path.join(root, "vault");
+  const outsideRoot = path.join(root, "outside");
+  await mkdir(path.join(vaultRoot, "Memory"), { recursive: true });
+  await mkdir(outsideRoot, { recursive: true });
+  await writeFile(path.join(vaultRoot, "Memory/Unique Note.md"), "inside\n");
+  await writeFile(path.join(outsideRoot, "Unique Note.md"), "outside\n");
+  const resolver = buildVaultPathResolver(vaultRoot);
+
+  assert.deepEqual(resolveVaultPath(path.join(outsideRoot, "Unique Note.md"), resolver), {
+    status: "not_found",
+    matches: [],
+  });
+  assert.deepEqual(resolveVaultPath(path.join(outsideRoot, "Missing/Unique Note.md"), resolver), {
+    status: "not_found",
+    matches: [],
+  });
+  assert.equal(resolveVaultPath(path.join(vaultRoot, "Memory/Unique Note.md"), resolver).status, "resolved");
+  assert.equal(resolveVaultPath("qmd://obsidian/Memory/Unique%20Note.md?index=obsidian", resolver).status, "resolved");
+
+  await rm(root, { recursive: true, force: true });
+});
+
 test("L1 CLI scores v3 and legacy labels through canonical identities and excludes invalid gold", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "aha-l1-canonical-cli-"));
   const vaultRoot = path.join(root, "vault");
@@ -265,6 +291,20 @@ test("L1 CLI scores v3 and legacy labels through canonical identities and exclud
         input: { thought: "invalid gold identity" },
         gold: { must: ["Same.md"], nice: [], noise: [] },
       },
+      {
+        id: "holdout-graph-case",
+        state: "active",
+        suite: "holdout",
+        evaluation_mode: "graph_assisted",
+        graph_evidence: [{ target: "Memory/Must Note.md", kind: "backlink" }],
+        provenance: { origin: "synthetic", reason: "L1 holdout graph-mode fixture." },
+        input: { thought: "holdout graph-assisted schema" },
+        gold: {
+          must: ["Memory/Must Note.md"],
+          nice: ["Memory/Nice Note.md"],
+          noise: ["Memory/Noise Note.md"],
+        },
+      },
     ],
   }, null, 2));
   await writeFile(qmdBin, [
@@ -303,7 +343,7 @@ test("L1 CLI scores v3 and legacy labels through canonical identities and exclud
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const report = JSON.parse(await readFile(reportPath, "utf-8"));
   const byId = new Map(report.results.map((item) => [item.id, item.backends.full]));
-  for (const id of ["v3-case", "legacy-case"]) {
+  for (const id of ["v3-case", "legacy-case", "holdout-graph-case"]) {
     const stats = byId.get(id);
     assert.equal(stats.evaluation_status, "scored");
     assert.equal(stats.eval_v2.must_recall_at_k, 1);
@@ -318,9 +358,16 @@ test("L1 CLI scores v3 and legacy labels through canonical identities and exclud
   assert.equal(byId.get("ambiguous-case").evaluation_status, "not_scored");
   assert.equal(byId.get("ambiguous-case").eval_v2.must_recall_at_k, null);
   assert.equal(byId.get("ambiguous-case").identity_diagnostics.ambiguous.length, 1);
-  assert.equal(report.summary.full.scored_cases, 2);
+  assert.equal(report.summary.full.scored_cases, 3);
   assert.equal(report.summary.full.not_scored_cases, 1);
   assert.equal(report.summary.full.eval_v2.avg_must_recall_at_k, 1);
+  assert.equal(report.by_suite.development.summary.full.scored_cases, 2);
+  assert.equal(report.by_suite.development.summary.full.not_scored_cases, 1);
+  assert.equal(report.by_suite.holdout.summary.full.scored_cases, 1);
+  assert.equal(report.by_suite.holdout.by_mode.graph_assisted.full.scored_cases, 1);
+  assert.equal(report.by_mode.discovery.full.scored_cases, 2);
+  assert.equal(report.by_mode.discovery.full.not_scored_cases, 1);
+  assert.equal(report.by_mode.graph_assisted.full.scored_cases, 1);
 
   await rm(root, { recursive: true, force: true });
 });
@@ -564,6 +611,12 @@ test("case lifecycle keeps normal runs active-only while includeDraft validates 
 
   const withDrafts = readBenchmarkCases(casesPath, { includeDraft: true });
   assert.deepEqual(withDrafts.cases.map((item) => item.id), ["active-case", "draft-case"]);
+
+  const allStates = readBenchmarkCases(casesPath, { includeDraft: true, includeOff: true });
+  assert.deepEqual(
+    allStates.cases.map((item) => item.id),
+    ["active-case", "draft-case", "off-case", "legacy-holdout-case"],
+  );
 
   await rm(root, { recursive: true, force: true });
   await rm(vaultRoot, { recursive: true, force: true });
@@ -940,13 +993,13 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(await readFile(reportPath, "utf-8"));
   const [caseResult, collidingCaseResult, noMustCaseResult] = report.results;
-  assert.match(caseResult.trace_json, /^bench\/reports\/latest\/traces\/trace-rerank-[a-f0-9]{8}\.json$/);
-  assert.match(collidingCaseResult.trace_json, /^bench\/reports\/latest\/traces\/trace-rerank-[a-f0-9]{8}\.json$/);
+  assert.match(caseResult.trace_json, /^traces\/trace-rerank-[a-f0-9]{8}\.json$/);
+  assert.match(collidingCaseResult.trace_json, /^traces\/trace-rerank-[a-f0-9]{8}\.json$/);
   assert.notEqual(caseResult.trace_json, collidingCaseResult.trace_json);
-  assert.equal(report.summary.trace_diagnosis_counts.rerank_failure, 2);
+  assert.equal(report.summary.trace_diagnosis_counts.retrieval_failure, 2);
   assert.equal(report.summary.trace_diagnosis_counts.none, 1);
 
-  const trace = JSON.parse(await readFile(path.join(root, caseResult.trace_json), "utf-8"));
+  const trace = JSON.parse(await readFile(path.resolve(path.dirname(reportPath), caseResult.trace_json), "utf-8"));
   assert.equal(trace.schema, "PipelineTrace");
   assert.equal(trace.case.id, "trace/rerank");
   assert.equal(trace.steps.query_generation.generated_by, "rules");
@@ -971,11 +1024,11 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
     source: "qmd_query",
   });
   assert.equal(trace.gold_positions.noise[0].in_review_budget, true);
-  assert.equal(trace.diagnosis.primary, "rerank_failure");
-  assert.equal(trace.diagnosis.next_target, "rerank");
-  assert.ok(trace.diagnosis.signals.includes("Required gold memory reached pre-rerank pool but missed the review attention budget."));
+  assert.equal(trace.diagnosis.primary, "retrieval_failure");
+  assert.equal(trace.diagnosis.next_target, "retrieval");
+  assert.ok(trace.diagnosis.flags.includes("found_beyond_judge_budget"));
 
-  const noMustTrace = JSON.parse(await readFile(path.join(root, noMustCaseResult.trace_json), "utf-8"));
+  const noMustTrace = JSON.parse(await readFile(path.resolve(path.dirname(reportPath), noMustCaseResult.trace_json), "utf-8"));
   assert.equal(noMustTrace.diagnosis.primary, null);
   assert.ok(!noMustTrace.diagnosis.signals.includes("All required gold memories are inside the review attention budget."));
 
@@ -987,10 +1040,29 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
   const archiveStem = path.basename(archiveReportFile, ".json");
   assert.match(
     archiveReport.results[0].trace_json,
-    new RegExp(`^bench/reports/archive/traces/${archiveStem}/trace-rerank-[a-f0-9]{8}\\.json$`),
+    new RegExp(`^traces/${archiveStem}/trace-rerank-[a-f0-9]{8}\\.json$`),
   );
   assert.notEqual(archiveReport.results[0].trace_json, report.results[0].trace_json);
-  await readFile(path.join(root, archiveReport.results[0].trace_json), "utf-8");
+  await readFile(path.resolve(path.dirname(path.join(root, "bench/reports/archive", archiveReportFile)), archiveReport.results[0].trace_json), "utf-8");
 
   await rm(root, { recursive: true, force: true });
+});
+
+test("pipeline trace references stay report-relative for an external reports root", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "aha-external-reports-"));
+  const reportPath = path.join(root, "runs/run-1/development/report.json");
+  try {
+    const reference = writePipelineTraceForReport({
+      case: { id: "external/case" },
+      schema: "PipelineTrace",
+      version: 2,
+    }, reportPath);
+
+    assert.match(reference, /^traces\/external-case-[a-f0-9]{8}\.json$/);
+    assert.ok(!reference.startsWith("sha256:"));
+    const trace = JSON.parse(await readFile(path.resolve(path.dirname(reportPath), reference), "utf8"));
+    assert.equal(trace.case.id, "external/case");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

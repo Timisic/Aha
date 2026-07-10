@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { judgeCandidateRelations } from "../relation-judge.mjs";
+import { judgeCandidateRelations, relationJudgeCandidatesForCase } from "../relation-judge.mjs";
 
 const retrievalCandidates = [
   {
@@ -78,6 +78,29 @@ test("shared relation judge returns structured failure when adapter output is ma
   assert.equal(result.tool, "fake-agent");
   assert.match(result.error, /malformed|relation|hit|why/i);
   assert.deepEqual(result.candidates, retrievalCandidates);
+});
+
+test("benchmark relation judge records no reviewed input when judging is disabled", async () => {
+  const result = await relationJudgeCandidatesForCase({}, [{
+    file: "Memory/Feedback.md",
+    content: "Readable feedback evidence.",
+  }], { relationJudgeMode: "none" });
+
+  assert.deepEqual(result.relation_judge_reviewed_candidates, []);
+});
+
+test("benchmark relation judge excludes unreadable candidates from attempted judge input", async () => {
+  const result = await relationJudgeCandidatesForCase({}, [{
+    file: "Memory/Unreadable.md",
+  }], {
+    relationJudgeMode: "agent",
+    relationJudgeAgentCache: "",
+    relationJudgeAgentFallback: true,
+  });
+
+  assert.equal(result.relation_judge_fallback, true);
+  assert.match(result.relation_judge_error, /no candidate excerpts/i);
+  assert.deepEqual(result.relation_judge_reviewed_candidates, []);
 });
 
 function resultPayload(candidatePatch) {

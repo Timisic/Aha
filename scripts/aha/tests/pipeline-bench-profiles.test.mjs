@@ -29,11 +29,19 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
   await writeQmdSdkModule(qmdSdkModule);
   await writeFile(cases, `${JSON.stringify({
     version: 3,
+    privacy: "sanitized-synthetic",
     collection: "obsidian",
+    suites: {
+      development: { version: "dev-profile-v1" },
+      holdout: { version: "holdout-profile-v1", frozen: true, change_reason: "Test fixture." },
+    },
     expected_in_top_k: 2,
     cases: [{
       id: "profile-parity",
       state: "active",
+      suite: "development",
+      evaluation_mode: "discovery",
+      provenance: { origin: "synthetic", reason: "Product parity profile fixture." },
       input: { note: "Source.md", whole_note: true },
       gold: { must: ["Memory/Second.md", "Memory/First.md"], nice: [], noise: [] },
     }],
@@ -76,7 +84,10 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
     assert.equal(productRun.status, 0, productRun.stderr);
     const productReport = JSON.parse(await readFile(productReportPath, "utf8"));
     const productResult = productReport.results[0];
-    const productTrace = JSON.parse(await readFile(path.join(root, productResult.trace_json), "utf8"));
+    const productTrace = JSON.parse(await readFile(
+      path.resolve(path.dirname(productReportPath), productResult.trace_json),
+      "utf8",
+    ));
     const resultFiles = productResult.pipeline.top_candidates.map((candidate) => candidate.file);
     const traceFiles = productTrace.steps.final_candidates.map((candidate) => candidate.file);
 
@@ -149,6 +160,13 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
     assert.ok(!Object.hasOwn(productReport.metadata, "git_status"));
     assert.ok(!JSON.stringify(productReport).includes(root));
     assert.equal(productResult.profile, "product-parity");
+    assert.deepEqual(productReport.case_counts, {
+      total: 1,
+      scored: 1,
+      not_scored: 0,
+      discovery: 1,
+      graph_assisted: 0,
+    });
     assert.equal(productTrace.profile, "product-parity");
     assert.equal(productTrace.runtime_profile, "product-runtime");
     assert.deepEqual(resultFiles, ["Memory/Second.md", "Memory/First.md"]);
@@ -167,21 +185,32 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
       "--report", diagnosticReportPath,
       "--query-generator", "rules",
       "--query-mode", "raw-only",
-      "--relation-judge", "none",
+      "--relation-judge", "agent",
+      "--relation-judge-agent-provider", "codex-cli",
+      "--relation-judge-agent-bin", codex,
+      "--no-relation-judge-agent-cache",
+      "--limit", "1",
       "--no-backlinks",
-    ], { cwd: root, encoding: "utf8", env, timeout: 30_000 });
+      "--no-archive",
+    ], { cwd: repoRoot, encoding: "utf8", env, timeout: 30_000 });
 
     assert.equal(diagnosticRun.status, 0, diagnosticRun.stderr);
     const diagnosticReport = JSON.parse(await readFile(diagnosticReportPath, "utf8"));
     const diagnosticTrace = JSON.parse(await readFile(
-      path.join(root, diagnosticReport.results[0].trace_json),
+      path.resolve(path.dirname(diagnosticReportPath), diagnosticReport.results[0].trace_json),
       "utf8",
     ));
     assert.equal(diagnosticReport.profile, "diagnostic-enhanced");
     assert.equal(diagnosticReport.metadata.profile, "diagnostic-enhanced");
     assert.equal(diagnosticReport.results[0].profile, "diagnostic-enhanced");
+    assert.match(diagnosticReport.results[0].trace_json, /^traces\//);
     assert.equal(diagnosticTrace.profile, "diagnostic-enhanced");
     assert.ok(Object.hasOwn(diagnosticTrace.steps, "backlink_expansion"));
+    assert.equal(diagnosticTrace.steps.final_candidates.length, 1);
+    assert.deepEqual(
+      diagnosticTrace.steps.relation_judge.reviewed_candidates.map((candidate) => candidate.file),
+      ["Memory/Second.md", "Memory/First.md"],
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

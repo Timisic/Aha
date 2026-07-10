@@ -22,6 +22,7 @@ import {
   buildWorkflowProvenance,
   evaluateBaselinePromotion,
   evaluateHoldoutSnapshotTransition,
+  loadPluginRuntimeConfiguration,
   promoteLatestPointer,
   readGitState,
   resolveLatestPointer,
@@ -29,6 +30,7 @@ import {
   workflowSpecification,
   writeJsonAtomic,
 } from "../lib/bench-workflow.mjs";
+import { benchVaultRoot } from "../lib/vault-paths.mjs";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../..");
 const DEFAULT_REPORTS_ROOT = path.join(REPO_ROOT, "bench/reports");
@@ -36,10 +38,12 @@ const DEFAULT_PRIVATE_CASES = path.join(REPO_ROOT, "bench/aha-memory-cases.json"
 const DEFAULT_PUBLIC_CASES = path.join(REPO_ROOT, "bench/aha-memory-cases.example.json");
 const DEFAULT_RUNNER = path.join(REPO_ROOT, "scripts/bench/run-pipeline-bench.mjs");
 const SMOKE_TESTS = [
+  "scripts/aha/tests/bench-scoring.test.mjs",
   "scripts/aha/tests/benchmark-suites.test.mjs",
   "scripts/aha/tests/evaluation-evidence.test.mjs",
   "scripts/aha/tests/pipeline-bench-profiles.test.mjs",
   "scripts/aha/tests/benchmark-workflows.test.mjs",
+  "scripts/aha/tests/review-seeds-collector.test.mjs",
 ];
 
 const USAGE = [
@@ -49,6 +53,7 @@ const USAGE = [
   "Options:",
   "  --cases <path>           Benchmark cases file",
   "  --vault-root <path>      Private benchmark vault root",
+  "  --plugin-data <path>     Aha plugin data.json used as the live runtime configuration",
   "  --reports-root <path>    Default: bench/reports",
   "  --run-id <id>            Stable run directory name",
   "  --latest-pointer <path>  Default: <reports-root>/latest/product-parity.json",
@@ -113,6 +118,7 @@ function parseArgs(argv) {
     const key = {
       "--cases": "cases",
       "--vault-root": "vaultRoot",
+      "--plugin-data": "pluginData",
       "--reports-root": "reportsRoot",
       "--run-id": "runId",
       "--latest-pointer": "latestPointer",
@@ -125,6 +131,8 @@ function parseArgs(argv) {
   }
   options.latestPointer ??= path.join(options.reportsRoot, "latest/product-parity.json");
   options.cases ??= command === "validate" && !options.privateValidation ? DEFAULT_PUBLIC_CASES : DEFAULT_PRIVATE_CASES;
+  options.vaultRoot ??= benchVaultRoot();
+  options.pluginData ??= path.join(options.vaultRoot, ".obsidian/plugins/aha-memory-surface/data.json");
   assertSafeRunId(options.runId);
   rejectProtectedRunnerArgs(options.runnerArgs);
   return options;
@@ -167,7 +175,7 @@ async function runValidate(context) {
 
 async function runSmoke(context) {
   const startedAt = new Date().toISOString();
-  const result = spawnSync(process.execPath, ["--test", ...SMOKE_TESTS], {
+  const result = spawnSync(process.execPath, ["--test", "--test-concurrency=1", ...SMOKE_TESTS], {
     cwd: REPO_ROOT,
     stdio: "inherit",
   });
@@ -194,6 +202,7 @@ async function runSmoke(context) {
 async function runPipeline(context) {
   const startedAt = new Date().toISOString();
   const casesHashStart = await sha256File(context.cases);
+  const pluginRuntime = loadPluginRuntimeConfiguration(context.pluginData, { repoRoot: REPO_ROOT });
   const previousVaultRoot = process.env.AHA_BENCH_VAULT_ROOT;
   if (context.vaultRoot) process.env.AHA_BENCH_VAULT_ROOT = context.vaultRoot;
   let benchmark;
@@ -234,6 +243,7 @@ async function runPipeline(context) {
     suiteVersions: benchmark.suiteVersions,
     caseCounts: mapCounts(activeBySuite),
     holdoutSnapshot,
+    runtimeConfiguration: pluginRuntime.provenance,
     artifacts: {},
     promotion: { eligible: false, reasons: ["run_in_progress"] },
   }));
@@ -253,13 +263,15 @@ async function runPipeline(context) {
       "--no-archive",
     ];
     if (previousReports[suite]) args.push("--compare-report", previousReports[suite]);
-    args.push(...context.runnerArgs);
+    args.push(...pluginRuntime.runnerArgs, ...context.runnerArgs);
     const result = spawnSync(process.execPath, args, {
       cwd: REPO_ROOT,
       stdio: "inherit",
-      env: context.vaultRoot
-        ? { ...process.env, AHA_BENCH_VAULT_ROOT: context.vaultRoot }
-        : process.env,
+      env: {
+        ...process.env,
+        ...pluginRuntime.environment,
+        AHA_BENCH_VAULT_ROOT: context.vaultRoot,
+      },
     });
     if (result.status !== 0) runnerFailed = true;
     if (existsSync(reportPath)) {
@@ -311,6 +323,7 @@ async function runPipeline(context) {
     suiteVersions: benchmark.suiteVersions,
     caseCounts: mapCounts(activeBySuite),
     holdoutSnapshot,
+    runtimeConfiguration: pluginRuntime.provenance,
     artifacts,
     promotion,
   });
@@ -334,7 +347,7 @@ async function validatePrivateCases(casesPath, vaultRoot) {
   const previous = process.env.AHA_BENCH_VAULT_ROOT;
   if (vaultRoot) process.env.AHA_BENCH_VAULT_ROOT = vaultRoot;
   try {
-    const benchmark = readBenchmarkCases(casesPath, { includeDraft: true });
+    const benchmark = readBenchmarkCases(casesPath, { includeDraft: true, includeOff: true });
     validateBenchmarkSuiteDocument(benchmark.input, benchmark.cases, {
       resolver: benchmark.identityResolver,
       strict: true,
@@ -360,7 +373,7 @@ async function validatePublicCases(casesPath) {
     const previous = process.env.AHA_BENCH_VAULT_ROOT;
     process.env.AHA_BENCH_VAULT_ROOT = syntheticVault;
     try {
-      const benchmark = readBenchmarkCases(casesPath, { includeDraft: true });
+      const benchmark = readBenchmarkCases(casesPath, { includeDraft: true, includeOff: true });
       validateBenchmarkSuiteDocument(benchmark.input, benchmark.cases, {
         resolver: benchmark.identityResolver,
         strict: true,
@@ -480,13 +493,21 @@ function mapCounts(casesBySuite) {
 }
 
 function rejectProtectedRunnerArgs(args) {
-  const protectedFlags = new Set(["--cases", "--report", "--profile", "--suite", "--compare-report", "--only", "--include-draft", "--no-archive"]);
+  const protectedFlags = new Set([
+    "--cases", "--report", "--profile", "--suite", "--compare-report", "--only", "--include-draft", "--no-archive",
+    "--llm-provider", "--llm-base-url", "--llm-model", "--llm-api-key-env",
+    "--query-agent-provider", "--query-agent-bin", "--query-agent-model",
+    "--relation-judge-agent-provider", "--relation-judge-agent-bin", "--relation-judge-agent-model",
+    "--runtime-codex-command", "--runtime-codex-model", "--runtime-codex-reasoning-effort", "--runtime-codex-sandbox",
+    "--runtime-qmd-runner", "--runtime-qmd-sdk-module", "--runtime-qmd-rerank",
+    "--qmd", "--index", "--obsidian", "--limit", "--no-source-note-filter",
+  ]);
   const conflict = args.find((arg) => protectedFlags.has(arg));
   if (conflict) throw new Error(`${conflict} is owned by the named evaluation workflow.`);
 }
 
 function pathOption(key) {
-  return ["cases", "vaultRoot", "reportsRoot", "latestPointer", "runner"].includes(key);
+  return ["cases", "vaultRoot", "pluginData", "reportsRoot", "latestPointer", "runner"].includes(key);
 }
 
 function assertSafeRunId(runId) {

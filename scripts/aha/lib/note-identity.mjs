@@ -72,6 +72,10 @@ export function buildVaultPathResolver(root) {
 }
 
 export function resolveVaultPath(rawPath, resolver) {
+  const cleaned = stripPathDecorations(rawPath);
+  if (path.isAbsolute(cleaned) && isOutsideVault(cleaned, resolver.root)) {
+    return { status: "not_found", matches: [] };
+  }
   const keys = candidateKeys(rawPath, resolver);
   for (const mapLookup of [
     (key) => lookup(resolver.byRelative, normalizeNoteIdentity(key)),
@@ -94,6 +98,11 @@ export function resolveVaultPath(rawPath, resolver) {
     if (uniqueMatches.length > 1) return { status: "ambiguous", matches: uniqueMatches };
   }
   return { status: "not_found", matches: [] };
+}
+
+function isOutsideVault(candidatePath, vaultRoot) {
+  const relative = path.relative(path.resolve(vaultRoot), path.resolve(candidatePath));
+  return relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
 }
 
 export function equivalentVaultPath(left, right, resolver) {

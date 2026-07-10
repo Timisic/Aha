@@ -64,3 +64,5 @@ node scripts/bench/run-pipeline-bench.mjs --profile diagnostic-enhanced --suite 
 ```
 
 Named workflow runs are immutable under `bench/reports/runs/<run-id>/`. `bench/reports/latest/product-parity.json` is an atomic, hash-verified pointer and is updated only by a complete eligible baseline. Raw runners may still write legacy latest/archive paths when used directly.
+
+`bench:baseline` and `bench:diagnostic` load the active Obsidian plugin runtime settings from the vault's plugin `data.json`; use `-- --plugin-data <path>` only when validating a different local installation. Secrets are passed through the child environment and are not persisted in evaluation artifacts.

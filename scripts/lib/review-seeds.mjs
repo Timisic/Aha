@@ -154,6 +154,10 @@ export function buildSessionFeedbackSeedCaseDocument(pluginData, options = {}) {
         warnings.push(`${feedbackLabel}: skipped feedback with vault-external absolute source path.`);
         continue;
       }
+      if (sourceResult.vaultTraversal) {
+        warnings.push(`${feedbackLabel}: skipped feedback with traversal source path.`);
+        continue;
+      }
       if (!sourcePath) {
         warnings.push(`${feedbackLabel}: skipped feedback without source path.`);
         continue;
@@ -162,6 +166,10 @@ export function buildSessionFeedbackSeedCaseDocument(pluginData, options = {}) {
       const memoryPath = memoryResult.path;
       if (memoryResult.vaultExternalAbsolute) {
         warnings.push(`${feedbackLabel}: skipped ${LABEL_FOR_ACTION[action]} feedback with vault-external absolute memory path.`);
+        continue;
+      }
+      if (memoryResult.vaultTraversal) {
+        warnings.push(`${feedbackLabel}: skipped ${LABEL_FOR_ACTION[action]} feedback with traversal memory path.`);
         continue;
       }
       if (!memoryPath) {
@@ -558,21 +566,41 @@ function cleanPath(value, options = {}) {
 
 function cleanSessionFeedbackPath(value, options = {}) {
   const raw = stripWrappingBackticks(String(value ?? "").trim());
-  if (!raw) return { path: "", vaultExternalAbsolute: false };
+  if (!raw) return { path: "", vaultExternalAbsolute: false, vaultTraversal: false };
   const parsed = parseObsidianMarkdownLink(raw);
-  const target = parsed?.path || raw.replace(/^<|>$/g, "").trim();
+  const target = normalizeSlash(parsed?.path || raw.replace(/^<|>$/g, "").trim());
   const { path: undecoratedPath } = splitPathDecorations(target);
-  const expandedPath = expandHome(undecoratedPath);
+  const validationPath = decodePathForValidation(
+    undecoratedPath.replace(/^qmd:\/\/[^/]+\/?/i, ""),
+  );
+  const expandedPath = expandHome(validationPath);
   if (isAbsolute(expandedPath)) {
     const configuredRoot = String(options.vaultRoot ?? "").trim();
     if (!configuredRoot || isOutsideRoot(expandedPath, configuredRoot)) {
-      return { path: "", vaultExternalAbsolute: true };
+      return { path: "", vaultExternalAbsolute: true, vaultTraversal: false };
     }
+  } else if (validationPath.split("/").includes("..")) {
+    return { path: "", vaultExternalAbsolute: false, vaultTraversal: true };
   }
   return {
     path: toVaultRelativePath(target, options),
     vaultExternalAbsolute: false,
+    vaultTraversal: false,
   };
+}
+
+function decodePathForValidation(value) {
+  let decoded = normalizeSlash(value);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const next = normalizeSlash(decodeURIComponent(decoded));
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded;
 }
 
 function isOutsideRoot(candidatePath, rootPath) {

@@ -1317,6 +1317,16 @@ function reportDiagnostics(results) {
   };
 }
 
+function reportCaseCounts(results) {
+  return {
+    total: results.length,
+    scored: countBy(results, (result) => result.evaluation_status !== "not_scored"),
+    not_scored: countBy(results, (result) => result.evaluation_status === "not_scored"),
+    discovery: countBy(results, (result) => result.evaluation_mode === "discovery"),
+    graph_assisted: countBy(results, (result) => result.evaluation_mode === "graph_assisted"),
+  };
+}
+
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -1839,6 +1849,7 @@ async function main() {
         relation_judge_error: rerankResult.relation_judge_error,
         relation_judge_ranked_ids: rerankResult.relation_judge_ranked_ids,
         relation_judge_prompt_version: rerankResult.relation_judge_prompt_version,
+        relation_judge_reviewed_candidates: rerankResult.relation_judge_reviewed_candidates ?? [],
         top_candidates: finalCandidates.map((candidate) => ({
           rerankId: candidate.rerankId,
           title: candidate.title,
@@ -1952,6 +1963,7 @@ async function main() {
     source_note_filter_enabled: options.sourceNoteFilter,
     relation_judge_mode: options.profile === "diagnostic-enhanced" ? options.relationJudgeMode : "runtime",
     results,
+    case_counts: reportCaseCounts(results),
     diagnostics: reportDiagnostics(results),
   };
   const comparisonReport = readComparisonReport(options.compareReport);

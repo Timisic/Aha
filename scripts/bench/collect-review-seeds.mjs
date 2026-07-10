@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import {
   DEFAULT_PLUGIN_ID,
@@ -10,6 +11,9 @@ import {
   collectSessionFeedbackSeedCases,
   writeReviewSeedCaseDocument,
 } from "../lib/review-seeds.mjs";
+
+const repoRoot = resolve(import.meta.dirname, "../..");
+const protectedBenchmarkOutputs = new Set(["bench/aha-memory-cases.json"]);
 
 function usage() {
   return [
@@ -21,14 +25,14 @@ function usage() {
     `  --plugin-data <path>      Aha plugin data.json. Default: <vault>/.obsidian/plugins/${DEFAULT_PLUGIN_ID}/data.json`,
     "  --legacy-review-notes    Explicitly import legacy Review Note Markdown instead of Session Store feedback.",
     `  --review-folder <path>    Legacy Review Note folder. Requires --legacy-review-notes. Default: ${DEFAULT_REVIEW_FOLDER}`,
-    `  --output <path>           Ignored private seed case file. Default: ${DEFAULT_SEED_CASES_PATH}`,
+    `  --output <path>           Repo-local, Git-ignored private seed case file. Default: ${DEFAULT_SEED_CASES_PATH}`,
     "  --allow-empty             Allow an empty Session Store collection to replace an existing output file.",
     "  --dry-run                 Print JSON to stdout instead of writing the output file.",
     "  -h, --help                Show this help.",
     "",
     "By default, feedback is collected from compact Aha Session Records in plugin data.",
     "The output is benchmark-like draft case JSON with vault-relative note paths.",
-    "It does not modify bench/aha-memory-cases.json.",
+    "Tracked files and bench/aha-memory-cases.json are protected output targets.",
   ].join("\n");
 }
 
@@ -83,6 +87,8 @@ function main() {
     return;
   }
 
+  const safeOutput = options.dryRun ? null : validateCollectorOutput(options.output);
+
   const result = options.legacyReviewNotes
     ? collectReviewSeedCasesFromVault(options)
     : collectSessionFeedbackSeedCases(options);
@@ -110,16 +116,16 @@ function main() {
   if (
     !options.legacyReviewNotes
     && result.feedbackEventCount === 0
-    && existsSync(resolve(options.output))
+    && existsSync(safeOutput)
     && !options.allowEmpty
   ) {
     throw new Error(
-      `Refusing to replace ${resolve(options.output)} because collection yielded zero supported Session Store feedback events. `
+      `Refusing to replace ${safeOutput} because collection yielded zero supported Session Store feedback events. `
       + "Inspect the diagnosed empty result with --dry-run, or pass --allow-empty to replace the existing output intentionally.",
     );
   }
 
-  const output = writeReviewSeedCaseDocument(document, options.output);
+  const output = writeReviewSeedCaseDocument(document, safeOutput);
   if (options.legacyReviewNotes) {
     console.log(`Scanned ${result.reviewNoteCount} legacy Review Notes from ${result.reviewRoot}`);
   } else {
@@ -130,6 +136,61 @@ function main() {
     console.warn(`Warnings: ${document.warnings.length}`);
     for (const warning of document.warnings) console.warn(`- ${warning}`);
   }
+}
+
+function validateCollectorOutput(outputPath) {
+  const output = resolve(outputPath);
+  const relativeOutput = relative(repoRoot, output).replace(/\\/g, "/");
+  if (!relativeOutput || relativeOutput === ".." || relativeOutput.startsWith("../") || isAbsolute(relativeOutput)) {
+    throw new Error(`Collector output must be inside the repository: ${output}`);
+  }
+  if (relativeOutput === ".git" || relativeOutput.startsWith(".git/")) {
+    throw new Error(`Collector output cannot target Git metadata: ${relativeOutput}`);
+  }
+  assertPhysicalPathInsideRepo(output);
+  if (protectedBenchmarkOutputs.has(relativeOutput)) {
+    throw new Error(`Collector output cannot replace the canonical benchmark: ${relativeOutput}`);
+  }
+
+  const tracked = runGit(["ls-files", "--error-unmatch", "--", relativeOutput]);
+  if (tracked.status === 0) {
+    throw new Error(`Collector output must not be a Git-tracked path: ${relativeOutput}`);
+  }
+  if (tracked.status !== 1) {
+    throw new Error(`Could not verify whether collector output is tracked: ${tracked.stderr || tracked.error?.message || "git ls-files failed"}`);
+  }
+
+  const ignored = runGit(["check-ignore", "--quiet", "--no-index", "--", relativeOutput]);
+  if (ignored.status !== 0) {
+    if (ignored.status !== 1) {
+      throw new Error(`Could not verify collector output ignore status: ${ignored.stderr || ignored.error?.message || "git check-ignore failed"}`);
+    }
+    throw new Error(`Collector output must be Git-ignored: ${relativeOutput}`);
+  }
+  return output;
+}
+
+function assertPhysicalPathInsideRepo(output) {
+  let nearestExistingPath = output;
+  while (!existsSync(nearestExistingPath)) {
+    const parent = dirname(nearestExistingPath);
+    if (parent === nearestExistingPath) break;
+    nearestExistingPath = parent;
+  }
+  const physicalRepoRoot = realpathSync(repoRoot);
+  const physicalPath = realpathSync(nearestExistingPath);
+  const physicalRelative = relative(physicalRepoRoot, physicalPath);
+  if (physicalRelative === ".." || physicalRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(physicalRelative)) {
+    throw new Error(`Collector output must resolve inside the repository: ${output}`);
+  }
+}
+
+function runGit(args) {
+  return spawnSync("git", args, {
+    cwd: repoRoot,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
 try {

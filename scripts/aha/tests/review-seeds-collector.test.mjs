@@ -286,6 +286,60 @@ test("session feedback rejects vault-external absolute paths without copying the
   await rm(root, { recursive: true, force: true });
 });
 
+test("session feedback rejects relative and decorated traversal paths without emitting a vault escape", async () => {
+  const root = await mkdtempDir("review-seeds-traversal-feedback-");
+  const vault = path.join(root, "vault");
+  const traversalPaths = [
+    "../outside/Source.md",
+    "Memory/../../outside/Memory.md#Heading",
+    "qmd://obsidian/../../outside/Secret.md?index=obsidian",
+    "[[..%2Foutside%2FEncoded.md#Heading|Encoded]]",
+    "..\\outside\\Backslash.md",
+  ];
+  const document = buildSessionFeedbackSeedCaseDocument(sessionPluginData([
+    sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Valid.md", {
+      sourcePath: "Source/Valid.md",
+    }),
+    sessionFeedback("2026-07-10T01:01:00.000Z", "accept", "Memory/Skipped.md", {
+      sourcePath: traversalPaths[0],
+    }),
+    sessionFeedback("2026-07-10T01:02:00.000Z", "reject_as_noise", traversalPaths[1]),
+    sessionFeedback("2026-07-10T01:03:00.000Z", "should_have_found", traversalPaths[2]),
+    sessionFeedback("2026-07-10T01:04:00.000Z", "accept", traversalPaths[3]),
+    sessionFeedback("2026-07-10T01:05:00.000Z", "accept", traversalPaths[4]),
+  ]), {
+    generatedAt: new Date("2026-07-10T02:00:00Z"),
+    vaultRoot: vault,
+  });
+
+  assert.equal(document.cases.length, 1);
+  assert.equal(document.cases[0].input.note, "Source/Valid.md");
+  assert.deepEqual(document.cases[0].gold, {
+    must: [],
+    nice: ["Memory/Valid.md"],
+    noise: [],
+  });
+  assert.match(document.warnings.join("\n"), /traversal source path/i);
+  assert.match(document.warnings.join("\n"), /traversal memory path/i);
+  for (const traversalPath of traversalPaths) {
+    assert.equal(JSON.stringify(document).includes(traversalPath), false);
+  }
+
+  await rm(root, { recursive: true, force: true });
+});
+
+test("session feedback preserves valid QMD paths after traversal validation", () => {
+  const sourcePath = "qmd://obsidian/Source/Valid%20Insight.md?index=obsidian";
+  const memoryPath = "qmd://obsidian/Memory/Valid%20Memory.md#Evidence";
+  const document = buildSessionFeedbackSeedCaseDocument(sessionPluginData([
+    sessionFeedback("2026-07-10T01:00:00.000Z", "accept", memoryPath, { sourcePath }),
+  ]), { generatedAt: new Date("2026-07-10T02:00:00Z") });
+
+  assert.equal(document.cases.length, 1);
+  assert.equal(document.cases[0].input.note, sourcePath);
+  assert.deepEqual(document.cases[0].gold.nice, [memoryPath]);
+});
+
 test("seed writer refuses any non-development or non-draft target", async () => {
   const root = await mkdtempDir("review-seeds-guard-");
   const output = path.join(root, "seed-cases.json");
@@ -315,7 +369,7 @@ test("seed writer refuses any non-development or non-draft target", async () => 
 test("collect-review-seeds CLI defaults to Session Store feedback and writes benchmark-readable cases", async () => {
   const root = await mkdtempDir("review-seeds-cli-");
   const vault = path.join(root, "vault");
-  const output = path.join(root, "aha-memory-seed-cases.json");
+  const output = ignoredRepoOutput(root);
   await mkdir(path.join(vault, "Source"), { recursive: true });
   await mkdir(path.join(vault, "Memory"), { recursive: true });
   await writeFile(path.join(vault, "Source/Insight.md"), "Source note text for benchmark input.\n");
@@ -346,6 +400,7 @@ test("collect-review-seeds CLI defaults to Session Store feedback and writes ben
   const bench = readBenchmarkCases(output, { includeDraft: true });
   assert.deepEqual(bench.cases.map((item) => item.id), [document.cases[0].id]);
 
+  await rm(path.dirname(output), { recursive: true, force: true });
   await rm(root, { recursive: true, force: true });
 });
 
@@ -387,7 +442,7 @@ test("collector supports a plugin-data override and never overwrites output afte
   const root = await mkdtempDir("review-seeds-plugin-data-");
   const vault = path.join(root, "vault");
   const pluginData = path.join(root, "custom-plugin-data.json");
-  const output = path.join(root, "aha-memory-seed-cases.json");
+  const output = ignoredRepoOutput(root);
   await mkdir(vault, { recursive: true });
   await writeFile(pluginData, JSON.stringify(sessionPluginData([
     sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Nice.md"),
@@ -420,6 +475,7 @@ test("collector supports a plugin-data override and never overwrites output afte
   assert.match(malformedRoot.stderr, /Session Store schemaVersion 1/i);
   assert.equal(await readFile(output, "utf-8"), written);
 
+  await rm(path.dirname(output), { recursive: true, force: true });
   await rm(root, { recursive: true, force: true });
 });
 
@@ -427,7 +483,7 @@ test("collector preserves an existing seed inbox when Session Store feedback is 
   const root = await mkdtempDir("review-seeds-empty-overwrite-");
   const vault = path.join(root, "vault");
   const pluginData = path.join(root, "custom-plugin-data.json");
-  const output = path.join(root, "aha-memory-seed-cases.json");
+  const output = ignoredRepoOutput(root);
   await mkdir(vault, { recursive: true });
   await writeFile(pluginData, JSON.stringify(sessionPluginData([
     sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Nice.md"),
@@ -466,12 +522,64 @@ test("collector preserves an existing seed inbox when Session Store feedback is 
   assert.equal(allowedRun.status, 0, allowedRun.stderr || allowedRun.stdout);
   assert.deepEqual(JSON.parse(await readFile(output, "utf-8")).cases, []);
 
+  await rm(path.dirname(output), { recursive: true, force: true });
   await rm(root, { recursive: true, force: true });
+});
+
+test("collector rejects a repo-external custom output before writing", async () => {
+  const root = await mkdtempDir("review-seeds-output-boundary-");
+  const vault = path.join(root, "vault");
+  const pluginData = path.join(root, "custom-plugin-data.json");
+  const output = path.join(root, "outside-seed-cases.json");
+  await mkdir(vault, { recursive: true });
+  await writeFile(pluginData, JSON.stringify(sessionPluginData([
+    sessionFeedback("2026-07-10T01:00:00.000Z", "accept", "Memory/Nice.md"),
+  ])));
+
+  const result = spawnSync("node", [
+    "scripts/bench/collect-review-seeds.mjs",
+    "--vault-root", vault,
+    "--plugin-data", pluginData,
+    "--output", output,
+  ], { cwd: repoRoot, encoding: "utf-8" });
+
+  try {
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /output.*inside.*repository/i);
+    assert.equal(existsSync(output), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("collector rejects tracked, unignored, and canonical benchmark output paths before collection", () => {
+  const missingPluginData = path.join(repoRoot, "bench/generated/does-not-exist-plugin-data.json");
+  const attempts = [
+    { output: path.join(repoRoot, "README.md"), message: /must not be a Git-tracked path: README\.md/i },
+    { output: path.join(repoRoot, "collector-output.json"), message: /must be Git-ignored: collector-output\.json/i },
+    { output: path.join(repoRoot, "bench/aha-memory-cases.json"), message: /cannot replace the canonical benchmark/i },
+  ];
+
+  for (const attempt of attempts) {
+    const result = spawnSync("node", [
+      "scripts/bench/collect-review-seeds.mjs",
+      "--plugin-data", missingPluginData,
+      "--output", attempt.output,
+    ], { cwd: repoRoot, encoding: "utf-8" });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, attempt.message);
+    assert.doesNotMatch(result.stderr, /Could not read valid Aha plugin data/i);
+  }
 });
 
 async function mkdtempDir(prefix) {
   const { mkdtemp } = await import("node:fs/promises");
   return mkdtemp(path.join(tmpdir(), prefix));
+}
+
+function ignoredRepoOutput(root, filename = "aha-memory-seed-cases.json") {
+  return path.join(repoRoot, "bench/generated/test-review-seeds", path.basename(root), filename);
 }
 
 function reviewNoteWithSeeds(seeds) {

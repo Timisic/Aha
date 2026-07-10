@@ -343,7 +343,8 @@ export function buildPipelineTrace({
     preJudgeCandidates: tracePreRerankCandidates,
     relationJudge: {
       ok: !rerankResult.relation_judge_error,
-      candidates: finalCandidates,
+      candidates: rerankResult.candidates,
+      reviewedCandidates: rerankResult.relation_judge_reviewed_candidates ?? [],
       relation_judge_generated_by: rerankResult.relation_judge_generated_by,
       relation_judge_fallback: rerankResult.relation_judge_fallback,
       relation_judge_prompt_version: rerankResult.relation_judge_prompt_version,
@@ -397,7 +398,7 @@ function safeTraceName(caseId) {
 function traceDirForReport(reportPath) {
   const resolvedReportPath = resolve(reportPath);
   const normalized = resolvedReportPath.replace(/\\/g, "/");
-  if (normalized.includes("/bench/reports/archive/")) {
+  if (normalized.includes("/bench/reports/archive/") || basename(dirname(resolvedReportPath)) === "archive") {
     return join(dirname(resolvedReportPath), "traces", basename(resolvedReportPath, ".json"));
   }
   return join(dirname(resolvedReportPath), "traces");
@@ -407,10 +408,7 @@ export function writePipelineTraceForReport(trace, reportPath) {
   const tracePath = join(traceDirForReport(reportPath), `${safeTraceName(trace.case.id)}.json`);
   mkdirSync(dirname(tracePath), { recursive: true });
   writeFileSync(tracePath, `${JSON.stringify(trace, null, 2)}\n`);
-  const normalized = tracePath.replace(/\\/g, "/");
-  const benchReportsIndex = normalized.lastIndexOf("/bench/reports/");
-  if (benchReportsIndex >= 0) return normalized.slice(benchReportsIndex + 1);
-  return relative(resolve("."), tracePath).replace(/\\/g, "/");
+  return relative(dirname(resolve(reportPath)), tracePath).replace(/\\/g, "/");
 }
 
 export function summarizeTraceDiagnoses(results) {

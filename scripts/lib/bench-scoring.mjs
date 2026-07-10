@@ -239,17 +239,20 @@ export function droppedMustFromExpandedPool(expandedPoolScore, pipelineScore, to
 }
 
 export function comparePipelineStability(currentReport, comparisonReport, options = {}) {
-  const topK = Number(
-    currentReport?.summary?.eval_v2?.top_k
-      ?? currentReport?.results?.[0]?.pipeline?.score?.top_k
-      ?? 10,
-  );
   const currentResults = currentReport?.results ?? [];
+  const currentBudgets = stabilityBudgets(currentResults, currentReport);
   const notMeasured = (reason) => ({
-    summary: stabilitySummary("not_measured", reason, topK, 0, null),
+    summary: stabilitySummary(
+      "not_measured",
+      reason,
+      currentBudgets.topK,
+      0,
+      null,
+      currentBudgets.topKs,
+    ),
     by_case: Object.fromEntries(currentResults.map((result) => [
       result.id,
-      stabilityCase("not_measured", reason, topK, null),
+      stabilityCase("not_measured", reason, resultTopK(result, currentReport), null),
     ])),
   });
 
@@ -263,13 +266,26 @@ export function comparePipelineStability(currentReport, comparisonReport, option
   for (const current of currentResults) {
     const comparison = comparisonById.get(current.id);
     if (!comparison) {
-      byCase[current.id] = stabilityCase("not_measured", "comparison_case_missing", topK, null);
+      byCase[current.id] = stabilityCase(
+        "not_measured",
+        "comparison_case_missing",
+        resultTopK(current, currentReport),
+        null,
+      );
       continue;
     }
-    const currentFiles = pipelineCandidateFiles(current).slice(0, topK);
-    const comparisonFiles = pipelineCandidateFiles(comparison).slice(0, topK);
+    const currentTopK = resultTopK(current, currentReport);
+    const comparisonTopK = resultTopK(comparison, comparisonReport);
+    if (currentTopK !== comparisonTopK) {
+      byCase[current.id] = stabilityCase("not_measured", "incompatible_top_k", currentTopK, null, {
+        comparison_top_k: comparisonTopK,
+      });
+      continue;
+    }
+    const currentFiles = pipelineCandidateFiles(current).slice(0, currentTopK);
+    const comparisonFiles = pipelineCandidateFiles(comparison).slice(0, currentTopK);
     if (currentFiles.length === 0 || comparisonFiles.length === 0) {
-      byCase[current.id] = stabilityCase("not_measured", "empty_candidate_set", topK, null);
+      byCase[current.id] = stabilityCase("not_measured", "empty_candidate_set", currentTopK, null);
       continue;
     }
     const currentIdentities = canonicalIdentitySet(currentFiles, options);
@@ -277,7 +293,7 @@ export function comparePipelineStability(currentReport, comparisonReport, option
     const overlap = Array.from(currentIdentities).filter((identity) => comparisonIdentities.has(identity)).length;
     const denominator = Math.max(currentIdentities.size, comparisonIdentities.size);
     const score = denominator > 0 ? overlap / denominator : null;
-    byCase[current.id] = stabilityCase("measured", null, topK, score, {
+    byCase[current.id] = stabilityCase("measured", null, currentTopK, score, {
       overlap_count: overlap,
       current_count: currentIdentities.size,
       comparison_count: comparisonIdentities.size,
@@ -287,12 +303,26 @@ export function comparePipelineStability(currentReport, comparisonReport, option
 
   if (measured.length === 0) {
     return {
-      summary: stabilitySummary("not_measured", "no_comparable_cases", topK, 0, null),
+      summary: stabilitySummary(
+        "not_measured",
+        "no_comparable_cases",
+        currentBudgets.topK,
+        0,
+        null,
+        currentBudgets.topKs,
+      ),
       by_case: byCase,
     };
   }
   return {
-    summary: stabilitySummary("measured", null, topK, measured.length, average(measured, null)),
+    summary: stabilitySummary(
+      "measured",
+      null,
+      currentBudgets.topK,
+      measured.length,
+      average(measured, null),
+      currentBudgets.topKs,
+    ),
     by_case: byCase,
   };
 }
@@ -416,14 +446,36 @@ function stabilityIncompatibility(current, comparison) {
   return null;
 }
 
-function stabilitySummary(status, reason, topK, measuredCases, score) {
+function stabilitySummary(status, reason, topK, measuredCases, score, topKs = []) {
   return {
     status,
     ...(reason ? { reason } : {}),
     metric: "top_k_overlap",
     top_k: topK,
+    ...(topKs.length > 1 ? { top_ks: topKs } : {}),
     measured_cases: measuredCases,
     score,
+  };
+}
+
+function resultTopK(result, report) {
+  const value = Number(
+    result?.pipeline?.eval_v2?.top_k
+      ?? result?.pipeline?.score?.top_k
+      ?? result?.expected_in_top_k
+      ?? report?.summary?.eval_v2?.top_k
+      ?? 10,
+  );
+  return Number.isFinite(value) && value > 0 ? value : 10;
+}
+
+function stabilityBudgets(results, report) {
+  const topKs = Array.from(new Set((results ?? []).map((result) => resultTopK(result, report))))
+    .sort((left, right) => left - right);
+  if (topKs.length === 0) topKs.push(10);
+  return {
+    topK: topKs.length === 1 ? topKs[0] : null,
+    topKs,
   };
 }
 
@@ -782,48 +834,80 @@ export function applyBenchEvaluationPolicy(report, config) {
     }
   }
 
-  for (const [backend, summary] of Object.entries(report.summary ?? {})) {
-    const allBackendStats = (report.results ?? [])
-      .map((result) => result.backends?.[backend])
-      .filter(Boolean);
-    const backendStats = allBackendStats.filter((stats) => stats.evaluation_status !== "not_scored");
-    const topKValues = numericValues(allBackendStats.map((stats) => stats.top_k));
-    const niceTopKValues = numericValues(allBackendStats.map((stats) => stats.nice_top_k));
-    const recallValues = numericValues(backendStats.map((stats) => stats.recall_at_k));
-    const precisionValues = numericValues(backendStats.map((stats) => stats.precision_at_k));
-    const coverageValues = numericValues(backendStats.map((stats) => stats.target_coverage_at_k));
-    const f1Values = numericValues(backendStats.map((stats) => stats.f1));
-    const worstRankValues = numericValues(backendStats.map((stats) => stats.worst_must_rank));
-    const missingCountValues = numericValues(backendStats.map((stats) => stats.missing_must_count));
-    const niceRecallValues = numericValues(backendStats.map((stats) => stats.nice_to_have?.recall_at_k));
-    const evalV2MustRecallValues = numericValues(backendStats.map((stats) => stats.eval_v2?.must_recall_at_k));
-    const evalV2UsefulPrecisionValues = numericValues(backendStats.map((stats) => stats.eval_v2?.useful_precision_at_k));
-    const evalV2NdcgValues = numericValues(backendStats.map((stats) => stats.eval_v2?.ndcg_at_k));
-    const evalV2NegativeRateValues = numericValues(backendStats.map((stats) => stats.eval_v2?.negative_rate_at_k));
-    summary.scored_cases = backendStats.length;
-    summary.not_scored_cases = allBackendStats.length - backendStats.length;
-    summary.top_k = topKValues[0] ?? 10;
-    summary.nice_top_k = niceTopKValues[0] ?? 20;
-    summary.avg_recall_at_k = average(recallValues, null);
-    summary.avg_precision = average(precisionValues, null);
-    summary.avg_target_coverage_at_k = average(coverageValues, null);
-    summary.avg_f1 = average(f1Values, null);
-    summary.avg_worst_must_rank = average(worstRankValues, null);
-    summary.cases_with_must_miss = missingCountValues.filter((count) => count > 0).length;
-    summary.avg_nice_to_have_recall_at_k = niceRecallValues.length > 0
-      ? average(niceRecallValues, 0)
-      : null;
-    summary.eval_v2 = {
-      top_k: summary.top_k,
+  const backendNames = Object.keys(report.summary ?? {}).filter((backend) => !["by_suite", "by_mode"].includes(backend));
+  for (const backend of backendNames) {
+    const summary = report.summary[backend];
+    Object.assign(summary, summarizeBenchBackend(report.results ?? [], backend));
+    delete summary[`avg_${String.fromCharCode(109, 114, 114)}`];
+  }
+
+  const bySuite = groupBenchResults(report.results ?? [], (result) => result.suite || "unassigned");
+  report.by_suite = Object.fromEntries(Object.entries(bySuite).map(([suite, suiteResults]) => [suite, {
+    summary: summarizeBenchBackends(suiteResults, backendNames),
+    by_mode: Object.fromEntries(Object.entries(groupBenchResults(
+      suiteResults,
+      (result) => result.evaluation_mode || "unassigned",
+    )).map(([mode, modeResults]) => [mode, summarizeBenchBackends(modeResults, backendNames)])),
+  }]));
+  report.by_mode = Object.fromEntries(Object.entries(groupBenchResults(
+    report.results ?? [],
+    (result) => result.evaluation_mode || "unassigned",
+  )).map(([mode, modeResults]) => [mode, summarizeBenchBackends(modeResults, backendNames)]));
+
+  return report;
+}
+
+function groupBenchResults(results, keyForResult) {
+  const groups = {};
+  for (const result of results) {
+    const key = keyForResult(result);
+    groups[key] ??= [];
+    groups[key].push(result);
+  }
+  return groups;
+}
+
+function summarizeBenchBackends(results, backendNames) {
+  return Object.fromEntries(backendNames.map((backend) => [backend, summarizeBenchBackend(results, backend)]));
+}
+
+function summarizeBenchBackend(results, backend) {
+  const allBackendStats = results.map((result) => result.backends?.[backend]).filter(Boolean);
+  const backendStats = allBackendStats.filter((stats) => stats.evaluation_status !== "not_scored");
+  const topKValues = numericValues(allBackendStats.map((stats) => stats.top_k));
+  const niceTopKValues = numericValues(allBackendStats.map((stats) => stats.nice_top_k));
+  const recallValues = numericValues(backendStats.map((stats) => stats.recall_at_k));
+  const precisionValues = numericValues(backendStats.map((stats) => stats.precision_at_k));
+  const coverageValues = numericValues(backendStats.map((stats) => stats.target_coverage_at_k));
+  const f1Values = numericValues(backendStats.map((stats) => stats.f1));
+  const worstRankValues = numericValues(backendStats.map((stats) => stats.worst_must_rank));
+  const missingCountValues = numericValues(backendStats.map((stats) => stats.missing_must_count));
+  const niceRecallValues = numericValues(backendStats.map((stats) => stats.nice_to_have?.recall_at_k));
+  const evalV2MustRecallValues = numericValues(backendStats.map((stats) => stats.eval_v2?.must_recall_at_k));
+  const evalV2UsefulPrecisionValues = numericValues(backendStats.map((stats) => stats.eval_v2?.useful_precision_at_k));
+  const evalV2NdcgValues = numericValues(backendStats.map((stats) => stats.eval_v2?.ndcg_at_k));
+  const evalV2NegativeRateValues = numericValues(backendStats.map((stats) => stats.eval_v2?.negative_rate_at_k));
+  const topK = topKValues[0] ?? 10;
+  return {
+    scored_cases: backendStats.length,
+    not_scored_cases: allBackendStats.length - backendStats.length,
+    top_k: topK,
+    nice_top_k: niceTopKValues[0] ?? 20,
+    avg_recall_at_k: average(recallValues, null),
+    avg_precision: average(precisionValues, null),
+    avg_target_coverage_at_k: average(coverageValues, null),
+    avg_f1: average(f1Values, null),
+    avg_worst_must_rank: average(worstRankValues, null),
+    cases_with_must_miss: missingCountValues.filter((count) => count > 0).length,
+    avg_nice_to_have_recall_at_k: niceRecallValues.length > 0 ? average(niceRecallValues, 0) : null,
+    eval_v2: {
+      top_k: topK,
       avg_must_recall_at_k: average(evalV2MustRecallValues, null),
       avg_useful_precision_at_k: average(evalV2UsefulPrecisionValues, null),
       avg_ndcg_at_k: average(evalV2NdcgValues, null),
       avg_negative_rate_at_k: average(evalV2NegativeRateValues, null),
-    };
-    delete summary[`avg_${String.fromCharCode(109, 114, 114)}`];
-  }
-
-  return report;
+    },
+  };
 }
 
 export function summarizePipelineEvaluation(results) {
@@ -898,6 +982,8 @@ export function summarizePipelineEvaluation(results) {
   let expandedRecall = 0;
   let expandedRecallAt20 = 0;
   const stabilityValues = [];
+  const stabilityAt10Values = [];
+  const stabilityTopKs = [];
   let stabilityReason = null;
   let evalV2MustRecall = 0;
   let evalV2UsefulPrecision = 0;
@@ -928,6 +1014,8 @@ export function summarizePipelineEvaluation(results) {
     expandedRecallAt20 += result.expanded_pool.recall_at_20 ?? result.expanded_pool.score_at_20?.recall_at_k ?? result.expanded_pool.score.recall_at_k ?? 0;
     if (result.pipeline.stability?.status === "measured" && typeof result.pipeline.stability.score === "number") {
       stabilityValues.push(result.pipeline.stability.score);
+      stabilityTopKs.push(result.pipeline.stability.top_k);
+      if (result.pipeline.stability.top_k === 10) stabilityAt10Values.push(result.pipeline.stability.score);
     } else if (!stabilityReason && result.pipeline.stability?.reason) {
       stabilityReason = result.pipeline.stability.reason;
     }
@@ -957,14 +1045,15 @@ export function summarizePipelineEvaluation(results) {
     avg_expanded_pool_recall: expandedRecall / scoredResults.length,
     avg_expanded_pool_recall_at_20: expandedRecallAt20 / scoredResults.length,
     dropped_must_count: droppedMustCount,
-    avg_stability_at_10: average(stabilityValues, null),
+    avg_stability_at_10: average(stabilityAt10Values, null),
     stability: stabilityValues.length > 0
       ? stabilitySummary(
           "measured",
           null,
-          scoredResults[0]?.pipeline?.stability?.top_k ?? 10,
+          Array.from(new Set(stabilityTopKs)).length === 1 ? stabilityTopKs[0] : null,
           stabilityValues.length,
           average(stabilityValues, null),
+          Array.from(new Set(stabilityTopKs)).sort((left, right) => left - right),
         )
       : stabilitySummary(
           "not_measured",

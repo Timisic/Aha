@@ -242,12 +242,14 @@ export function hasQuoteEvidence(candidate, excerpt) {
 
 export async function relationJudgeCandidatesForCase(caseItem, candidates, options = {}) {
   const judgeOptions = defaultRelationJudgeOptions(options);
-  const annotated = annotateCandidates(candidates).map(ensureBenchmarkCandidateShape);
+  const annotatedCandidates = annotateCandidates(candidates);
+  const annotated = annotatedCandidates.map(ensureBenchmarkCandidateShape);
   const judgeMode = String(judgeOptions.relationJudgeMode || "agent").toLowerCase();
 
   if (judgeMode === "none") {
     return relationJudgeResult({
       candidates: annotated,
+      reviewedCandidates: [],
       generatedBy: "none",
       fallback: false,
       error: null,
@@ -257,7 +259,18 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
     throw new Error(`Unknown relation judge mode: ${judgeOptions.relationJudgeMode}`);
   }
 
-  const candidateInputs = relationJudgeInputsForCase(caseItem, annotated);
+  const candidateInputs = relationJudgeInputsForCase(caseItem, annotatedCandidates);
+  if (candidateInputs.length === 0) {
+    const error = new Error("No candidate excerpts were readable, so Relation Judge did not run.");
+    if (!judgeOptions.relationJudgeAgentFallback) throw error;
+    return relationJudgeResult({
+      candidates: annotated,
+      reviewedCandidates: [],
+      generatedBy: "none",
+      fallback: true,
+      error: error.message,
+    });
+  }
   const cachePath = judgeOptions.relationJudgeAgentCache ? resolve(judgeOptions.relationJudgeAgentCache) : "";
   const cache = readRelationJudgeCache(cachePath);
   const cacheKey = relationJudgeCacheKey(caseItem, annotated, judgeOptions);
@@ -265,6 +278,7 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
   if (Array.isArray(cachedCandidates) && cachedCandidates.length > 0) {
     return relationJudgeResult({
       candidates: mergeJudgedCandidates(annotated, cachedCandidates, candidateInputs, { preserveOrder: false }),
+      reviewedCandidates: candidateInputs,
       generatedBy: "agent-cache",
       fallback: false,
       error: null,
@@ -320,6 +334,7 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
     writeRelationJudgeCache(cachePath, cache);
     return relationJudgeResult({
       candidates: mergeJudgedCandidates(annotated, judgedCandidates, candidateInputs, { preserveOrder: false }),
+      reviewedCandidates: candidateInputs,
       generatedBy: "agent",
       fallback: false,
       error: null,
@@ -328,6 +343,7 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
     if (!judgeOptions.relationJudgeAgentFallback) throw error;
     return relationJudgeResult({
       candidates: annotated,
+      reviewedCandidates: candidateInputs,
       generatedBy: "none",
       fallback: true,
       error: error.message,
@@ -405,13 +421,20 @@ function relationStrength(candidate) {
 }
 
 function relationJudgeInputsForCase(caseItem, candidates) {
-  return candidates.map((candidate) => ({
-    notePath: candidate.notePath,
-    noteTitle: candidate.noteTitle,
-    retrievalHit: candidate.hit,
-    retrievalWhy: candidate.why,
-    excerpt: compactLine(candidate.content ?? candidate.snippet ?? candidate.hit ?? "", 1400),
-  })).filter((candidate) => candidate.notePath && candidate.excerpt);
+  return candidates.map((candidate) => {
+    const notePath = candidatePath(candidate);
+    const noteTitle = candidate.title
+      || candidate.noteTitle
+      || notePath.split("/").pop()?.replace(/\.md$/i, "")
+      || notePath;
+    return {
+      notePath,
+      noteTitle,
+      retrievalHit: candidate.hit,
+      retrievalWhy: candidate.why,
+      excerpt: compactLine(candidate.content ?? candidate.snippet ?? candidate.hit ?? "", 1400),
+    };
+  }).filter((candidate) => candidate.notePath && candidate.excerpt);
 }
 
 function ensureBenchmarkCandidateShape(candidate) {
@@ -430,10 +453,14 @@ function ensureBenchmarkCandidateShape(candidate) {
   };
 }
 
-function relationJudgeResult({ candidates, generatedBy, fallback, error }) {
+function relationJudgeResult({ candidates, reviewedCandidates = [], generatedBy, fallback, error }) {
   const rankedIds = candidates.map((candidate) => candidate.rerankId).filter(Boolean);
   return {
     candidates,
+    relation_judge_reviewed_candidates: reviewedCandidates.map((candidate) => ({
+      notePath: candidate.notePath,
+      noteTitle: candidate.noteTitle,
+    })),
     relation_judge_generated_by: generatedBy,
     relation_judge_fallback: fallback,
     relation_judge_error: error,

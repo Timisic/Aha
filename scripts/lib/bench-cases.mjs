@@ -498,7 +498,10 @@ export function validateBenchmarkSuiteDocument(input, caseItems = input?.cases ?
   const resolver = options.resolver ?? buildVaultPathResolver(benchVaultRoot());
   const diagnostics = emptySuiteDiagnostics();
   const definitions = normalizedSuiteDefinitions(input);
-  const normalizedCases = (caseItems ?? []).map(normalizedCaseForSuiteValidation);
+  const validationCases = options.allStates === true || options.strict === true
+    ? input?.cases ?? caseItems
+    : caseItems;
+  const normalizedCases = (validationCases ?? []).map(normalizedCaseForSuiteValidation);
   const caseEvaluations = [];
   const evaluationByCase = new Map();
 
@@ -740,15 +743,47 @@ function emptyPublicFixtureDiagnostics() {
   };
 }
 
-function publicFixturePaths(caseItem) {
+function publicFixturePaths(caseItem, caseIndex) {
+  const casePath = `cases[${caseIndex}]`;
   return [
-    caseItem.input?.note,
-    ...(caseItem.gold?.must ?? []),
-    ...(caseItem.gold?.nice ?? []),
-    ...(caseItem.gold?.noise ?? []),
-    ...(caseItem.relation_targets ?? []).map((item) => item?.note_path ?? item?.notePath),
-    ...(caseItem.graph_evidence ?? []).map((item) => item?.target ?? item?.note_path ?? item?.notePath),
-  ].filter((value) => typeof value === "string" && value.trim());
+    { field: `${casePath}.input.note`, value: caseItem.input?.note },
+    ...(caseItem.gold?.must ?? []).map((value, index) => ({ field: `${casePath}.gold.must[${index}]`, value })),
+    ...(caseItem.gold?.nice ?? []).map((value, index) => ({ field: `${casePath}.gold.nice[${index}]`, value })),
+    ...(caseItem.gold?.noise ?? []).map((value, index) => ({ field: `${casePath}.gold.noise[${index}]`, value })),
+    ...(caseItem.relation_targets ?? []).map((item, index) => ({
+      field: `${casePath}.relation_targets[${index}].note_path`,
+      value: item?.note_path ?? item?.notePath,
+    })),
+    ...(caseItem.graph_evidence ?? []).map((item, index) => ({
+      field: `${casePath}.graph_evidence[${index}].target`,
+      value: item?.target ?? item?.note_path ?? item?.notePath,
+    })),
+  ].filter((item) => typeof item.value === "string" && item.value.trim());
+}
+
+function collectStringFields(value, path = "", output = []) {
+  if (typeof value === "string") {
+    output.push({ field: path, value });
+    return output;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectStringFields(item, `${path}[${index}]`, output));
+    return output;
+  }
+  if (!isRecord(value)) return output;
+  for (const [key, item] of Object.entries(value)) {
+    collectStringFields(item, path ? `${path}.${key}` : key, output);
+  }
+  return output;
+}
+
+function containsPrivateAbsolutePath(value) {
+  const text = String(value ?? "").replace(/\\/g, "/");
+  const trimmed = text.trim();
+  return /(^|[\s'"(])~\/(?=\S)/.test(text)
+    || /(^|[\s'"(])(?:file:\/\/)?\/(?:Users|home|Volumes|private|tmp|var)\/[^\s'"),;]+/i.test(text)
+    || /(^|[\s'"(])[a-z]:\/[^\s'"),;]+/i.test(text)
+    || /^\/(?:[^/\n]+\/)+[^/\n]+$/.test(trimmed);
 }
 
 function collectForbiddenContentFields(value, path = "", output = []) {
@@ -777,18 +812,33 @@ function isSanitizedPublicPath(value) {
 
 export function validatePublicBenchmarkFixture(document, options = {}) {
   const diagnostics = emptyPublicFixtureDiagnostics();
+  const privatePathFields = new Set();
+  const addPrivatePath = ({ caseId = "(document)", field, kind }) => {
+    if (privatePathFields.has(field)) return;
+    privatePathFields.add(field);
+    diagnostics.private_paths.push({ case_id: caseId, field, kind });
+  };
   if (document?.privacy !== "sanitized-synthetic") {
     diagnostics.missing_privacy_declaration.push({ expected: "sanitized-synthetic" });
   }
-  for (const caseItem of document?.cases ?? []) {
+  for (const [caseIndex, caseItem] of (document?.cases ?? []).entries()) {
+    const caseId = caseItem?.id ?? "(missing id)";
     if (caseItem?.provenance?.origin !== "synthetic") {
-      diagnostics.non_synthetic_provenance.push({ case_id: caseItem?.id ?? "(missing id)" });
+      diagnostics.non_synthetic_provenance.push({ case_id: caseId });
     }
-    for (const value of publicFixturePaths(caseItem)) {
-      if (!isSanitizedPublicPath(value)) {
-        diagnostics.private_paths.push({ case_id: caseItem?.id ?? "(missing id)", value });
+    for (const item of publicFixturePaths(caseItem, caseIndex)) {
+      if (!isSanitizedPublicPath(item.value)) {
+        addPrivatePath({ caseId, field: item.field, kind: "unsanitized_fixture_path" });
       }
     }
+  }
+  for (const item of collectStringFields(document)) {
+    if (!containsPrivateAbsolutePath(item.value)) continue;
+    const caseMatch = /^cases\[(\d+)\]/.exec(item.field);
+    const caseId = caseMatch
+      ? document.cases?.[Number(caseMatch[1])]?.id ?? "(missing id)"
+      : "(document)";
+    addPrivatePath({ caseId, field: item.field, kind: "private_absolute_path" });
   }
   diagnostics.forbidden_content_fields = collectForbiddenContentFields(document).map((field) => ({ field }));
   const unsafe = Object.values(diagnostics).some((items) => items.length > 0);
@@ -871,9 +921,10 @@ export function validateCase(caseItem, options = {}) {
   return identityEvaluation;
 }
 
-export function activeCases(cases, includeDraft) {
+export function activeCases(cases, includeDraft, includeOff = false) {
   return cases.filter((caseItem) => {
     const state = normalizeCaseState(caseItem);
+    if (includeOff) return true;
     if (includeDraft) return state !== "off";
     return state === "active";
   });
@@ -888,7 +939,7 @@ export function readBenchmarkCases(inputPath, options = {}) {
   }
 
   const identityResolver = buildVaultPathResolver(benchVaultRoot());
-  const cases = activeCases(input.cases, !!options.includeDraft).map((caseItem) => {
+  const cases = activeCases(input.cases, !!options.includeDraft, !!options.includeOff).map((caseItem) => {
     const normalized = normalizeBenchmarkCase(caseItem);
     const resolved = {
       ...normalized,

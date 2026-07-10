@@ -84,6 +84,31 @@ test("strict suite validation accepts versioned development and frozen holdout c
   await rm(root, { recursive: true, force: true });
 });
 
+test("strict suite validation includes off cases even when runners pass only active cases", async () => {
+  const root = await benchmarkRoot("aha-off-suite-validation-");
+  const document = suiteDocument([
+    benchmarkCase({
+      id: "active-valid",
+      suite: "development",
+      evaluation_mode: "discovery",
+      provenance: provenance("human_authored", "Runnable development case."),
+    }),
+    benchmarkCase({
+      id: "off-invalid",
+      state: "off",
+      suite: "development",
+      evaluation_mode: "discovery",
+    }),
+  ]);
+
+  assert.throws(
+    () => validateBenchmarkSuiteDocument(document, [document.cases[0]], { strict: true }),
+    /missing_provenance/i,
+  );
+
+  await rm(root, { recursive: true, force: true });
+});
+
 test("suite validation surfaces graph-mode contradictions and pending draft mode review", async () => {
   const root = await benchmarkRoot("aha-mode-suite-");
   const document = suiteDocument([
@@ -387,6 +412,41 @@ test("public benchmark fixture validation enforces synthetic provenance and sani
     () => validatePublicBenchmarkFixture(invalid, { strict: true }),
     /public benchmark fixture validation failed/i,
   );
+});
+
+test("public fixture privacy validation finds private paths in arbitrary nested strings without flagging prose", () => {
+  const document = {
+    privacy: "sanitized-synthetic",
+    description: "Synthetic prose may discuss retrieval/feedback and link to https://example.com/docs.",
+    ...suiteDocument([
+      benchmarkCase({
+        id: "nested-private-path",
+        suite: "development",
+        evaluation_mode: "discovery",
+        input: { thought: "Synthetic thought with no local path." },
+        gold: {
+          must: ["Sanitized/Must.md"],
+          nice: [],
+          noise: [],
+        },
+        provenance: provenance("synthetic", "Derived from a repository-owned synthetic scenario."),
+        metadata: {
+          source_description: "Originally copied from /Users/alice/Obsidian Notes/Private.md",
+        },
+      }),
+    ]),
+  };
+
+  const validation = validatePublicBenchmarkFixture(document);
+
+  assert.equal(validation.status, "unsafe");
+  assert.deepEqual(validation.diagnostics.private_paths, [{
+    case_id: "nested-private-path",
+    field: "cases[0].metadata.source_description",
+    kind: "private_absolute_path",
+  }]);
+  delete document.cases[0].metadata;
+  assert.equal(validatePublicBenchmarkFixture(document, { strict: true }).status, "ready");
 });
 
 test("the tracked benchmark example satisfies the public privacy contract", async () => {

@@ -41,6 +41,103 @@ export function readGitState(repoRoot, spawn) {
   return { head, clean: porcelain.trim().length === 0 };
 }
 
+export function loadPluginRuntimeConfiguration(pluginDataPath, options = {}) {
+  let document;
+  try {
+    document = JSON.parse(readFileSync(path.resolve(pluginDataPath), "utf8"));
+  } catch (error) {
+    throw new Error(`Could not read Aha plugin settings: ${error.message}`);
+  }
+  const settings = document?.settings;
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    throw new Error("Aha plugin data must contain a settings object for product-parity evaluation.");
+  }
+  const required = (key) => {
+    const value = typeof settings[key] === "string" ? settings[key].trim() : "";
+    if (!value) throw new Error(`Aha plugin setting ${key} is required for product-parity evaluation.`);
+    return value;
+  };
+  const repoRoot = path.resolve(options.repoRoot ?? ".");
+  const workspace = path.resolve(required("ahaWorkspace"));
+  if (workspace !== repoRoot) {
+    throw new Error("Aha plugin workspace does not match the repository being benchmarked.");
+  }
+  const wrapperRelativePath = required("wrapperRelativePath").replace(/\\/g, "/").replace(/^\.\//, "");
+  if (wrapperRelativePath !== "scripts/aha/run-insight-search.mjs") {
+    throw new Error("Aha plugin wrapper must be the shipped scripts/aha/run-insight-search.mjs for product parity.");
+  }
+  if (settings.useFixtureResult === true) {
+    throw new Error("Plugin fixture result must be disabled for product-parity evaluation.");
+  }
+  const targetCandidates = Number(settings.targetCandidates);
+  if (!Number.isInteger(targetCandidates) || targetCandidates < 15 || targetCandidates > 20) {
+    throw new Error("Aha plugin targetCandidates must be an integer from 15 to 20.");
+  }
+  const qmdRunner = required("qmdRunner");
+  if (!["sdk", "cli"].includes(qmdRunner)) throw new Error("Aha plugin qmdRunner must be sdk or cli.");
+  const llmProvider = required("llmProvider");
+  if (!["openai", "codex-cli"].includes(llmProvider)) throw new Error("Aha plugin llmProvider is unsupported.");
+  const llmApiKeyEnv = required("llmApiKeyEnv");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(llmApiKeyEnv)) {
+    throw new Error("Aha plugin llmApiKeyEnv is not a valid environment variable name.");
+  }
+  if (typeof settings.qmdRerank !== "boolean") throw new Error("Aha plugin qmdRerank must be boolean.");
+
+  const effective = {
+    llm_provider: llmProvider,
+    llm_base_url: required("llmBaseUrl"),
+    llm_model: required("llmModel"),
+    llm_api_key_env: llmApiKeyEnv,
+    codex_command: required("codexCommand"),
+    codex_model: required("codexModel"),
+    codex_reasoning_effort: required("codexReasoningEffort"),
+    codex_sandbox: required("codexSandbox"),
+    qmd_runner: qmdRunner,
+    qmd_command: required("qmdCommand"),
+    qmd_index: required("qmdIndex"),
+    qmd_sdk_module: typeof settings.qmdSdkModule === "string" ? settings.qmdSdkModule.trim() : "",
+    qmd_rerank: settings.qmdRerank,
+    obsidian_command: required("obsidianCommand"),
+    target_candidates: targetCandidates,
+    wrapper: wrapperRelativePath,
+  };
+  const runnerArgs = [
+    "--llm-provider", effective.llm_provider,
+    "--llm-base-url", effective.llm_base_url,
+    "--llm-model", effective.llm_model,
+    "--llm-api-key-env", effective.llm_api_key_env,
+    "--query-agent-provider", effective.llm_provider,
+    "--query-agent-bin", effective.codex_command,
+    "--query-agent-model", effective.llm_provider === "codex-cli" ? effective.codex_model : effective.llm_model,
+    "--relation-judge-agent-provider", effective.llm_provider,
+    "--relation-judge-agent-bin", effective.codex_command,
+    "--relation-judge-agent-model", effective.llm_provider === "codex-cli" ? effective.codex_model : effective.llm_model,
+    "--runtime-codex-command", effective.codex_command,
+    "--runtime-codex-model", effective.codex_model,
+    "--runtime-codex-reasoning-effort", effective.codex_reasoning_effort,
+    "--runtime-codex-sandbox", effective.codex_sandbox,
+    "--runtime-qmd-runner", effective.qmd_runner,
+    "--qmd", effective.qmd_command,
+    "--index", effective.qmd_index,
+    "--obsidian", effective.obsidian_command,
+    "--limit", String(effective.target_candidates),
+  ];
+  if (effective.qmd_sdk_module) runnerArgs.push("--runtime-qmd-sdk-module", effective.qmd_sdk_module);
+  if (effective.qmd_rerank) runnerArgs.push("--runtime-qmd-rerank");
+  const settingsId = sha256(JSON.stringify(effective));
+  return {
+    runnerArgs,
+    environment: typeof settings.llmApiKey === "string" && settings.llmApiKey.trim()
+      ? { [llmApiKeyEnv]: settings.llmApiKey.trim() }
+      : {},
+    settingsId,
+    provenance: {
+      source: "obsidian-plugin-settings",
+      settings_id: settingsId,
+    },
+  };
+}
+
 export function buildWorkflowProvenance(input) {
   return {
     schema: WORKFLOW_SCHEMA,
@@ -63,6 +160,7 @@ export function buildWorkflowProvenance(input) {
       counts: cloneObject(input.caseCounts),
       holdout: safeHoldoutSnapshot(input.holdoutSnapshot),
     },
+    runtime_configuration: safeRuntimeConfiguration(input.runtimeConfiguration),
     artifacts: safeArtifacts(input.artifacts),
     promotion: {
       eligible: input.promotion?.eligible === true,
@@ -309,6 +407,14 @@ function safeHoldoutSnapshot(value) {
     frozen: value.frozen === true,
     change_reason: value.change_reason ?? null,
     fingerprint: value.fingerprint ?? null,
+  };
+}
+
+function safeRuntimeConfiguration(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    source: value.source ?? null,
+    settings_id: value.settings_id ?? null,
   };
 }
 

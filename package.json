@@ -11,7 +11,7 @@
     "bench:diagnostic": "node scripts/bench/run-eval-workflow.mjs diagnostic",
     "lint": "eslint \"scripts/**/*.mjs\" \"obsidian-plugin/*.mjs\"",
     "check:scripts": "find scripts obsidian-plugin -name '*.mjs' -not -path '*/node_modules/*' -print0 | xargs -0 -n 1 node --check",
-    "test": "node --test scripts/aha/tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 scripts/aha/tests/*.test.mjs",
     "verify": "npm run lint && npm run check:scripts && npm --prefix obsidian-plugin run verify"
   },
   "devDependencies": {

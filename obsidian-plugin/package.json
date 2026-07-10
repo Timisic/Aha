@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
-    "test": "node --test ../scripts/aha/tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 ../scripts/aha/tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm test && npm run build"
   },

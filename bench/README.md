@@ -6,7 +6,7 @@ This directory contains Aha's evaluation contract, sanitized examples, and ignor
 
 - `aha-memory-cases.example.json` is a tracked, synthetic schema example. It must not contain real note text, private paths, or case-to-note mappings.
 - `aha-memory-cases.json` is the ignored private benchmark. Real inputs, labels, and vault-relative paths stay here.
-- `aha-memory-seed-cases.json` is the ignored development inbox generated from feedback. Its cases remain `draft` until a human reviews and promotes them.
+- `aha-memory-seed-cases.json` is the ignored development inbox generated from feedback. Its cases remain `draft` until a human reviews and promotes them. Custom collector outputs must also stay inside this repository and be Git ignored; tracked, canonical, or repo-external targets are rejected before collection.
 - `reports/runs/<run-id>/` contains immutable local run manifests, reports, and traces.
 - `reports/latest/product-parity.json` is a small, hash-verified pointer to the most recent eligible baseline. It is never a mutable report body.
 
@@ -63,7 +63,7 @@ The primary schema is v3. Legacy flat fields remain readable only through the sh
 
 Required maintenance fields:
 
-- `state`: `active`, `draft`, or `off`. Normal runs score only active cases.
+- `state`: `active`, `draft`, or `off`. Normal runs score only active cases, while `bench:validate` checks every state so disabled data cannot hide an invalid identity, suite, mode, or provenance record.
 - `suite`: `development` or `holdout`.
 - `evaluation_mode`: `discovery` or `graph_assisted`.
 - `provenance.origin` and `provenance.reason`: enough context to audit why the case exists.
@@ -162,6 +162,8 @@ npm run bench:baseline
 
 `baseline` invokes the shipped runtime with trace enabled, not a copied benchmark implementation. `diagnostic` keeps the deeper top-seed expansion and judge-reordering experiment under an explicit non-product profile.
 
+The live workflows load the current plugin settings from `<vault>/.obsidian/plugins/aha-memory-surface/data.json` by default; override that source with `-- --plugin-data <path>`. Model, QMD/Obsidian commands, QMD runner, target count, and other behavior-affecting settings are passed to the runner and represented by a privacy-safe configuration identity. A stored API key is injected only through the configured child-process environment variable and is never written to arguments, manifests, reports, or traces. Fixture mode or a plugin workspace/wrapper mismatch blocks product parity.
+
 An eligible baseline requires the same clean Git commit from start to finish, unchanged case-file hash, ready suite and identity validation, the exact active case set, successful scored runtime results, compatible `PipelineTrace` v2 artifacts, and product-parity provenance. Dirty, stale, partial, incompatible, or failed runs remain under `reports/runs/` with machine-readable reasons and do not replace the latest pointer.
 
 The first baseline has no compatible comparison, so stability is honestly `not_measured`. A later compatible baseline may compare against the latest pointer.
@@ -176,6 +178,7 @@ node scripts/bench/summarize-report.mjs bench/reports/latest/product-parity.json
 ```
 
 The QMD-only runner is L1. Product-parity and diagnostic-enhanced are two explicit L2 profiles; do not compare their headline scores as if they were the same pipeline.
+When L1 runs `--suite all`, its report still separates `by_suite` and `by_mode` metrics instead of presenting only a collapsed headline.
 
 ## Evidence, statistics, and action
 
