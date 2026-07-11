@@ -1315,6 +1315,8 @@ test("pipeline fails structurally when admitted candidates have no readable exce
       source,
       "--vault-root",
       vault,
+      "--retrieval-policy",
+      "product-v2",
       "--codex-command",
       codex,
       "--qmd-command",
