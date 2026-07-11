@@ -40,7 +40,7 @@ export const LEGACY_RETRIEVAL_POLICY_V1 = Object.freeze({
   chunkedJudge: false,
   failClosed: false,
   supplements: Object.freeze({ sourceExcerpt: false, thought: false }),
-  graphExpansion: Object.freeze({ enabled: true, seedLimit: 0 }),
+  graphExpansion: Object.freeze({ enabled: true, seedLimit: 0, unbounded: true }),
   candidateBudgets: Object.freeze({
     retrievalPoolBudget: 20,
     judgeReviewBudget: 20,

@@ -1107,6 +1107,70 @@ test("pipeline filters generated Aha review notes from graph expansion", async (
   }
 });
 
+test("legacy runtime restores the complete source graph with historical edge scores", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-legacy-graph-"));
+  const vault = path.join(temp, "vault");
+  const source = path.join(vault, "source.md");
+  const codex = path.join(temp, "codex-helper.mjs");
+  const qmd = path.join(temp, "qmd-helper.mjs");
+  const obsidian = path.join(temp, "obsidian-helper.mjs");
+  const graphLinks = Array.from({ length: 12 }, (_, index) => `Links/Linked ${index + 1}.md`);
+  const graphBacklinks = Array.from({ length: 12 }, (_, index) => `Backlinks/Backlink ${index + 1}.md`);
+  await mkdir(vault, { recursive: true });
+  await writeFile(source, "# Source\n\nA current insight with enough text for query planning.");
+  await writeSafeCandidate(vault);
+  for (const notePath of [...graphLinks, ...graphBacklinks]) {
+    const absolutePath = path.join(vault, notePath);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, `# ${path.basename(notePath, ".md")}\n\nGraph evidence.`);
+  }
+  await writePipelineHelpers({
+    codex,
+    qmd,
+    obsidian,
+    relationJudge: "success",
+    graphLinks,
+    graphBacklinks,
+  });
+
+  try {
+    const result = spawnSync(process.execPath, [
+      wrapper,
+      "--workspace",
+      repoRoot,
+      "--llm-provider",
+      "codex-cli",
+      "--qmd-runner",
+      "cli",
+      "--source-path",
+      "source.md",
+      "--source-absolute-path",
+      source,
+      "--vault-root",
+      vault,
+      "--codex-command",
+      codex,
+      "--qmd-command",
+      qmd,
+      "--obsidian-command",
+      obsidian,
+      "--retrieval-policy",
+      "legacy-v1",
+      "--trace",
+    ], { encoding: "utf8", timeout: 10000 });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    const expansion = output.trace.steps.source_expansion;
+    assert.equal(expansion.candidate_count, 24);
+    assert.deepEqual(expansion.candidates.slice(0, 12).map(({ score }) => score), Array(12).fill(0.14));
+    assert.deepEqual(expansion.candidates.slice(12).map(({ score }) => score), Array(12).fill(0.18));
+    assert.equal(expansion.candidates.at(-1).file, "Backlinks/Backlink 12.md");
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("pipeline bounds QMD plan query timeouts serially", async () => {
   const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-qmd-timeout-bound-"));
   const vault = path.join(temp, "vault");
@@ -1877,7 +1941,7 @@ async function writeSafeCandidate(vault) {
   await writeFile(candidate, "# Candidate\n\nSafe vault evidence.");
 }
 
-async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsidePath = "", outsideSnippet = "outside snippet", noCandidates = false, graphPaths = [], qmdHang = false, qmdHangQueryOnly = false, qmdHangRawQueryOnce = false }) {
+async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsidePath = "", outsideSnippet = "outside snippet", noCandidates = false, graphPaths = [], graphLinks = graphPaths, graphBacklinks = graphPaths, qmdHang = false, qmdHangQueryOnly = false, qmdHangRawQueryOnce = false }) {
   await writeFile(codex, [
     "#!/usr/bin/env node",
     "import { writeFileSync } from 'node:fs';",
@@ -1957,7 +2021,8 @@ async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsi
     "#!/usr/bin/env node",
     "const args = process.argv.slice(2);",
     "if (args[0] === 'files' && args[1] === 'total') { console.log('1'); process.exit(0); }",
-    `if (args[0] === 'links' || args[0] === 'backlinks') { console.log(${JSON.stringify(JSON.stringify(graphPaths.map((file) => ({ file }))))}); process.exit(0); }`,
+    `if (args[0] === 'links') { console.log(${JSON.stringify(JSON.stringify(graphLinks.map((file) => ({ file }))))}); process.exit(0); }`,
+    `if (args[0] === 'backlinks') { console.log(${JSON.stringify(JSON.stringify(graphBacklinks.map((file) => ({ file }))))}); process.exit(0); }`,
     "console.log('ok');",
     "",
   ].join("\n"));

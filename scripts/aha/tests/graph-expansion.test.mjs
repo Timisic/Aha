@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { expandGraphCandidates } from "../graph-expansion.mjs";
+import { LEGACY_RETRIEVAL_POLICY_V1, PRODUCT_RETRIEVAL_POLICY_V2 } from "../retrieval-policies.mjs";
 
 const identity = (candidate) => candidate.file.toLowerCase();
 const admit = (row) => row.excluded ? null : { file: row.file, score: row.score ?? 0.1 };
@@ -122,4 +123,60 @@ test("disabled graph expansion never invokes adapters", async () => {
       globalCandidateLimit: 20,
     },
   });
+});
+
+test("legacy policy preserves the complete source graph in command order", async () => {
+  const limits = [];
+  const links = Array.from({ length: 12 }, (_, index) => ({ file: `Memory/Link-${index}.md` }));
+  const backlinks = Array.from({ length: 12 }, (_, index) => ({ file: `Memory/Back-${index}.md` }));
+  const result = await expandGraphCandidates({
+    sourcePath: "Source.md",
+    policy: LEGACY_RETRIEVAL_POLICY_V1,
+    adapters: {
+      links: async ({ limit }) => {
+        limits.push(limit);
+        return links;
+      },
+      backlinks: async ({ limit }) => {
+        limits.push(limit);
+        return backlinks;
+      },
+      admitCandidate: (row, { command }) => ({
+        ...row,
+        score: command === "backlinks" ? 0.18 : 0.14,
+      }),
+      canonicalIdentity: identity,
+    },
+  });
+
+  assert.deepEqual(limits, [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY]);
+  assert.equal(result.candidates.length, 24);
+  assert.deepEqual(result.candidates.slice(0, 12).map(({ score }) => score), Array(12).fill(0.14));
+  assert.deepEqual(result.candidates.slice(12).map(({ score }) => score), Array(12).fill(0.18));
+  assert.equal(result.seeds.length, 0);
+});
+
+test("legacy graph restoration does not remove product-v2 bounds", async () => {
+  const limits = [];
+  const rows = Array.from({ length: 12 }, (_, index) => ({ file: `Memory/Graph-${index}.md` }));
+  const result = await expandGraphCandidates({
+    sourcePath: "Source.md",
+    policy: PRODUCT_RETRIEVAL_POLICY_V2,
+    adapters: {
+      links: async ({ limit }) => {
+        limits.push(limit);
+        return rows;
+      },
+      backlinks: async ({ limit }) => {
+        limits.push(limit);
+        return rows.map((row) => ({ file: row.file.replace("Graph", "Back") }));
+      },
+      admitCandidate: admit,
+      canonicalIdentity: identity,
+    },
+  });
+
+  assert.deepEqual(limits, [5, 5]);
+  assert.equal(result.candidates.length, 8);
+  assert.equal(result.policy.globalCandidateLimit, 24);
 });

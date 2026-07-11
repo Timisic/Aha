@@ -102,13 +102,14 @@ function normalizePolicy(policy) {
   const graph = policy.graphExpansion && typeof policy.graphExpansion === "object"
     ? policy.graphExpansion
     : policy;
+  const unbounded = graph.unbounded === true;
   return {
     enabled: policy.graphExpansion !== false && graph.enabled !== false,
     seedLimit: integerBudget(graph.seedLimit, 0),
-    linksLimit: integerBudget(graph.linksLimit, 5),
-    backlinksLimit: integerBudget(graph.backlinksLimit, 5),
-    perOriginLimit: integerBudget(graph.perSeedLimit ?? graph.perOriginLimit, 8),
-    globalCandidateLimit: integerBudget(graph.globalCandidateLimit, 20),
+    linksLimit: unbounded ? Number.POSITIVE_INFINITY : integerBudget(graph.linksLimit, 5),
+    backlinksLimit: unbounded ? Number.POSITIVE_INFINITY : integerBudget(graph.backlinksLimit, 5),
+    perOriginLimit: unbounded ? Number.POSITIVE_INFINITY : integerBudget(graph.perSeedLimit ?? graph.perOriginLimit, 8),
+    globalCandidateLimit: unbounded ? Number.POSITIVE_INFINITY : integerBudget(graph.globalCandidateLimit, 20),
   };
 }
 

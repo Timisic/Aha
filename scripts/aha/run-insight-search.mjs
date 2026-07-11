@@ -1232,14 +1232,15 @@ function runtimeGraphAdapters(args) {
   return {
     links: graphCommand("links"),
     backlinks: graphCommand("backlinks"),
-    admitCandidate: async (row) => {
+    admitCandidate: async (row, { command }) => {
       const notePath = typeof row === "string" ? row : notePathForObsidian(args, row);
       if (!notePath?.endsWith(".md")) return null;
+      const graphKind = command === "backlinks" ? "backlink" : "outlink";
       const candidateRow = typeof row === "string" ? {
-        score: 0.14,
+        score: graphKind === "backlink" ? 0.18 : 0.14,
         file: `qmd://obsidian/${notePath}?index=obsidian`,
         title: path.basename(notePath, ".md"),
-        snippet: `Obsidian graph candidate: ${notePath}`,
+        snippet: `Obsidian ${graphKind}: ${notePath}`,
       } : row;
       if (!(await isCandidatePathAllowed(args, notePath, candidateRow))) return null;
       if (isSourceCandidate(args, notePath, candidateRow)) return null;
