@@ -69,3 +69,53 @@ test("shared retrieval pipeline preserves structured stage failures in its trace
   assert.deepEqual(result, { ok: false, error: { stage: "query_generation", message: "planner unavailable" } });
   assert.deepEqual(trace.errors, [{ stage: "query_generation", message: "planner unavailable" }]);
 });
+
+test("v2 pipeline composes supplements, graph seeds, and chunked fail-closed judging", async () => {
+  const reviewed = [];
+  const { result, state } = await runRetrievalPipeline({
+    insight: { text: "source excerpt", thought: "fresh distinct thought", sourcePath: "Source.md" },
+    policy: {
+      queryLimit: 4,
+      supplements: { sourceExcerpt: true, thought: true },
+      graphExpansion: { enabled: true, seedLimit: 1, linksLimit: 1, backlinksLimit: 0, globalCandidateLimit: 1 },
+      candidateBudgets: {
+        retrievalPoolBudget: 4,
+        judgeReviewBudget: 4,
+        finalDisplayBudget: 2,
+        chunkSize: 2,
+        concurrency: 2,
+        globalComparisonBudget: 4,
+      },
+    },
+    adapters: {
+      planQueries: async () => ({ queries: [{ kind: "generated", text: "model query" }] }),
+      retrieve: async ({ queries }) => ({
+        runs: queries.map((query, index) => ({ query, rows: [{ file: `${index}.md` }] })),
+      }),
+      graphAdapters: () => ({
+        links: async () => ["Graph.md"],
+        admitCandidate: async (file) => ({ file }),
+        canonicalIdentity: (candidate) => candidate.file.toLowerCase(),
+      }),
+      selectCandidates: async ({ retrievalCandidates, graphCandidates }) => [
+        ...retrievalCandidates,
+        ...graphCandidates,
+      ],
+      judgeRelationChunk: async ({ candidates, context }) => {
+        reviewed.push({ index: context.chunkIndex, files: candidates.map((candidate) => candidate.file) });
+        return candidates;
+      },
+      compareRelationsGlobally: async ({ candidates }) => candidates,
+      candidateId: (candidate) => candidate.file,
+      validateRelationEvidence: (candidate) => candidate,
+    },
+  });
+
+  assert.deepEqual(state.queries.map((query) => query.provenance ?? "generated"), [
+    "generated", "deterministic", "deterministic",
+  ]);
+  assert.equal(state.graphExpansion.seeds.length, 1);
+  assert.equal(state.relationJudge.counts.chunk_count, 2);
+  assert.deepEqual(reviewed.map((chunk) => chunk.files.length), [2, 2]);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.file), ["0.md", "1.md"]);
+});

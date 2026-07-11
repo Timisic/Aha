@@ -15,9 +15,12 @@ This keeps trace work simple enough to maintain while still making benchmark res
 - `PipelineTrace` should be one stable, versioned structured object per runtime or benchmark case.
 - The shipped runtime is the source of truth for product-parity traces. The benchmark must consume that runtime result and trace instead of reconstructing a second product pipeline.
 - `scripts/aha/retrieval-pipeline.mjs` is the source of truth for orchestration order. The shipped wrapper and diagnostic-enhanced benchmark inject different policies and runtime adapters into its documented `runRetrievalPipeline({ insight, policy, adapters })` interface.
+- Query supplements, source-and-top-seed graph expansion, and chunked Relation Judge execution are shared mechanisms. Product and diagnostic profiles may change only their explicit versioned policy and environment adapters; they must not fork these algorithms.
+- `product-v2` targets an internal retrieval pool of 80, a judge review pool of 60, and a final panel slate of 20, with bounded graph and Judge concurrency. `diagnostic-v2` uses the same defaults. `legacy-v1` remains the explicit rollback policy and preserves the former 20/20/20, source-only, no-supplement behavior.
 - Benchmark cases, gold labels, scoring, diagnosis, report generation, and baseline promotion remain outside that interface. Product-parity continues to launch the shipped wrapper as a process.
 - Trace collection is opt-in and off by default. It is diagnostic process evidence and must not be persisted in the Aha Session Store.
 - Runtime trace fields use vault-relative identities, ranks, scores, source labels, relations, hashes, evidence counts, and error categories. They do not store note bodies, full queries or prompts, API keys, raw stderr, private absolute paths, `hit`/`why` prose, or quotes.
+- Trace configuration records policy id/version, retrieval/judge/display budgets, graph budgets, query provenance, actual reviewed/chunk/final counts, and content-free failure metadata. Failed supplemental or graph commands remain visible without erasing successful QMD candidates; any failed Judge chunk fails closed.
 - Benchmark-only gold positions and rule-based diagnosis may be attached after the runtime completes; they must not change runtime candidates or ordering.
 - Human-readable views may be generated from the structured trace later, but they should not become the source of truth.
 - The benchmark report may summarize traces across cases, but per-case trace objects remain the evidence layer.

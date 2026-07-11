@@ -104,6 +104,7 @@ function queryTrace(query) {
   return {
     kind: query?.kind || "unknown",
     command: query?.command || "qmd query",
+    provenance: query?.provenance === "deterministic" ? "deterministic" : "generated",
     query_hash: sha256(payload),
   };
 }
@@ -170,13 +171,14 @@ export function buildRuntimePipelineTrace({
   finalCandidates = [],
   openAiTransport = {},
   errors = [],
+  policy = null,
 } = {}) {
   const tracePreJudgeCandidates = annotateCandidateRerankIds(preJudgeCandidates ?? []);
   const rerankIdsByKey = rerankIdLookup([...tracePreJudgeCandidates, ...(finalCandidates ?? [])]);
   const toTraceCandidate = (candidate, index) => traceCandidate(candidate, index, rerankIdsByKey, { vaultRoot });
   const normalizedErrors = [
     ...traceErrors("qmd_retrieval", queryErrors),
-    ...traceErrors("source_expansion", graphExpansion?.errors ?? graphExpansion?.warnings),
+    ...traceErrors("source_expansion", graphExpansion?.errors ?? graphExpansion?.warnings ?? graphExpansion?.failures),
     ...(errors ?? []).map((error) => traceError(error?.stage || "runtime", error?.error ?? error?.detail ?? error)),
   ];
   if (relationJudge && relationJudge.ok === false && relationJudge.error) {
@@ -197,6 +199,18 @@ export function buildRuntimePipelineTrace({
       file: sourceFile,
       identity_hash: sha256(sourceFile),
     },
+    effective_configuration: policy ? {
+      policy_id: policy.id ?? null,
+      policy_version: policy.version ?? null,
+      query_limit: policy.queryLimit ?? null,
+      retrieval_pool_budget: policy.candidateBudgets?.retrievalPoolBudget ?? null,
+      judge_review_budget: policy.candidateBudgets?.judgeReviewBudget ?? null,
+      final_display_budget: policy.candidateBudgets?.finalDisplayBudget ?? null,
+      chunk_size: policy.candidateBudgets?.chunkSize ?? null,
+      concurrency: policy.candidateBudgets?.concurrency ?? null,
+      graph_seed_limit: policy.graphExpansion?.seedLimit ?? null,
+      graph_candidate_budget: policy.graphExpansion?.globalCandidateLimit ?? null,
+    } : null,
     steps: {
       query_generation: {
         status: generatedQuery ? "success" : "failed",
@@ -222,6 +236,12 @@ export function buildRuntimePipelineTrace({
         mode: graphExpansion?.mode ?? "source-links-and-backlinks",
         candidate_count: (graphExpansion?.rows ?? graphExpansion?.candidates ?? []).length,
         candidates: (graphExpansion?.rows ?? graphExpansion?.candidates ?? []).map(toTraceCandidate),
+        seed_count: graphExpansion?.seeds?.length ?? 0,
+        failures: (graphExpansion?.failures ?? []).map((failure) => ({
+          command: failure.graphCommand ?? failure.command ?? "unknown",
+          origin: failure.origin ?? "unknown",
+          seed_rank: failure.seedRank ?? null,
+        })),
         errors: traceErrors("source_expansion", graphExpansion?.errors ?? graphExpansion?.warnings),
       },
       pre_judge_candidates: tracePreJudgeCandidates.map(toTraceCandidate),
@@ -231,6 +251,12 @@ export function buildRuntimePipelineTrace({
         fallback: !!relationJudge?.relation_judge_fallback,
         prompt_version: relationJudge?.relation_judge_prompt_version ?? null,
         reviewed_count: Number(relationJudge?.reviewedCount ?? reviewedCandidates.length ?? 0),
+        retrieval_pool_count: relationJudge?.counts?.retrieval_pool_count ?? preJudgeCandidates.length,
+        judge_input_count: relationJudge?.counts?.judge_input_count ?? reviewedCandidates.length,
+        chunk_count: relationJudge?.counts?.chunk_count ?? (relationJudge ? 1 : 0),
+        successful_chunk_count: relationJudge?.counts?.successful_chunk_count ?? (relationJudge?.ok === false ? 0 : 1),
+        final_count: relationJudge?.counts?.final_count ?? finalCandidates.length,
+        failures: relationJudge?.failures ?? [],
         reviewed_candidates: reviewedCandidates.map(toTraceCandidate),
         decisions: relationCandidates.map(toTraceCandidate),
         errors: relationJudge?.error ? [traceError("relation_judge", relationJudge.error)] : [],

@@ -30,6 +30,7 @@ import {
 } from "../aha/relation-judge.mjs";
 import { QUERY_PLAN_PROMPT_VERSION } from "../aha/query-plan.mjs";
 import { runRetrievalPipeline } from "../aha/retrieval-pipeline.mjs";
+import { DIAGNOSTIC_RETRIEVAL_POLICY_V2 } from "../aha/retrieval-policies.mjs";
 import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
 import {
   PIPELINE_TRACE_SCHEMA,
@@ -582,7 +583,7 @@ function parseBacklinksOutput(output, seed) {
   }
 }
 
-function tokenizeForRelevance(text) {
+function _tokenizeForRelevance(text) {
   const tokens = new Set();
   const normalized = String(text ?? "").toLowerCase();
   for (const token of normalized.match(/[a-z0-9][a-z0-9_-]{2,}/g) ?? []) {
@@ -599,12 +600,12 @@ function tokenizeForRelevance(text) {
   return tokens;
 }
 
-function isBacklinkRelevant(backlink, caseItem, queryText) {
+function _isBacklinkRelevant(backlink, caseItem, queryText) {
   const haystack = `${backlink.title}\n${backlink.path ?? ""}\n${backlink.content ?? ""}`;
-  const candidateTokens = tokenizeForRelevance(haystack);
+  const candidateTokens = _tokenizeForRelevance(haystack);
   if (candidateTokens.size === 0) return false;
 
-  const queryTokens = tokenizeForRelevance([
+  const queryTokens = _tokenizeForRelevance([
     caseItem._resolved_insight_input,
     queryText,
   ].join("\n"));
@@ -615,7 +616,7 @@ function isBacklinkRelevant(backlink, caseItem, queryText) {
   return overlap >= 1;
 }
 
-function readObsidianNote(backlink, options) {
+function _readObsidianNote(backlink, options) {
   const args = backlink.path
     ? ["read", `path=${backlink.path}`]
     : ["read", `file=${backlink.title}`];
@@ -624,46 +625,6 @@ function readObsidianNote(backlink, options) {
   const output = result.stdout.trim();
   if (!output || /^Error:\s+/i.test(output)) return "";
   return output;
-}
-
-function expandSourceNeighborCandidates(caseItem, options, resolver) {
-  const sourcePath = sourceNotePathForCase(caseItem);
-  if (!sourcePath) return { candidates: [], errors: [] };
-  const relativePath = candidateVaultRelativePath(sourcePath, resolver) || sourcePath;
-  const candidates = [];
-  const errors = [];
-  const seen = new Set();
-  const specs = [
-    { args: ["links", `path=${relativePath}`], source: "source_link" },
-    { args: ["backlinks", `path=${relativePath}`, "format=json"], source: "source_backlink" },
-  ];
-  for (const spec of specs) {
-    const result = run(options.obsidian, spec.args, { timeoutMs: options.obsidianTimeoutMs });
-    if (result.error || result.timedOut) {
-      errors.push(`source neighbors (${spec.source}): ${result.error || "timed out"}`);
-      continue;
-    }
-    if (result.code !== 0 || !result.stdout.trim()) continue;
-    const paths = spec.source === "source_backlink"
-      ? parseBacklinksOutput(result.stdout, { file: relativePath, title: basename(relativePath, ".md") })
-          .map((backlink) => backlink.path)
-      : parseSourceLinkPaths(result.stdout);
-    for (const notePath of paths) {
-      if (!notePath || !notePath.endsWith(".md") || seen.has(notePath)) continue;
-      seen.add(notePath);
-      candidates.push({
-        id: notePath,
-        title: basename(notePath, ".md"),
-        file: notePath,
-        content: "",
-        rank: 1,
-        queryText: `source-neighbors:${relativePath}`,
-        source: spec.source,
-        expansionFrom: relativePath,
-      });
-    }
-  }
-  return { candidates, errors };
 }
 
 function parseSourceLinkPaths(output) {
@@ -682,7 +643,44 @@ function parseSourceLinkPaths(output) {
   }
 }
 
-function backlinkArgSets(seed, resolver) {
+function diagnosticGraphAdapters(caseItem, options, resolver) {
+  const sourcePath = sourceNotePathForCase(caseItem);
+  const command = (name) => async ({ path: originPath, limit }) => {
+    const relativePath = candidateVaultRelativePath(originPath, resolver) || originPath;
+    const args = name === "backlinks"
+      ? [name, `path=${relativePath}`, "format=json"]
+      : [name, `path=${relativePath}`];
+    const result = run(options.obsidian, args, { timeoutMs: options.obsidianTimeoutMs });
+    if (result.error || result.timedOut || result.code !== 0) {
+      throw new Error(result.error || (result.timedOut ? "obsidian graph command timed out" : `obsidian ${name} exited ${result.code}`));
+    }
+    const paths = name === "backlinks"
+      ? parseBacklinksOutput(result.stdout, { file: relativePath, title: basename(relativePath, ".md") })
+        .map((candidate) => candidate.path)
+      : parseSourceLinkPaths(result.stdout);
+    return paths.filter(Boolean).slice(0, limit).map((file) => ({
+      id: file,
+      title: basename(file, ".md"),
+      file,
+      source: name === "backlinks" ? "backlink" : "source_link",
+      expansionFrom: relativePath,
+    }));
+  };
+  return {
+    links: command("links"),
+    backlinks: command("backlinks"),
+    admitCandidate: (candidate) => {
+      const resolved = sharedResolveVaultPath(candidatePath(candidate), resolver);
+      if (resolved.status !== "resolved") return null;
+      if (sourcePath && pathsMatch(resolved.path, sourcePath, { resolver })) return null;
+      if (isExcludedCandidatePath(resolved.path)) return null;
+      return enrichCandidateBodies([{ ...candidate, file: resolved.path }], resolver)[0];
+    },
+    canonicalIdentity: (candidate) => candidatePath(candidate).toLowerCase(),
+  };
+}
+
+function _backlinkArgSets(seed, resolver) {
   const argSets = [];
   const relativePath = candidateVaultRelativePath(seed.file, resolver);
   if (relativePath) {
@@ -697,113 +695,14 @@ function backlinkArgSets(seed, resolver) {
   return uniqueArgSets(argSets);
 }
 
-function expandBacklinkCandidates(seeds, caseItem, queryText, options, resolver) {
-  const candidates = [];
-  const errors = [];
-  const seen = new Set();
-
-  for (const seed of seeds.slice(0, options.seedLimit)) {
-    let backlinks = [];
-    for (const args of backlinkArgSets(seed, resolver)) {
-      const result = run(options.obsidian, args, { timeoutMs: options.obsidianTimeoutMs });
-      if (result.error) {
-        errors.push(`${seed.title}: ${result.error}`);
-        continue;
-      }
-      if (result.timedOut) {
-        errors.push(`${seed.title}: obsidian backlinks timed out`);
-        continue;
-      }
-      if (result.code !== 0 || !result.stdout.trim()) continue;
-      backlinks = parseBacklinksOutput(result.stdout, seed);
-      if (backlinks.length > 0) break;
-    }
-
-    for (const backlink of backlinks.slice(0, options.backlinksPerSeed)) {
-      const key = backlink.path || backlink.title;
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-
-      backlink.content = readObsidianNote(backlink, options);
-      if (!isBacklinkRelevant(backlink, caseItem, queryText)) continue;
-
-      candidates.push({
-        id: backlink.path || backlink.title,
-        title: backlink.title,
-        file: backlink.path,
-        content: backlink.content,
-        rank: backlink.count,
-        queryText: `backlinks:${seed.title}`,
-        source: "backlink",
-        expansionFrom: seed.file || seed.title,
-      });
-      if (candidates.length >= options.backlinkLimit) return { candidates, errors };
-    }
-  }
-
-  return { candidates, errors };
-}
-
 function selectQuerySpecs(querySpecs, options) {
   if (options.queryMode === "multi") return querySpecs;
   const rawQuery = querySpecs.find((query) => query.kind === "raw");
   return [rawQuery ?? querySpecs[0]].filter(Boolean);
 }
 
-// Agent-generated query plans vary run to run; a deterministic raw-slice query
-// keeps a recall floor that does not depend on LLM query phrasing.
-function withDeterministicRawQuery(querySpecs, caseItem) {
-  const supplements = [];
-  const rawText = compactInsightQueryText(caseItem._resolved_insight_input);
-  if (rawText) {
-    supplements.push({ kind: "raw_supplement", command: "qmd query", text: rawText, query: rawText });
-  }
-  // The thought field is the user's own distilled phrasing of the insight —
-  // usually a sharper retrieval query than the note slice's narrative opening.
-  const thoughtText = compactInsightQueryText(caseItem.input?.thought ?? caseItem.insight_input?.thought ?? "");
-  if (thoughtText && (!rawText || !rawText.startsWith(thoughtText.slice(0, 80)))) {
-    supplements.push({ kind: "thought_supplement", command: "qmd query", text: thoughtText, query: thoughtText });
-  }
-  return supplements.length > 0 ? [...querySpecs, ...supplements] : querySpecs;
-}
-
-function compactInsightQueryText(value) {
-  const text = String(value ?? "")
-    .replace(/^---[\s\S]*?---\s*/m, " ")
-    .replace(/\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g, "$1")
-    .replace(/[#>*`\-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return text.slice(0, 360);
-}
-
-function seedGroup(candidate) {
+function _seedGroup(candidate) {
   return candidate.queryKind || candidate.queryCommand || candidate.source || "unknown";
-}
-
-function selectBacklinkSeeds(candidates, options) {
-  if (options.seedStrategy === "first") return candidates.slice(0, options.seedLimit);
-
-  const grouped = new Map();
-  for (const candidate of candidates) {
-    const key = seedGroup(candidate);
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(candidate);
-  }
-
-  const groups = Array.from(grouped.values());
-  const selected = [];
-  for (let offset = 0; selected.length < options.seedLimit; offset += 1) {
-    let added = false;
-    for (const group of groups) {
-      if (!group[offset]) continue;
-      selected.push(group[offset]);
-      added = true;
-      if (selected.length >= options.seedLimit) break;
-    }
-    if (!added) break;
-  }
-  return selected;
 }
 
 function mergeCandidates(candidates, limit) {
@@ -817,6 +716,14 @@ function mergeCandidates(candidates, limit) {
     if (merged.length >= limit) break;
   }
   return merged;
+}
+
+function completeDiagnosticJudgedSet(judgedCandidates, reviewInputs) {
+  const reviewedIds = new Set((judgedCandidates ?? []).map(candidatePath));
+  return [
+    ...(judgedCandidates ?? []),
+    ...(reviewInputs ?? []).filter((candidate) => !reviewedIds.has(candidatePath(candidate))),
+  ];
 }
 
 function dropExcludedCandidates(candidates) {
@@ -1778,58 +1685,68 @@ async function main() {
     const diagnosticPipeline = await runRetrievalPipeline({
       insight: {
         text: textFromUnknown(caseItem.input),
+        sourceExcerpt: caseItem._resolved_insight_input,
+        thought: caseItem.input?.thought ?? caseItem.insight_input?.thought ?? "",
         sourcePath: sourceNotePathForCase(caseItem) || null,
       },
       policy: {
-        queryLimit: options.queryMode === "raw-only" ? 1 : Number.POSITIVE_INFINITY,
+        ...DIAGNOSTIC_RETRIEVAL_POLICY_V2,
+        queryLimit: options.queryMode === "raw-only" ? 1 : DIAGNOSTIC_RETRIEVAL_POLICY_V2.queryLimit,
+        supplements: options.queryMode === "raw-only"
+          ? { sourceExcerpt: false, thought: false }
+          : DIAGNOSTIC_RETRIEVAL_POLICY_V2.supplements,
         finalCandidateLimit: options.limit,
-        graphExpansion: options.backlinks,
-        seedLimit: options.seedLimit,
-        backlinksPerSeed: options.backlinksPerSeed,
-        backlinkLimit: options.backlinkLimit,
-        seedStrategy: options.seedStrategy,
+        candidateBudgets: {
+          ...DIAGNOSTIC_RETRIEVAL_POLICY_V2.candidateBudgets,
+          finalDisplayBudget: options.limit,
+        },
+        graphExpansion: {
+          ...DIAGNOSTIC_RETRIEVAL_POLICY_V2.graphExpansion,
+          enabled: options.backlinks,
+          seedLimit: options.seedLimit,
+          backlinksLimit: options.backlinksPerSeed,
+          perSeedLimit: options.backlinksPerSeed,
+          globalCandidateLimit: options.backlinkLimit,
+        },
       },
       adapters: {
         planQueries: async () => {
           const generated = resolveQmdQueriesForCase(caseItem, options);
           return {
             ...generated,
-            queries: withDeterministicRawQuery(selectQuerySpecs(generated.queries, options), caseItem),
+            queries: selectQuerySpecs(generated.queries, options),
           };
         },
         retrieve: async ({ queries }) => ({ runs: runQmdQueries(queries, collection, options) }),
-        expandGraph: async ({ state }) => {
-          const qmdCandidates = dropExcludedCandidates(
-            mergeCandidateEvidence(state.retrievalRuns.flatMap((runItem) => runItem.candidates)),
-          );
-          const seeds = selectBacklinkSeeds(qmdCandidates, options);
-          const queryText = state.queries.map((query) => query.query || query.text || "").join("\n\n---\n\n");
-          const expansion = expandBacklinkCandidates(seeds, caseItem, queryText, options, resolver);
-          const neighborResult = expandSourceNeighborCandidates(caseItem, options, resolver);
-          const seenPaths = new Set(expansion.candidates.map((candidate) => candidatePath(candidate)));
-          for (const candidate of neighborResult.candidates) {
-            if (seenPaths.has(candidatePath(candidate))) continue;
-            seenPaths.add(candidatePath(candidate));
-            expansion.candidates.push(candidate);
-          }
-          expansion.errors.push(...neighborResult.errors);
-          return { ...expansion, seeds };
-        },
+        graphAdapters: () => diagnosticGraphAdapters(caseItem, options, resolver),
         selectCandidates: async ({ retrievalCandidates, graphCandidates }) => mergeCandidateEvidence(
           enrichCandidateBodies([
             ...dropExcludedCandidates(mergeCandidateEvidence(retrievalCandidates)),
             ...dropExcludedCandidates(graphCandidates),
           ], resolver),
         ),
-        judgeRelations: async ({ state, candidates }) => {
+        judgeRelationChunk: async ({ state, candidates }) => {
           const judged = await relationJudgeCandidatesForCase({
             ...caseItem,
             query_object: state.generatedQuery.query_object,
             query_objects: state.generatedQuery.query_objects,
             queries: state.queries,
           }, candidates, options);
-          return { ...judged, candidates: mergeCandidates(judged.candidates, options.limit) };
+          if (judged.ok === false) throw new Error(judged.error || "Diagnostic Relation Judge chunk failed.");
+          return completeDiagnosticJudgedSet(judged.candidates, candidates);
         },
+        compareRelationsGlobally: async ({ state, candidates }) => {
+          const judged = await relationJudgeCandidatesForCase({
+            ...caseItem,
+            query_object: state.generatedQuery.query_object,
+            query_objects: state.generatedQuery.query_objects,
+            queries: state.queries,
+          }, candidates, options);
+          if (judged.ok === false) throw new Error(judged.error || "Diagnostic global comparison failed.");
+          return completeDiagnosticJudgedSet(judged.candidates, candidates);
+        },
+        candidateId: (candidate) => candidatePath(candidate),
+        validateRelationEvidence: (candidate) => candidate,
         formatResult: async ({ finalCandidates }) => ({ ok: true, candidates: finalCandidates }),
       },
     });
@@ -1842,9 +1759,23 @@ async function main() {
     );
     const qmdErrors = qmdRuns.flatMap((runItem) => runItem.errors);
     const backlinkSeeds = diagnosticPipeline.state.graphExpansion?.seeds ?? [];
-    const backlinkResult = diagnosticPipeline.state.graphExpansion ?? { candidates: [], errors: [] };
+    const backlinkResult = diagnosticPipeline.state.graphExpansion
+      ? {
+        ...diagnosticPipeline.state.graphExpansion,
+        errors: diagnosticPipeline.state.graphExpansion.errors
+          ?? diagnosticPipeline.state.graphExpansion.failures?.map((failure) => `${failure.origin}/${failure.graphCommand}: graph command failed`)
+          ?? [],
+      }
+      : { candidates: [], errors: [] };
     const expandedPool = diagnosticPipeline.state.selectedCandidates;
     const rerankResult = diagnosticPipeline.state.relationJudge;
+    if (rerankResult?.counts) {
+      rerankResult.relation_judge_reviewed_candidates = expandedPool.slice(0, rerankResult.counts.judge_input_count);
+      rerankResult.relation_judge_generated_by = "shared-chunked-judge";
+      rerankResult.relation_judge_fallback = false;
+      rerankResult.relation_judge_error = rerankResult.error ?? null;
+      rerankResult.relation_judge_prompt_version = RELATION_JUDGE_PROMPT_VERSION;
+    }
     const finalCandidates = diagnosticPipeline.state.finalCandidates;
     const topK = Number(caseItem.expected_in_top_k ?? expectedInTopK);
     const niceTopK = Number(caseItem.nice_expected_in_top_k ?? expectedNiceInTopK);

@@ -174,7 +174,7 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
     assert.equal(productTrace.runtime_profile, "product-runtime");
     assert.deepEqual(resultFiles, ["Memory/Second.md", "Memory/First.md"]);
     assert.deepEqual(traceFiles, resultFiles);
-    assert.equal(productTrace.steps.source_expansion.mode, "source-links-and-backlinks");
+    assert.equal(productTrace.steps.source_expansion.mode, "source-and-top-seeds");
     assert.equal(productTrace.steps.relation_judge.status, "success");
     assert.deepEqual(productResult.openai_transport, {
       query_generation: { request_count: 0, attempt_count: 0, retry_count: 0, retry_categories: {} },

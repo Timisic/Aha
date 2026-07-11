@@ -26,6 +26,7 @@ export async function runRetrievalPipeline({ insight, policy = {}, adapters }) {
     retrievalErrors: [],
     retrievalWarnings: [],
     graphExpansion: null,
+    effectiveBudgets: null,
     selectedCandidates: [],
     relationJudge: null,
     finalCandidates: [],
@@ -48,6 +49,12 @@ export async function runRetrievalPipeline({ insight, policy = {}, adapters }) {
 
   try {
     state.generatedQuery = await requiredAdapter(adapters, "planQueries")({ insight, policy, state });
+    state.generatedQuery = mergeSupplementalQueries({
+      generatedPlan: state.generatedQuery,
+      sourceExcerpt: insight.sourceExcerpt ?? insight.text,
+      thought: insight.thought,
+      policy: policy.supplements ?? { sourceExcerpt: false, thought: false },
+    });
     state.queries = (state.generatedQuery?.queries ?? []).slice(0, positiveLimit(policy.queryLimit));
   } catch (error) {
     return fail("query_generation", error);
@@ -66,9 +73,16 @@ export async function runRetrievalPipeline({ insight, policy = {}, adapters }) {
     return fail("qmd_retrieval", error);
   }
 
-  if (policy.graphExpansion !== false && adapters.expandGraph) {
+  if (policy.graphExpansion !== false && (adapters.expandGraph || adapters.graphAdapters)) {
     try {
-      state.graphExpansion = await adapters.expandGraph({ insight, policy, state });
+      state.graphExpansion = adapters.graphAdapters
+        ? await expandGraphCandidates({
+          sourcePath: insight.sourcePath,
+          rankedSeeds: state.retrievalCandidates,
+          policy,
+          adapters: adapters.graphAdapters({ insight, policy, state }),
+        })
+        : await adapters.expandGraph({ insight, policy, state });
     } catch (error) {
       return fail("source_expansion", error);
     }
@@ -88,11 +102,27 @@ export async function runRetrievalPipeline({ insight, policy = {}, adapters }) {
   }
 
   try {
-    state.relationJudge = await requiredAdapter(adapters, "judgeRelations")({
-      insight, policy, state, candidates: state.selectedCandidates,
-    });
-    state.finalCandidates = (state.relationJudge?.candidates ?? state.selectedCandidates)
-      .slice(0, positiveLimit(policy.finalCandidateLimit));
+    if (policy.candidateBudgets && adapters.judgeRelationChunk) {
+      state.effectiveBudgets = validateChunkedJudgePolicy(policy.candidateBudgets);
+      state.relationJudge = await runChunkedRelationJudge({
+        candidates: state.selectedCandidates,
+        policy: state.effectiveBudgets,
+        judgeChunk: (candidates, context) => adapters.judgeRelationChunk({ insight, policy, state, candidates, context }),
+        compareGlobally: adapters.compareRelationsGlobally
+          ? (candidates, context) => adapters.compareRelationsGlobally({ insight, policy, state, candidates, context })
+          : undefined,
+        validateEvidence: adapters.validateRelationEvidence,
+        candidateId: adapters.candidateId,
+      });
+    } else {
+      state.relationJudge = await requiredAdapter(adapters, "judgeRelations")({
+        insight, policy, state, candidates: state.selectedCandidates,
+      });
+    }
+    state.finalCandidates = state.relationJudge?.ok === false
+      ? []
+      : (state.relationJudge?.candidates ?? state.selectedCandidates)
+        .slice(0, positiveLimit(policy.finalCandidateLimit));
   } catch (error) {
     return fail("relation_judge", error);
   }
@@ -128,3 +158,6 @@ function defaultTrace(state, result) {
     })),
   };
 }
+import { runChunkedRelationJudge, validateChunkedJudgePolicy } from "./chunked-relation-judge.mjs";
+import { expandGraphCandidates } from "./graph-expansion.mjs";
+import { mergeSupplementalQueries } from "./supplemental-queries.mjs";

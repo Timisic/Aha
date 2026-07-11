@@ -19,6 +19,10 @@ scripts/
     *.mjs                   # Shared benchmark scoring, identity, trace, and helpers.
   aha/
     retrieval-pipeline.mjs  # Shared query-to-final-slate orchestration interface.
+    retrieval-policies.mjs  # Versioned product, diagnostic, and legacy rollback policies.
+    supplemental-queries.mjs # Shared deterministic source/thought recall floor.
+    graph-expansion.mjs     # Shared bounded source + top-seed graph expansion.
+    chunked-relation-judge.mjs # Shared bounded, fail-closed Relation Judge execution.
     run-insight-search.mjs  # Obsidian plugin wrapper; delegates pipeline orchestration.
     query-plan.mjs          # Shared query-plan generation.
     relation-judge.mjs      # Shared quote-backed relation judging.
@@ -65,5 +69,7 @@ node scripts/bench/run-pipeline-bench.mjs --profile diagnostic-enhanced --suite 
 ```
 
 Named workflow runs are immutable under `bench/reports/runs/<run-id>/`. `bench/reports/latest/product-parity.json` is an atomic, hash-verified pointer and is updated only by a complete eligible baseline. Raw runners may still write legacy latest/archive paths when used directly.
+
+The shipped wrapper and diagnostic runner both execute the shared v2 retrieval mechanisms. Product defaults keep up to 80 retrieval candidates, review up to 60 in bounded chunks, and display up to 20. Source excerpts and an optional `--thought` add deterministic, deduplicated QMD queries. Source-note and top-seed graph expansion share admission, identity, per-origin, and global budgets. `legacy-v1` in `retrieval-policies.mjs` is the rollback contract.
 
 `bench:baseline` and `bench:diagnostic` load the active Obsidian plugin runtime settings from the vault's plugin `data.json`; use `-- --plugin-data <path>` only when validating a different local installation. Secrets are passed through the child environment and are not persisted in evaluation artifacts.
