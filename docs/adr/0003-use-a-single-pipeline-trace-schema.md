@@ -14,6 +14,8 @@ This keeps trace work simple enough to maintain while still making benchmark res
 
 - `PipelineTrace` should be one stable, versioned structured object per runtime or benchmark case.
 - The shipped runtime is the source of truth for product-parity traces. The benchmark must consume that runtime result and trace instead of reconstructing a second product pipeline.
+- `scripts/aha/retrieval-pipeline.mjs` is the source of truth for orchestration order. The shipped wrapper and diagnostic-enhanced benchmark inject different policies and runtime adapters into its documented `runRetrievalPipeline({ insight, policy, adapters })` interface.
+- Benchmark cases, gold labels, scoring, diagnosis, report generation, and baseline promotion remain outside that interface. Product-parity continues to launch the shipped wrapper as a process.
 - Trace collection is opt-in and off by default. It is diagnostic process evidence and must not be persisted in the Aha Session Store.
 - Runtime trace fields use vault-relative identities, ranks, scores, source labels, relations, hashes, evidence counts, and error categories. They do not store note bodies, full queries or prompts, API keys, raw stderr, private absolute paths, `hit`/`why` prose, or quotes.
 - Benchmark-only gold positions and rule-based diagnosis may be attached after the runtime completes; they must not change runtime candidates or ordering.

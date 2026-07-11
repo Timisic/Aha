@@ -177,7 +177,7 @@ node scripts/bench/run-pipeline-bench.mjs --profile diagnostic-enhanced --suite 
 node scripts/bench/summarize-report.mjs bench/reports/latest/product-parity.json
 ```
 
-The QMD-only runner is L1. Product-parity and diagnostic-enhanced are two explicit L2 profiles; do not compare their headline scores as if they were the same pipeline.
+The QMD-only runner is L1. Product-parity and diagnostic-enhanced are two explicit L2 policies over the same `scripts/aha/retrieval-pipeline.mjs` mechanics; do not compare their headline scores as if they used the same budgets or enabled strategies. Product-parity still launches `scripts/aha/run-insight-search.mjs` as a process so transport, configuration, serialization, and failures remain measured. Case data, gold labels, scoring, failure attribution, reports, and promotion stay outside the runtime pipeline.
 When L1 runs `--suite all`, its report still separates `by_suite` and `by_mode` metrics instead of presenting only a collapsed headline.
 
 ## Evidence, statistics, and action

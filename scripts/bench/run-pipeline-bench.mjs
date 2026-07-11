@@ -29,6 +29,7 @@ import {
   relationJudgeCandidatesForCase,
 } from "../aha/relation-judge.mjs";
 import { QUERY_PLAN_PROMPT_VERSION } from "../aha/query-plan.mjs";
+import { runRetrievalPipeline } from "../aha/retrieval-pipeline.mjs";
 import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
 import {
   PIPELINE_TRACE_SCHEMA,
@@ -1774,46 +1775,77 @@ async function main() {
       continue;
     }
     const startedAt = Date.now();
-    const generatedQuery = resolveQmdQueriesForCase(caseItem, options);
-    const querySpecs = withDeterministicRawQuery(selectQuerySpecs(generatedQuery.queries, options), caseItem);
+    const diagnosticPipeline = await runRetrievalPipeline({
+      insight: {
+        text: textFromUnknown(caseItem.input),
+        sourcePath: sourceNotePathForCase(caseItem) || null,
+      },
+      policy: {
+        queryLimit: options.queryMode === "raw-only" ? 1 : Number.POSITIVE_INFINITY,
+        finalCandidateLimit: options.limit,
+        graphExpansion: options.backlinks,
+        seedLimit: options.seedLimit,
+        backlinksPerSeed: options.backlinksPerSeed,
+        backlinkLimit: options.backlinkLimit,
+        seedStrategy: options.seedStrategy,
+      },
+      adapters: {
+        planQueries: async () => {
+          const generated = resolveQmdQueriesForCase(caseItem, options);
+          return {
+            ...generated,
+            queries: withDeterministicRawQuery(selectQuerySpecs(generated.queries, options), caseItem),
+          };
+        },
+        retrieve: async ({ queries }) => ({ runs: runQmdQueries(queries, collection, options) }),
+        expandGraph: async ({ state }) => {
+          const qmdCandidates = dropExcludedCandidates(
+            mergeCandidateEvidence(state.retrievalRuns.flatMap((runItem) => runItem.candidates)),
+          );
+          const seeds = selectBacklinkSeeds(qmdCandidates, options);
+          const queryText = state.queries.map((query) => query.query || query.text || "").join("\n\n---\n\n");
+          const expansion = expandBacklinkCandidates(seeds, caseItem, queryText, options, resolver);
+          const neighborResult = expandSourceNeighborCandidates(caseItem, options, resolver);
+          const seenPaths = new Set(expansion.candidates.map((candidate) => candidatePath(candidate)));
+          for (const candidate of neighborResult.candidates) {
+            if (seenPaths.has(candidatePath(candidate))) continue;
+            seenPaths.add(candidatePath(candidate));
+            expansion.candidates.push(candidate);
+          }
+          expansion.errors.push(...neighborResult.errors);
+          return { ...expansion, seeds };
+        },
+        selectCandidates: async ({ retrievalCandidates, graphCandidates }) => mergeCandidateEvidence(
+          enrichCandidateBodies([
+            ...dropExcludedCandidates(mergeCandidateEvidence(retrievalCandidates)),
+            ...dropExcludedCandidates(graphCandidates),
+          ], resolver),
+        ),
+        judgeRelations: async ({ state, candidates }) => {
+          const judged = await relationJudgeCandidatesForCase({
+            ...caseItem,
+            query_object: state.generatedQuery.query_object,
+            query_objects: state.generatedQuery.query_objects,
+            queries: state.queries,
+          }, candidates, options);
+          return { ...judged, candidates: mergeCandidates(judged.candidates, options.limit) };
+        },
+        formatResult: async ({ finalCandidates }) => ({ ok: true, candidates: finalCandidates }),
+      },
+    });
+    const generatedQuery = diagnosticPipeline.state.generatedQuery;
+    const querySpecs = diagnosticPipeline.state.queries;
     const queryText = querySpecs.map((query) => query.query || query.text || "").join("\n\n---\n\n");
-    const qmdRuns = runQmdQueries(querySpecs, collection, options);
+    const qmdRuns = diagnosticPipeline.state.retrievalRuns;
     const qmdCandidates = dropExcludedCandidates(
       mergeCandidateEvidence(qmdRuns.flatMap((runItem) => runItem.candidates)),
     );
     const qmdErrors = qmdRuns.flatMap((runItem) => runItem.errors);
-    const backlinkSeeds = selectBacklinkSeeds(qmdCandidates, options);
-
-    const backlinkResult = options.backlinks
-      ? expandBacklinkCandidates(backlinkSeeds, caseItem, queryText, options, resolver)
-      : { candidates: [], errors: [] };
-    if (options.backlinks) {
-      const neighborResult = expandSourceNeighborCandidates(caseItem, options, resolver);
-      const seenPaths = new Set(backlinkResult.candidates.map((candidate) => candidatePath(candidate)));
-      for (const candidate of neighborResult.candidates) {
-        if (seenPaths.has(candidatePath(candidate))) continue;
-        seenPaths.add(candidatePath(candidate));
-        backlinkResult.candidates.push(candidate);
-      }
-      backlinkResult.errors.push(...neighborResult.errors);
-    }
-    const expandedPool = mergeCandidateEvidence(
-      enrichCandidateBodies(
-        [...qmdCandidates, ...dropExcludedCandidates(backlinkResult.candidates)],
-        resolver,
-      ),
-    );
-    const rerankResult = await relationJudgeCandidatesForCase(
-      {
-        ...caseItem,
-        query_object: generatedQuery.query_object,
-        query_objects: generatedQuery.query_objects,
-        queries: querySpecs,
-      },
-      expandedPool,
-      options,
-    );
-    const finalCandidates = mergeCandidates(rerankResult.candidates, options.limit);
+    const backlinkSeeds = diagnosticPipeline.state.graphExpansion?.seeds ?? [];
+    const backlinkResult = diagnosticPipeline.state.graphExpansion ?? { candidates: [], errors: [] };
+    const expandedPool = diagnosticPipeline.state.selectedCandidates;
+    const rerankResult = diagnosticPipeline.state.relationJudge;
+    const finalCandidates = diagnosticPipeline.state.finalCandidates;
     const topK = Number(caseItem.expected_in_top_k ?? expectedInTopK);
     const niceTopK = Number(caseItem.nice_expected_in_top_k ?? expectedNiceInTopK);
     const niceToHave = caseItem.nice_to_have ?? [];

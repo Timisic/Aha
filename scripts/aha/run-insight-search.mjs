@@ -28,6 +28,7 @@ import {
   openAiResponsesUrl,
 } from "../lib/openai-json-agent.mjs";
 import { buildRuntimePipelineTrace } from "../lib/pipeline-trace.mjs";
+import { runRetrievalPipeline } from "./retrieval-pipeline.mjs";
 import {
   emptyOpenAiTransportStats,
   isRetryableOpenAiTransportError,
@@ -1060,110 +1061,83 @@ async function pipelineRecall(args, sourceText) {
     query_generation: emptyOpenAiTransportStats(),
     relation_judge: emptyOpenAiTransportStats(),
   };
-  const traceState = {
-    generatedQuery: null,
-    queryResults: [],
-    queryErrors: [],
-    graphExpansion: null,
-    preJudgeCandidates: [],
-    relationJudge: null,
-    finalCandidates: [],
-    errors: [],
-  };
-  const finish = (result, error = null) => {
-    if (!args.trace) return result;
-    const errors = error ? [...traceState.errors, error] : traceState.errors;
-    return {
-      ...result,
-      trace: buildRuntimePipelineTrace({
+  const { result, trace } = await runRetrievalPipeline({
+    insight: { text: sourceText, sourcePath: args.sourcePath },
+    policy: {
+      queryLimit: 5,
+      finalCandidateLimit: Number(args.targetCandidates || 20),
+      graphExpansion: true,
+    },
+    adapters: {
+      planQueries: () => generateQueryPlan(args, sourceText),
+      retrieve: async ({ queries }) => {
+        const retrieval = await runQmdPlanQueries(args, queries);
+        return { runs: retrieval.queryResults, errors: retrieval.errors, warnings: retrieval.warnings };
+      },
+      expandGraph: async () => {
+        const expansion = await obsidianGraphExpansion(args);
+        return { mode: "source-links-and-backlinks", candidates: expansion.rows, warnings: expansion.warnings };
+      },
+      selectCandidates: async ({ state, graphCandidates }) => {
+        const queryResults = [...state.retrievalRuns];
+        if (graphCandidates.length > 0) {
+          queryResults.push({
+            query: { kind: "obsidian_graph", command: "obsidian links/backlinks" },
+            rows: graphCandidates,
+          });
+        }
+        const candidates = (await rerankPipelineCandidates(args, queryResults))
+          .slice(0, Number(args.targetCandidates || 20))
+          .map((candidate) => pipelineCandidate(candidate));
+        if (candidates.length === 0) {
+          const error = new Error("No usable candidates remained after runtime filtering.");
+          error.code = "NO_CANDIDATES";
+          error.pipelineStage = "qmd_retrieval";
+          throw error;
+        }
+        return candidates;
+      },
+      judgeRelations: ({ candidates }) => judgePipelineCandidates(args, sourceText, candidates),
+      formatResult: ({ state, finalCandidates }) => formatRuntimePipelineResult(args, state, finalCandidates),
+      onFailure: ({ stage, error, state }) => runtimePipelineFailure(args, stage, error, state),
+      buildTrace: ({ state, result }) => buildRuntimePipelineTrace({
         profile: "product-runtime",
         status: result.ok ? "success" : "failed",
         sourcePath: args.sourcePath,
         vaultRoot: args.vaultRoot,
-        generatedQuery: traceState.generatedQuery,
-        queryResults: traceState.queryResults,
-        queryErrors: traceState.queryErrors,
-        graphExpansion: traceState.graphExpansion,
-        preJudgeCandidates: traceState.preJudgeCandidates,
-        relationJudge: traceState.relationJudge,
-        finalCandidates: traceState.finalCandidates,
+        generatedQuery: state.generatedQuery,
+        queryResults: state.retrievalRuns,
+        queryErrors: state.retrievalErrors,
+        graphExpansion: state.graphExpansion,
+        preJudgeCandidates: state.selectedCandidates,
+        relationJudge: state.relationJudge,
+        finalCandidates: state.finalCandidates,
         openAiTransport: args._openAiTransport,
-        errors,
+        errors: state.errors,
       }),
-    };
-  };
-  let plan;
-  try {
-    plan = await generateQueryPlan(args, sourceText);
-  } catch (error) {
-    return finish(failedAhaResult({
-      sourcePath: args.sourcePath,
-      summary: "Aha query planning failed before retrieval.",
-      message: "Aha query planning failed.",
-      tool: llmToolName(args),
-      details: error.message,
-    }), { stage: "query_generation", error });
-  }
-  traceState.generatedQuery = plan;
+    },
+  });
+  return args.trace ? { ...result, trace } : result;
+}
 
-  const { queryResults, warnings: queryWarnings, errors } = await runQmdPlanQueries(args, plan.queries.slice(0, 5));
-  traceState.queryResults = [...queryResults];
-  traceState.queryErrors = errors;
-  const graphExpansion = await obsidianGraphExpansion(args);
-  traceState.graphExpansion = {
-    mode: "source-links-and-backlinks",
-    rows: graphExpansion.rows,
-    warnings: graphExpansion.warnings,
-  };
-  if (graphExpansion.rows.length > 0) {
-    queryResults.push({
-      query: {
-        kind: "obsidian_graph",
-        command: "obsidian links/backlinks",
-      },
-      rows: graphExpansion.rows,
-    });
-  }
-
-  const candidates = (await rerankPipelineCandidates(args, queryResults))
-    .slice(0, Number(args.targetCandidates || 20))
-    .map((candidate) => pipelineCandidate(candidate));
-  traceState.preJudgeCandidates = candidates;
-
-  if (candidates.length === 0) {
-    return finish(failedAhaResult({
-      sourcePath: args.sourcePath,
-      summary: "Aha mixed retrieval returned no usable candidates.",
-      warnings: [
-        `Query plan generated by ${plan.query_generated_by}${plan.query_generation_fallback ? ` after fallback: ${plan.query_generation_error}` : ""}.`,
-        ...graphExpansion.warnings,
-        ...errors.map((error) => `Skipped failed query: ${error}`),
-      ],
-      message: "Aha retrieval returned no usable candidates.",
-      tool: "qmd",
-      details: errors.length > 0 ? errors.join("; ") : "QMD and Obsidian graph expansion returned no vault-contained candidates after self-hit and path-boundary filtering.",
-    }), { stage: "qmd_retrieval", error: "No usable candidates remained after runtime filtering." });
-  }
-
-  const relationJudge = await judgePipelineCandidates(args, sourceText, candidates);
-  traceState.relationJudge = relationJudge;
-  const finalCandidates = relationJudge.candidates ?? candidates;
-  traceState.finalCandidates = finalCandidates;
+function formatRuntimePipelineResult(args, state, finalCandidates) {
+  const plan = state.generatedQuery;
+  const relationJudge = state.relationJudge;
+  const graphWarnings = state.graphExpansion?.warnings ?? [];
   const warnings = [
     `Query plan generated by ${plan.query_generated_by}${plan.query_generation_fallback ? ` after fallback: ${plan.query_generation_error}` : ""}.`,
     relationJudge.ok
       ? "Relation Judge ran on bounded candidate excerpts; strong relation labels require quote evidence from the excerpt."
       : `Relation Judge unavailable; returning structured failure instead of treating weak candidates as success: ${relationJudge.error}`,
-    ...graphExpansion.warnings,
+    ...graphWarnings,
+    ...state.retrievalWarnings,
     ...relationJudge.warnings,
-    ...queryWarnings,
-    ...errors.map((error) => `Skipped failed query: ${error}`),
+    ...state.retrievalErrors.map((error) => `Skipped failed query: ${error}`),
   ];
   const plannerName = queryPlannerDisplayName(plan.query_generated_by);
-  const summary = `${plannerName} generated ${plan.queries.length} QMD queries; mixed retrieval returned ${candidates.length} reranked candidates; Relation Judge reviewed ${relationJudge.reviewedCount} candidate excerpts.`;
-
+  const summary = `${plannerName} generated ${plan.queries.length} QMD queries; mixed retrieval returned ${state.selectedCandidates.length} reranked candidates; Relation Judge reviewed ${relationJudge.reviewedCount} candidate excerpts.`;
   if (!relationJudge.ok) {
-    return finish(failedAhaResult({
+    return failedAhaResult({
       sourcePath: args.sourcePath,
       summary,
       warnings,
@@ -1171,16 +1145,51 @@ async function pipelineRecall(args, sourceText) {
       tool: relationJudge.tool ?? "codex",
       details: relationJudge.error,
       candidates: finalCandidates.map((candidate) => stripInternalCandidateFields(candidate)),
-    }));
+    });
   }
-
-  return finish({
+  return {
     ok: true,
     sourcePath: args.sourcePath,
     generatedAt: new Date().toISOString(),
     summary,
     warnings,
     candidates: finalCandidates.map((candidate) => stripInternalCandidateFields(candidate)),
+  };
+}
+
+function runtimePipelineFailure(args, stage, error, state) {
+  if (stage === "query_generation") {
+    return failedAhaResult({
+      sourcePath: args.sourcePath,
+      summary: "Aha query planning failed before retrieval.",
+      message: "Aha query planning failed.",
+      tool: llmToolName(args),
+      details: error.message,
+    });
+  }
+  if (stage === "qmd_retrieval" && error.code === "NO_CANDIDATES") {
+    const plan = state.generatedQuery;
+    return failedAhaResult({
+      sourcePath: args.sourcePath,
+      summary: "Aha mixed retrieval returned no usable candidates.",
+      warnings: [
+        `Query plan generated by ${plan.query_generated_by}${plan.query_generation_fallback ? ` after fallback: ${plan.query_generation_error}` : ""}.`,
+        ...(state.graphExpansion?.warnings ?? []),
+        ...state.retrievalErrors.map((item) => `Skipped failed query: ${item}`),
+      ],
+      message: "Aha retrieval returned no usable candidates.",
+      tool: "qmd",
+      details: state.retrievalErrors.length > 0
+        ? state.retrievalErrors.join("; ")
+        : "QMD and Obsidian graph expansion returned no vault-contained candidates after self-hit and path-boundary filtering.",
+    });
+  }
+  return failedAhaResult({
+    sourcePath: args.sourcePath,
+    summary: "Aha retrieval pipeline failed.",
+    message: "Aha retrieval pipeline failed.",
+    tool: "wrapper",
+    details: error.message,
   });
 }
 

@@ -43,7 +43,7 @@
 └──────────────────────────────────────────────────┘
 ```
 
-产品检索层组合多路信号：LLM 生成的结构化 QMD 查询、确定性的原文/thought 补充查询，以及源笔记链接图。评测中的更深 top-seed 图扩展与 judge 重排保留为显式的 `diagnostic-enhanced` profile，不冒充产品运行时。
+产品检索层组合多路信号：LLM 生成的结构化 QMD 查询、确定性的原文/thought 补充查询，以及源笔记链接图。`scripts/aha/retrieval-pipeline.mjs` 是查询、检索、图扩展、候选选择、Relation Judge、final slate 与 PipelineTrace 顺序的唯一 source of truth；shipped wrapper 与 `diagnostic-enhanced` 通过不同 policy/adapters 调用它。评测中的更深 top-seed 图扩展与 judge 预算仍是显式诊断策略，不冒充产品运行时。
 
 ## 仓库结构
 

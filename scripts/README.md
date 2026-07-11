@@ -18,7 +18,8 @@ scripts/
     bench-workflow.mjs      # Run provenance, promotion gate, and latest-pointer integrity.
     *.mjs                   # Shared benchmark scoring, identity, trace, and helpers.
   aha/
-    run-insight-search.mjs  # Obsidian plugin search runner.
+    retrieval-pipeline.mjs  # Shared query-to-final-slate orchestration interface.
+    run-insight-search.mjs  # Obsidian plugin wrapper; delegates pipeline orchestration.
     query-plan.mjs          # Shared query-plan generation.
     relation-judge.mjs      # Shared quote-backed relation judging.
 ```
