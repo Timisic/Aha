@@ -164,6 +164,8 @@ npm run bench:baseline
 
 The live workflows load the current plugin settings from `<vault>/.obsidian/plugins/aha-memory-surface/data.json` by default; override that source with `-- --plugin-data <path>`. Model, QMD/Obsidian commands, QMD runner, target count, and other behavior-affecting settings are passed to the runner and represented by a privacy-safe configuration identity. A stored API key is injected only through the configured child-process environment variable and is never written to arguments, manifests, reports, or traces. Fixture mode or a plugin workspace/wrapper mismatch blocks product parity.
 
+The plugin defaults to `product-v2`; `legacy-v1` is the explicit rollback selector. For a policy decision, run candidate and rollback separately for development and holdout (never merge the suites), then create one private comparison per suite with `node scripts/bench/compare-retrieval-policies.mjs <candidate-report> <rollback-report> <private-output> <decision-json>`. The decision JSON records `thresholds` (`minimum_quality_delta`, `maximum_mean_latency_increase_ms`, `maximum_failure_increase`) and a non-empty `tradeoff_decision`; missing or failed thresholds make the comparison ineligible. The comparison records quality, stability, latency, logical requests, attempts, retries, failures, and each case's retrieval/judge/final Top-10 transition. Keep these reports under ignored `bench/reports/`; policy decisions remain outside runtime traces.
+
 An eligible baseline requires the same clean Git commit from start to finish, unchanged case-file hash, ready suite and identity validation, the exact active case set, successful scored runtime results, compatible `PipelineTrace` v2 artifacts, and product-parity provenance. Dirty, stale, partial, incompatible, or failed runs remain under `reports/runs/` with machine-readable reasons and do not replace the latest pointer.
 
 The first baseline has no compatible comparison, so stability is honestly `not_measured`. A later compatible baseline may compare against the latest pointer.
@@ -198,6 +200,8 @@ Primary @10 metrics:
 Diagnostics include `Expanded Pool Recall@20`, `Dropped Must Count`, evidence-based failure attribution, and `Stability@10` when a compatible comparison exists.
 
 Stability is top-k overlap across runs only when suite version, profile, trace schema/version, effective configuration, candidate limit, and case set are compatible. Otherwise it is `not_measured` with a reason.
+
+Baseline promotion also rejects dirty or changed Git state, incomplete/unscored/failed cases, invalid suite/privacy validation, expected-policy or cross-suite configuration mismatch, and report/trace policy mismatch. Runtime traces remain gold-free; gold labels and policy tradeoff decisions belong only to the private benchmark layer.
 
 Failure attribution follows the observed trace. It can identify case/input, query, retrieval, relation judgment, ordering, or explicit runtime evidence. A deep candidate outside the Relation Judge review budget is retrieval evidence, not automatically a rerank failure. If the trace is incomplete, the result stays `unattributed`.
 

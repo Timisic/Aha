@@ -72,4 +72,6 @@ Named workflow runs are immutable under `bench/reports/runs/<run-id>/`. `bench/r
 
 The shipped wrapper and diagnostic runner both execute the shared v2 retrieval mechanisms. Product defaults keep up to 80 retrieval candidates, review up to 60 in bounded chunks, and display up to 20. Source excerpts and an optional `--thought` add deterministic, deduplicated QMD queries. Source-note and top-seed graph expansion share admission, identity, per-origin, and global budgets. `legacy-v1` in `retrieval-policies.mjs` is the rollback contract.
 
+The Obsidian setting and product-parity runner pass `--retrieval-policy product-v2|legacy-v1`; the policy id/version is part of both effective configuration identity and every runtime trace. Compare candidate and rollback reports per suite with `scripts/bench/compare-retrieval-policies.mjs`; its output is private benchmark evidence and must not be committed.
+
 `bench:baseline` and `bench:diagnostic` load the active Obsidian plugin runtime settings from the vault's plugin `data.json`; use `-- --plugin-data <path>` only when validating a different local installation. Secrets are passed through the child environment and are not persisted in evaluation artifacts.

@@ -151,6 +151,22 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
         query_plan: 5,
         relation_judge: 18,
       },
+      retrieval_policy: {
+        id: "product-v2",
+        version: 2,
+      },
+    });
+    assert.deepEqual(productTrace.effective_configuration, {
+      policy_id: "product-v2",
+      policy_version: 2,
+      query_limit: 7,
+      retrieval_pool_budget: 80,
+      judge_review_budget: 60,
+      final_display_budget: 18,
+      chunk_size: 20,
+      concurrency: 3,
+      graph_seed_limit: 4,
+      graph_candidate_budget: 24,
     });
     assert.equal(
       productReport.metadata.effective_config_id,

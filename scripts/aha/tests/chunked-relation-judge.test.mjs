@@ -66,7 +66,13 @@ test("partial chunk failure fails closed with content-free trace evidence", asyn
   });
   assert.equal(result.ok, false);
   assert.deepEqual(result.candidates, []);
-  assert.deepEqual(result.failures, [{ chunk_index: 1, error_name: "Error", error_code: "UPSTREAM_TIMEOUT" }]);
+  assert.deepEqual(result.failures, [{
+    chunk_index: 1,
+    error_name: "Error",
+    error_code: "UPSTREAM_TIMEOUT",
+    category: "stage_error",
+    tool: null,
+  }]);
   assert.equal(result.counts.reviewed_count, 4);
   assert.equal(result.counts.final_count, 0);
   assert.doesNotMatch(JSON.stringify(result), /private evidence/);

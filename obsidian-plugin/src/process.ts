@@ -129,6 +129,8 @@ function wrapperRuntimeArgs(settings: AhaPluginSettings): string[] {
     settings.qmdIndex,
     "--obsidian-command",
     settings.obsidianCommand,
+    "--retrieval-policy",
+    settings.retrievalPolicy || "product-v2",
   ];
 
   if (settings.qmdSdkModule.trim()) {

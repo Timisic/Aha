@@ -89,6 +89,12 @@ export function loadPluginRuntimeConfiguration(pluginDataPath, options = {}) {
     throw new Error("Aha plugin llmApiKeyEnv is not a valid environment variable name.");
   }
   if (typeof settings.qmdRerank !== "boolean") throw new Error("Aha plugin qmdRerank must be boolean.");
+  const retrievalPolicy = typeof settings.retrievalPolicy === "string" && settings.retrievalPolicy.trim()
+    ? settings.retrievalPolicy.trim()
+    : "product-v2";
+  if (!["product-v2", "legacy-v1"].includes(retrievalPolicy)) {
+    throw new Error("Aha plugin retrievalPolicy must be product-v2 or legacy-v1.");
+  }
 
   const effective = {
     llm_provider: llmProvider,
@@ -106,6 +112,7 @@ export function loadPluginRuntimeConfiguration(pluginDataPath, options = {}) {
     qmd_rerank: settings.qmdRerank,
     obsidian_command: required("obsidianCommand"),
     target_candidates: targetCandidates,
+    retrieval_policy: retrievalPolicy,
     wrapper: wrapperRelativePath,
   };
   const runnerArgs = [
@@ -128,6 +135,7 @@ export function loadPluginRuntimeConfiguration(pluginDataPath, options = {}) {
     "--index", effective.qmd_index,
     "--obsidian", effective.obsidian_command,
     "--limit", String(effective.target_candidates),
+    "--retrieval-policy", effective.retrieval_policy,
   ];
   if (effective.qmd_sdk_module) runnerArgs.push("--runtime-qmd-sdk-module", effective.qmd_sdk_module);
   if (effective.qmd_rerank) runnerArgs.push("--runtime-qmd-rerank");
@@ -141,6 +149,7 @@ export function loadPluginRuntimeConfiguration(pluginDataPath, options = {}) {
     provenance: {
       source: "obsidian-plugin-settings",
       settings_id: settingsId,
+      retrieval_policy: effective.retrieval_policy,
     },
   };
 }
@@ -250,6 +259,11 @@ function inspectSuiteArtifact({ suite, expectedIds, input, reasons, warnings }) 
     reasons.push(`trace_schema_mismatch:${suite}`);
   }
   if (!report.metadata?.effective_config_id) reasons.push(`effective_config_missing:${suite}`);
+  const policy = report.metadata?.effective_configuration?.retrieval_policy;
+  if (!policy?.id || !Number.isInteger(policy?.version)) reasons.push(`retrieval_policy_identity_missing:${suite}`);
+  if (input.expectedRetrievalPolicy && policy?.id !== input.expectedRetrievalPolicy) reasons.push(`expected_config_mismatch:${suite}`);
+  const siblingConfigIds = Object.values(input.artifacts ?? {}).map((item) => item?.effectiveConfigId).filter(Boolean);
+  if (siblingConfigIds.some((id) => id !== report.metadata?.effective_config_id)) reasons.push(`cross_suite_config_mismatch:${suite}`);
 
   const results = report.results ?? [];
   const actualIds = results.map((result) => result.id).sort();
@@ -263,6 +277,7 @@ function inspectSuiteArtifact({ suite, expectedIds, input, reasons, warnings }) 
     reportPath: artifact.reportPath,
     repoRoot: input.repoRoot,
     reasons,
+    report,
   }));
   if (traces.every(Boolean)) {
     try {
@@ -276,7 +291,7 @@ function inspectSuiteArtifact({ suite, expectedIds, input, reasons, warnings }) 
   }
 }
 
-function inspectTrace({ suite, result, reportPath, repoRoot, reasons }) {
+function inspectTrace({ suite, result, reportPath, repoRoot, reasons, report }) {
   if (result.evaluation_status !== "scored") {
     reasons.push(`case_not_scored:${suite}:${result.id}`);
   }
@@ -299,6 +314,11 @@ function inspectTrace({ suite, result, reportPath, repoRoot, reasons }) {
     reasons.push(`trace_incompatible:${suite}:${result.id}`);
   } else if (trace.status !== "success") {
     reasons.push(`trace_not_success:${suite}:${result.id}`);
+  }
+  const tracePolicy = trace.effective_configuration;
+  const reportPolicy = report.metadata?.effective_configuration?.retrieval_policy;
+  if (tracePolicy?.policy_id !== reportPolicy?.id || tracePolicy?.policy_version !== reportPolicy?.version) {
+    reasons.push(`trace_config_mismatch:${suite}:${result.id}`);
   }
   return trace;
 }

@@ -29,7 +29,7 @@ import {
 } from "../lib/openai-json-agent.mjs";
 import { buildRuntimePipelineTrace } from "../lib/pipeline-trace.mjs";
 import { runRetrievalPipeline } from "./retrieval-pipeline.mjs";
-import { PRODUCT_RETRIEVAL_POLICY_V2, policyWithDisplayBudget } from "./retrieval-policies.mjs";
+import { DEFAULT_RETRIEVAL_POLICY_ID, retrievalPolicyById, policyWithDisplayBudget } from "./retrieval-policies.mjs";
 import {
   emptyOpenAiTransportStats,
   isRetryableOpenAiTransportError,
@@ -1062,7 +1062,7 @@ async function pipelineRecall(args, sourceText) {
     query_generation: emptyOpenAiTransportStats(),
     relation_judge: emptyOpenAiTransportStats(),
   };
-  const policy = policyWithDisplayBudget(PRODUCT_RETRIEVAL_POLICY_V2, Number(args.targetCandidates || 20));
+  const policy = policyWithDisplayBudget(retrievalPolicyById(args.retrievalPolicy), Number(args.targetCandidates || 20));
   const { result, trace } = await runRetrievalPipeline({
     insight: { text: sourceText, sourceExcerpt: sourceText, thought: args.thought, sourcePath: args.sourcePath },
     policy,
@@ -1094,14 +1094,25 @@ async function pipelineRecall(args, sourceText) {
       },
       judgeRelationChunk: async ({ candidates }) => {
         const judged = await judgePipelineCandidates(args, sourceText, candidates);
-        if (!judged.ok) throw new Error(judged.error || judged.message || "Relation Judge chunk failed.");
+        if (!judged.ok) {
+          const error = new Error(judged.error || judged.message || "Relation Judge chunk failed.");
+          error.tool = judged.tool;
+          error.category = judged.errorCategory;
+          throw error;
+        }
         return judged.candidates;
       },
       compareRelationsGlobally: async ({ candidates }) => {
         const judged = await judgePipelineCandidates(args, sourceText, candidates);
-        if (!judged.ok) throw new Error(judged.error || judged.message || "Global Relation Judge comparison failed.");
+        if (!judged.ok) {
+          const error = new Error(judged.error || judged.message || "Global Relation Judge comparison failed.");
+          error.tool = judged.tool;
+          error.category = judged.errorCategory;
+          throw error;
+        }
         return judged.candidates;
       },
+      judgeRelations: ({ candidates }) => judgePipelineCandidates(args, sourceText, candidates),
       candidateId: (candidate) => candidate.notePath,
       validateRelationEvidence: (candidate) => candidate,
       formatResult: ({ state, finalCandidates }) => formatRuntimePipelineResult(args, state, finalCandidates),
@@ -1304,6 +1315,7 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
       message: "Aha Relation Judge had no vault-contained excerpts.",
       tool: "qmd",
       error: "No vault-contained excerpts were readable after the vault realpath boundary check, so Relation Judge did not run.",
+      errorCategory: "empty_candidates",
       candidates,
     };
   }
@@ -1336,6 +1348,7 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
   });
   return {
     ...result,
+    errorCategory: result.ok ? null : openAiTransportCategory({ message: result.error }),
     reviewedCandidates: candidateInputs.map((candidate) => ({
       notePath: candidate.notePath,
       noteTitle: candidate.noteTitle,
@@ -2090,6 +2103,7 @@ function parseArgs(rawArgs) {
     qmdDbPath: "",
     qmdIndex: DEFAULT_QMD_INDEX,
     reviewPath: "",
+    retrievalPolicy: DEFAULT_RETRIEVAL_POLICY_ID,
     qmdRerank: false,
     qmdQueryTimeoutMs: DEFAULT_QMD_QUERY_TIMEOUT_MS,
     qmdRunner: DEFAULT_QMD_RUNNER,
@@ -2154,6 +2168,9 @@ function parseArgs(rawArgs) {
       case "--review-path":
         args.reviewPath = next();
         break;
+      case "--retrieval-policy":
+        args.retrievalPolicy = next();
+        break;
       case "--qmd-rerank":
         args.qmdRerank = true;
         break;
@@ -2206,6 +2223,7 @@ function parseArgs(rawArgs) {
   args.llmApiKeyEnv = String(args.llmApiKeyEnv || DEFAULT_LLM_API_KEY_ENV).trim() || DEFAULT_LLM_API_KEY_ENV;
   args.qmdRunner = VALID_QMD_RUNNERS.has(args.qmdRunner) ? args.qmdRunner : DEFAULT_QMD_RUNNER;
   args.qmdIndex = String(args.qmdIndex || DEFAULT_QMD_INDEX).trim() || DEFAULT_QMD_INDEX;
+  retrievalPolicyById(args.retrievalPolicy);
   args.targetCandidates = clampTargetCandidates(args.targetCandidates);
   args.qmdQueryTimeoutMs = clampPositiveInteger(args.qmdQueryTimeoutMs, DEFAULT_QMD_QUERY_TIMEOUT_MS);
   return args;

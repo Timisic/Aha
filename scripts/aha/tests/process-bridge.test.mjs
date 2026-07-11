@@ -108,6 +108,7 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
     obsidianCommand: "/tmp/obsidian",
     wrapperRelativePath: wrapper,
     targetCandidates: 20,
+    retrievalPolicy: "product-v2",
     useFixtureResult: false,
   };
 
@@ -128,6 +129,7 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
     assertIncludesPair(argv, "--qmd-command", "/tmp/qmd");
     assertIncludesPair(argv, "--qmd-index", "obsidian");
     assertIncludesPair(argv, "--qmd-sdk-module", "/tmp/qmd-sdk.mjs");
+    assertIncludesPair(argv, "--retrieval-policy", "product-v2");
     assert.ok(argv.includes("--qmd-rerank"));
     assert.equal(envValue, "direct-openai-key");
     assert.ok(!argv.includes("direct-openai-key"));

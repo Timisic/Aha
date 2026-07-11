@@ -1446,6 +1446,7 @@ async function writeSuiteArtifact(root, suite, caseIds, options = {}) {
       profile: "product-parity",
       status: "success",
       case: { id },
+      effective_configuration: { policy_id: "product-v2", policy_version: 2 },
       steps: {
         query_generation: { ...total },
         relation_judge: { ...transportStats() },
@@ -1461,7 +1462,8 @@ async function writeSuiteArtifact(root, suite, caseIds, options = {}) {
       git_clean: true,
       trace_schema: "PipelineTrace",
       trace_version: 2,
-      effective_config_id: `config-${suite}`,
+      effective_config_id: "config-product-v2",
+      effective_configuration: { retrieval_policy: { id: "product-v2", version: 2 } },
     },
     results: caseIds.map((id) => {
       const total = options.transportById?.[id] ?? transportStats();

@@ -917,6 +917,8 @@ test("pipeline returns structured failure when relation judge fails", async () =
       obsidian,
       "--target-candidates",
       "999",
+      "--retrieval-policy",
+      "legacy-v1",
     ], { encoding: "utf8", env: { ...process.env, QMD_N_LOG: qmdLog, QMD_CANDIDATE_LIMIT_LOG: qmdCandidateLimitLog }, timeout: 10000 });
 
     assert.equal(result.status, 2, result.stderr);
@@ -1149,6 +1151,8 @@ test("pipeline bounds QMD plan query timeouts serially", async () => {
       obsidian,
       "--qmd-query-timeout-ms",
       "250",
+      "--retrieval-policy",
+      "legacy-v1",
     ], { encoding: "utf8", env: { ...process.env, QMD_CALL_LOG: qmdCallLog }, timeout: 10000 });
     const elapsedMs = Date.now() - started;
 
@@ -1212,6 +1216,8 @@ test("pipeline preserves structured QMD query timeout without vsearch fallback",
       obsidian,
       "--qmd-query-timeout-ms",
       "500",
+      "--retrieval-policy",
+      "legacy-v1",
     ], { encoding: "utf8", env: { ...process.env, QMD_CALL_LOG: qmdCallLog }, timeout: 10000 });
 
     assert.equal(result.status, 0, result.stderr);
@@ -1322,7 +1328,7 @@ test("pipeline fails structurally when admitted candidates have no readable exce
     assert.equal(output.ok, false);
     assert.equal(output.error.tool, "qmd");
     assert.match(output.error.details, /no vault-contained excerpts/i);
-    assert.ok(output.candidates.length > 0);
+    assert.deepEqual(output.candidates, []);
     assert.equal(validateAhaResult(output).ok, true);
   } finally {
     await rm(temp, { recursive: true, force: true });

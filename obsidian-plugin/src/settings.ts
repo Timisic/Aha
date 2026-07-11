@@ -22,6 +22,7 @@ export interface AhaPluginSettings {
   obsidianCommand: string;
   wrapperRelativePath: string;
   targetCandidates: number;
+  retrievalPolicy: string;
   useFixtureResult: boolean;
 }
 
@@ -46,6 +47,7 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   obsidianCommand: "obsidian",
   wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
   targetCandidates: 20,
+  retrievalPolicy: "product-v2",
   useFixtureResult: false,
 };
 
@@ -172,6 +174,18 @@ export class AhaSettingTab extends PluginSettingTab {
 
     this.textSetting("obsidianCommand", "Obsidian CLI command", "Command or absolute path used for backlink/outlink expansion and vault checks.");
     this.textSetting("wrapperRelativePath", "Search runner script", "Path to the local retrieval and relation-judging runner, relative to the Aha workspace.");
+
+    new Setting(containerEl)
+      .setName("Retrieval policy")
+      .setDesc("Product v2 is the default. Legacy v1 is the explicit rollback contract.")
+      .addDropdown((dropdown) => dropdown
+        .addOption("product-v2", "Product v2")
+        .addOption("legacy-v1", "Legacy v1 (rollback)")
+        .setValue(this.plugin.settings.retrievalPolicy)
+        .onChange(async (value) => {
+          this.plugin.settings.retrievalPolicy = value || DEFAULT_SETTINGS.retrievalPolicy;
+          await this.plugin.saveSettings();
+        }));
 
     new Setting(containerEl)
       .setName("Target candidates")

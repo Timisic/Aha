@@ -68,10 +68,15 @@ export async function runChunkedRelationJudge({
     final_count: 0,
   };
   if (failures.length > 0) {
+    const errorCategory = commonFailureValue(failures, "category");
     return {
       ok: false,
       candidates: [],
-      error: "Relation Judge failed closed because one or more chunks were not reviewed.",
+      error: errorCategory === "empty_candidates"
+        ? "No vault-contained excerpts were readable, so Relation Judge failed closed."
+        : "Relation Judge failed closed because one or more chunks were not reviewed.",
+      error_category: errorCategory,
+      tool: commonFailureValue(failures, "tool"),
       failures,
       counts: baseCounts,
       policy: effectivePolicy,
@@ -93,6 +98,8 @@ export async function runChunkedRelationJudge({
         candidates: [],
         error: "Relation Judge failed closed because global comparison did not complete.",
         failures: [traceFailure(error, "global")],
+        error_category: error?.category ?? null,
+        tool: error?.tool ?? null,
         counts: baseCounts,
         policy: effectivePolicy,
       };
@@ -169,5 +176,12 @@ function traceFailure(error, chunkIndex) {
     chunk_index: chunkIndex,
     error_name: error?.name || "Error",
     error_code: typeof error?.code === "string" ? error.code : null,
+    category: error?.category ?? (/timed out|timeout/i.test(String(error?.message ?? "")) ? "timeout" : "stage_error"),
+    tool: typeof error?.tool === "string" ? error.tool : null,
   };
+}
+
+function commonFailureValue(failures, key) {
+  const values = [...new Set(failures.map((failure) => failure[key]).filter(Boolean))];
+  return values.length === 1 ? values[0] : null;
 }

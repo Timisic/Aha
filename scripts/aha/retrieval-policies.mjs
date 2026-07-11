@@ -37,6 +37,8 @@ export const LEGACY_RETRIEVAL_POLICY_V1 = Object.freeze({
   id: "legacy-v1",
   version: 1,
   queryLimit: 5,
+  chunkedJudge: false,
+  failClosed: false,
   supplements: Object.freeze({ sourceExcerpt: false, thought: false }),
   graphExpansion: Object.freeze({ enabled: true, seedLimit: 0 }),
   candidateBudgets: Object.freeze({
@@ -48,6 +50,18 @@ export const LEGACY_RETRIEVAL_POLICY_V1 = Object.freeze({
     globalComparisonBudget: 20,
   }),
 });
+
+export const DEFAULT_RETRIEVAL_POLICY_ID = PRODUCT_RETRIEVAL_POLICY_V2.id;
+export const RETRIEVAL_POLICY_IDS = Object.freeze([
+  PRODUCT_RETRIEVAL_POLICY_V2.id,
+  LEGACY_RETRIEVAL_POLICY_V1.id,
+]);
+
+export function retrievalPolicyById(id = DEFAULT_RETRIEVAL_POLICY_ID) {
+  if (id === PRODUCT_RETRIEVAL_POLICY_V2.id) return PRODUCT_RETRIEVAL_POLICY_V2;
+  if (id === LEGACY_RETRIEVAL_POLICY_V1.id) return LEGACY_RETRIEVAL_POLICY_V1;
+  throw new Error(`Unsupported retrieval policy: ${id}`);
+}
 
 export function policyWithDisplayBudget(base, finalDisplayBudget) {
   const display = Number.isInteger(finalDisplayBudget) ? finalDisplayBudget : base.candidateBudgets.finalDisplayBudget;

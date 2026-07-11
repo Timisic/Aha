@@ -102,7 +102,7 @@ export async function runRetrievalPipeline({ insight, policy = {}, adapters }) {
   }
 
   try {
-    if (policy.candidateBudgets && adapters.judgeRelationChunk) {
+    if (policy.chunkedJudge !== false && policy.candidateBudgets && adapters.judgeRelationChunk) {
       state.effectiveBudgets = validateChunkedJudgePolicy(policy.candidateBudgets);
       state.relationJudge = await runChunkedRelationJudge({
         candidates: state.selectedCandidates,
@@ -119,7 +119,7 @@ export async function runRetrievalPipeline({ insight, policy = {}, adapters }) {
         insight, policy, state, candidates: state.selectedCandidates,
       });
     }
-    state.finalCandidates = state.relationJudge?.ok === false
+    state.finalCandidates = state.relationJudge?.ok === false && policy.failClosed !== false
       ? []
       : (state.relationJudge?.candidates ?? state.selectedCandidates)
         .slice(0, positiveLimit(policy.finalCandidateLimit));

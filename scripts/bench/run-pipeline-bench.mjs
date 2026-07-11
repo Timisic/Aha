@@ -112,6 +112,7 @@ const DEFAULTS = {
   runtimeCodexReasoningEffort: "low",
   runtimeCodexSandbox: "danger-full-access",
   runtimeTimeoutMs: 900_000,
+  retrievalPolicy: "product-v2",
   compareReport: "",
   suite: "all",
   noArchive: false,
@@ -174,6 +175,7 @@ function usage() {
     "  --runtime-codex-reasoning-effort <value> Product parity only; default: low",
     "  --runtime-codex-sandbox <mode>  Product parity only; default: danger-full-access",
     "  --runtime-timeout-ms <n>        Product parity wrapper timeout, default: 900000",
+    "  --retrieval-policy <product-v2|legacy-v1> Product parity policy; default: product-v2",
   ].join("\n");
 }
 
@@ -370,6 +372,9 @@ function parseArgs() {
       case "--runtime-timeout-ms":
         options.runtimeTimeoutMs = Number(value);
         break;
+      case "--retrieval-policy":
+        options.retrievalPolicy = value;
+        break;
       default:
         throw new Error(`Unknown option: ${arg}`);
     }
@@ -394,6 +399,9 @@ function parseArgs() {
   }
   if (!["sdk", "cli"].includes(options.runtimeQmdRunner)) {
     throw new Error("runtimeQmdRunner must be sdk or cli.");
+  }
+  if (!["product-v2", "legacy-v1"].includes(options.retrievalPolicy)) {
+    throw new Error("retrievalPolicy must be product-v2 or legacy-v1.");
   }
   for (const [key, value] of [
     ["llmProvider", options.llmProvider],
@@ -1096,6 +1104,7 @@ function effectiveConfiguration(options, collection) {
         query_plan: 5,
         relation_judge: runtimeFinal,
       },
+      retrieval_policy: { id: options.retrievalPolicy, version: options.retrievalPolicy === "product-v2" ? 2 : 1 },
     };
   }
   return {
@@ -1149,6 +1158,7 @@ function reportMetadata(options, collection) {
         : null,
       qmd_rerank: options.runtimeQmdRerank,
       target_candidates: runtimeTargetCandidateLimit(options.limit),
+      retrieval_policy: options.retrievalPolicy,
     } : null,
     query_prompt_version: QUERY_PLAN_PROMPT_VERSION,
     relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
@@ -1325,6 +1335,7 @@ function productParityWrapperArgs(caseItem, options, resolver) {
     "--obsidian-command", options.obsidian,
     "--timeout-ms", String(options.runtimeTimeoutMs),
     "--trace",
+    "--retrieval-policy", options.retrievalPolicy,
   ];
   if (options.runtimeQmdSdkModule) args.push("--qmd-sdk-module", options.runtimeQmdSdkModule);
   if (options.runtimeQmdRerank) args.push("--qmd-rerank");

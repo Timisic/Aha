@@ -337,6 +337,7 @@ async function runPipeline(context) {
         expectedCaseIds: activeBySuite,
         artifacts,
         holdoutTransition,
+        expectedRetrievalPolicy: pluginRuntime.provenance.retrieval_policy,
         repoRoot: REPO_ROOT,
       })
     : {

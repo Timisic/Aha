@@ -76,6 +76,8 @@ node scripts/bench/summarize-report.mjs bench/reports/latest/product-parity.json
 
 `baseline` 直接调用 shipped runtime，并为每个 case 产出 privacy-bounded `PipelineTrace`。只有同一 clean commit 上完整、兼容、全部成功且可计分的运行，才会原子更新 latest pointer。细节见 [bench/README.md](./bench/README.md)。
 
+检索策略默认使用 `product-v2`，可在插件设置中显式切回 `legacy-v1`。策略晋升必须将 development 与 holdout 分开比较，并在私有 comparison artifact 中记录阈值和取舍；runtime trace 不包含 benchmark gold。
+
 ## 开发与验证
 
 ```bash

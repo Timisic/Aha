@@ -993,7 +993,7 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
   assert.match(caseResult.trace_json, /^traces\/trace-rerank-[a-f0-9]{8}\.json$/);
   assert.match(collidingCaseResult.trace_json, /^traces\/trace-rerank-[a-f0-9]{8}\.json$/);
   assert.notEqual(caseResult.trace_json, collidingCaseResult.trace_json);
-  assert.equal(report.summary.trace_diagnosis_counts.retrieval_failure, 2);
+  assert.equal(report.summary.trace_diagnosis_counts.rerank_failure, 2);
   assert.equal(report.summary.trace_diagnosis_counts.none, 1);
 
   const trace = JSON.parse(await readFile(path.resolve(path.dirname(reportPath), caseResult.trace_json), "utf-8"));
@@ -1021,9 +1021,9 @@ test("pipeline benchmark emits structured PipelineTrace artifacts", async () => 
     source: "qmd_query",
   });
   assert.equal(trace.gold_positions.noise[0].in_review_budget, true);
-  assert.equal(trace.diagnosis.primary, "retrieval_failure");
-  assert.equal(trace.diagnosis.next_target, "retrieval");
-  assert.ok(trace.diagnosis.flags.includes("found_beyond_judge_budget"));
+  assert.equal(trace.diagnosis.primary, "rerank_failure");
+  assert.equal(trace.diagnosis.next_target, "rerank");
+  assert.ok(trace.diagnosis.flags.includes("dropped_must_from_final_top_k"));
 
   const noMustTrace = JSON.parse(await readFile(path.resolve(path.dirname(reportPath), noMustCaseResult.trace_json), "utf-8"));
   assert.equal(noMustTrace.diagnosis.primary, null);

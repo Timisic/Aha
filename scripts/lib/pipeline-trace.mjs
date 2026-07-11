@@ -116,11 +116,11 @@ function errorCategory(value) {
   return "stage_error";
 }
 
-function traceError(stage, value) {
+function traceError(stage, value, category = null) {
   const detail = value instanceof Error ? value.message : String(value ?? "");
   return {
     stage,
-    category: errorCategory(detail),
+    category: category ?? errorCategory(detail),
     detail_hash: sha256(detail),
   };
 }
@@ -182,7 +182,7 @@ export function buildRuntimePipelineTrace({
     ...(errors ?? []).map((error) => traceError(error?.stage || "runtime", error?.error ?? error?.detail ?? error)),
   ];
   if (relationJudge && relationJudge.ok === false && relationJudge.error) {
-    normalizedErrors.push(traceError("relation_judge", relationJudge.error));
+    normalizedErrors.push(traceError("relation_judge", relationJudge.error, relationJudge.error_category));
   }
 
   const sourceFile = safeNoteIdentity(sourcePath, vaultRoot);
@@ -259,7 +259,7 @@ export function buildRuntimePipelineTrace({
         failures: relationJudge?.failures ?? [],
         reviewed_candidates: reviewedCandidates.map(toTraceCandidate),
         decisions: relationCandidates.map(toTraceCandidate),
-        errors: relationJudge?.error ? [traceError("relation_judge", relationJudge.error)] : [],
+        errors: relationJudge?.error ? [traceError("relation_judge", relationJudge.error, relationJudge.error_category)] : [],
         ...normalizeOpenAiTransportStats(openAiTransport.relation_judge),
       },
       final_candidates: (finalCandidates ?? []).map(toTraceCandidate),
