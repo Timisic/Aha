@@ -30,7 +30,7 @@ import {
 } from "../aha/relation-judge.mjs";
 import { QUERY_PLAN_PROMPT_VERSION } from "../aha/query-plan.mjs";
 import { runRetrievalPipeline } from "../aha/retrieval-pipeline.mjs";
-import { DIAGNOSTIC_RETRIEVAL_POLICY_V2 } from "../aha/retrieval-policies.mjs";
+import { DIAGNOSTIC_RETRIEVAL_POLICY_V2, retrievalPolicyById } from "../aha/retrieval-policies.mjs";
 import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
 import {
   PIPELINE_TRACE_SCHEMA,
@@ -112,7 +112,7 @@ const DEFAULTS = {
   runtimeCodexReasoningEffort: "low",
   runtimeCodexSandbox: "danger-full-access",
   runtimeTimeoutMs: 900_000,
-  retrievalPolicy: "product-v2",
+  retrievalPolicy: "legacy-v1",
   compareReport: "",
   suite: "all",
   noArchive: false,
@@ -1104,7 +1104,7 @@ function effectiveConfiguration(options, collection) {
         query_plan: 5,
         relation_judge: runtimeFinal,
       },
-      retrieval_policy: { id: options.retrievalPolicy, version: options.retrievalPolicy === "product-v2" ? 2 : 1 },
+      retrieval_policy: { id: options.retrievalPolicy, version: retrievalPolicyById(options.retrievalPolicy).version },
     };
   }
   return {
@@ -1547,6 +1547,10 @@ function productParityCase(caseItem, options, resolver, expectedInTopK, expected
     provenance_origin: caseItem.provenance?.origin ?? null,
     profile: "product-parity",
     openai_transport: openAiTransport,
+    runtime_policy: runtimeTrace.effective_configuration ? {
+      id: runtimeTrace.effective_configuration.policy_id,
+      version: runtimeTrace.effective_configuration.policy_version,
+    } : null,
     runtime_status: runtimeTrace.status,
     runtime_exit_code: runtime.execution.code,
     runtime_error: runtime.output.error ? {
@@ -2019,6 +2023,7 @@ async function main() {
     case_counts: reportCaseCounts(results),
     diagnostics: reportDiagnostics(results),
   };
+  report.metadata.privacy_valid = suiteEvaluation.status === "ready";
   const comparisonReport = readComparisonReport(options.compareReport);
   const stability = comparePipelineStability(report, comparisonReport, { resolver });
   for (const result of results) {

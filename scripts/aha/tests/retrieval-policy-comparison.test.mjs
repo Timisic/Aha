@@ -7,6 +7,8 @@ function report(policy, latency, recall) {
     id: "case-1",
     runtime_status: "success",
     evaluation_status: "scored",
+    trace_json: "traces/case-1.json",
+    runtime_policy: { id: policy, version: policy === "product-v2" ? 2 : 1 },
     latency_ms: latency,
     openai_transport: { total: { request_count: 2, attempt_count: 3, retry_count: 1, retry_categories: { timeout: 1 } } },
     qmd: { top_files: ["retrieved.md"] },
@@ -21,7 +23,15 @@ function report(policy, latency, recall) {
   return {
     profile: "product-parity",
     suite: { kind: "development", version: "dev-v1" },
-    metadata: { effective_config_id: `${policy}-config`, effective_configuration: { retrieval_policy: { id: policy, version: policy === "product-v2" ? 2 : 1 } } },
+    suite_validation: { status: "ready" },
+    metadata: {
+      git_clean: true,
+      privacy_valid: true,
+      trace_schema: "PipelineTrace",
+      trace_version: 2,
+      effective_config_id: `${policy}-config`,
+      effective_configuration: { profile: "product-parity", retrieval_policy: { id: policy, version: policy === "product-v2" ? 2 : 1 } },
+    },
     results: [result],
   };
 }
@@ -50,4 +60,23 @@ test("policy comparison rejects cross-suite evidence", () => {
   const rollback = report("legacy-v1", 100, 0.5);
   rollback.suite.kind = "holdout";
   assert.throws(() => comparePolicyReports(report("product-v2", 120, 1), rollback), /same suite/);
+});
+
+test("policy comparison blocks thresholds when execution evidence is dirty or incomplete", () => {
+  const candidate = report("product-v2", 120, 1);
+  candidate.metadata.git_clean = false;
+  candidate.results[0].evaluation_status = "not_scored";
+  candidate.results[0].runtime_status = "failed";
+  candidate.results[0].trace_json = "";
+  const comparison = comparePolicyReports(candidate, report("legacy-v1", 100, 0.5), {
+    thresholds: { minimum_quality_delta: {} },
+    tradeoff_decision: "Would otherwise accept.",
+  });
+  assert.equal(comparison.promotion.eligible, false);
+  assert.deepEqual(comparison.promotion.reasons, [
+    "candidate:dirty_worktree",
+    "candidate:case_not_scored:case-1",
+    "candidate:runtime_not_success:case-1",
+    "candidate:trace_missing:case-1",
+  ]);
 });

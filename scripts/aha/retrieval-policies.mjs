@@ -3,7 +3,7 @@ export const RETRIEVAL_POLICY_VERSION = 2;
 const shared = Object.freeze({
   version: RETRIEVAL_POLICY_VERSION,
   queryLimit: 7,
-  supplements: Object.freeze({ sourceExcerpt: true, thought: true }),
+  supplements: Object.freeze({ sourceExcerpt: true, thought: true, queryBudget: 2 }),
   graphExpansion: Object.freeze({
     enabled: true,
     seedLimit: 4,
@@ -51,7 +51,9 @@ export const LEGACY_RETRIEVAL_POLICY_V1 = Object.freeze({
   }),
 });
 
-export const DEFAULT_RETRIEVAL_POLICY_ID = PRODUCT_RETRIEVAL_POLICY_V2.id;
+// Keep the shipped default on the rollback contract until private development
+// and holdout comparisons produce eligible promotion evidence.
+export const DEFAULT_RETRIEVAL_POLICY_ID = LEGACY_RETRIEVAL_POLICY_V1.id;
 export const RETRIEVAL_POLICY_IDS = Object.freeze([
   PRODUCT_RETRIEVAL_POLICY_V2.id,
   LEGACY_RETRIEVAL_POLICY_V1.id,

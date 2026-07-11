@@ -16,7 +16,7 @@ export function comparePolicyReports(candidate, rollback, decision = null) {
     candidate: candidateSummary,
     rollback: rollbackSummary,
     tradeoffs,
-    promotion: promotionDecision(decision, tradeoffs),
+    promotion: promotionDecision(decision, tradeoffs, evidenceReasons(candidate, rollback)),
     cases: candidate.results.map((current) => {
       const previous = rollback.results.find((item) => item.id === current.id);
       return {
@@ -28,7 +28,10 @@ export function comparePolicyReports(candidate, rollback, decision = null) {
   };
 }
 
-function promotionDecision(decision, tradeoffs) {
+function promotionDecision(decision, tradeoffs, evidence = []) {
+  if (evidence.length > 0) {
+    return { eligible: false, reasons: evidence, thresholds: decision?.thresholds ?? null, tradeoff_decision: decision?.tradeoff_decision ?? null };
+  }
   if (!decision || typeof decision !== "object") {
     return { eligible: false, reasons: ["thresholds_and_tradeoff_decision_not_recorded"], thresholds: null, tradeoff_decision: null };
   }
@@ -44,6 +47,32 @@ function promotionDecision(decision, tradeoffs) {
   if (Number.isFinite(Number(thresholds.maximum_mean_latency_increase_ms)) && tradeoffs.mean_latency_ms > Number(thresholds.maximum_mean_latency_increase_ms)) reasons.push("latency_threshold_not_met");
   if (Number.isFinite(Number(thresholds.maximum_failure_increase)) && tradeoffs.failures > Number(thresholds.maximum_failure_increase)) reasons.push("failure_threshold_not_met");
   return { eligible: reasons.length === 0, reasons, thresholds, tradeoff_decision: tradeoffDecision };
+}
+
+function evidenceReasons(...reports) {
+  const reasons = [];
+  for (const [index, report] of reports.entries()) {
+    const side = index === 0 ? "candidate" : "rollback";
+    if (report.metadata?.git_clean !== true) reasons.push(`${side}:dirty_worktree`);
+    if (report.suite_validation?.status !== "ready") reasons.push(`${side}:suite_validation_not_ready`);
+    if (report.metadata?.privacy_valid !== true) reasons.push(`${side}:privacy_invalid_or_missing`);
+    if (report.metadata?.trace_schema !== "PipelineTrace" || report.metadata?.trace_version !== 2) reasons.push(`${side}:trace_incompatible`);
+    if (!report.metadata?.effective_config_id || !report.metadata?.effective_configuration?.retrieval_policy?.id) reasons.push(`${side}:config_or_policy_missing`);
+    for (const result of report.results ?? []) {
+      if (result.evaluation_status !== "scored") reasons.push(`${side}:case_not_scored:${result.id}`);
+      if (result.runtime_status !== "success") reasons.push(`${side}:runtime_not_success:${result.id}`);
+      if (!String(result.trace_json ?? "").trim()) reasons.push(`${side}:trace_missing:${result.id}`);
+      const reportPolicy = report.metadata?.effective_configuration?.retrieval_policy;
+      if (result.runtime_policy?.id !== reportPolicy?.id || result.runtime_policy?.version !== reportPolicy?.version) reasons.push(`${side}:trace_policy_mismatch:${result.id}`);
+      const stages = caseEvidence(result);
+      if (stages.retrieval_top_10.length === 0 || stages.judge_top_10.length === 0 || stages.final_top_10.length === 0) reasons.push(`${side}:stage_evidence_incomplete:${result.id}`);
+    }
+  }
+  const [candidate, rollback] = reports;
+  const candidateConfig = { ...candidate.metadata?.effective_configuration, retrieval_policy: null };
+  const rollbackConfig = { ...rollback.metadata?.effective_configuration, retrieval_policy: null };
+  if (JSON.stringify(candidateConfig) !== JSON.stringify(rollbackConfig)) reasons.push("cross_policy_config_mismatch");
+  return [...new Set(reasons)];
 }
 
 function requireCompatible(candidate, rollback) {

@@ -70,6 +70,22 @@ test("shared retrieval pipeline preserves structured stage failures in its trace
   assert.deepEqual(trace.errors, [{ stage: "query_generation", message: "planner unavailable" }]);
 });
 
+test("supplement budgets survive a max-size generated plan and trace only sees executed queries", async () => {
+  let executed = [];
+  const { state } = await runRetrievalPipeline({
+    insight: { text: "source excerpt", thought: "separate thought" },
+    policy: { queryLimit: 2, supplements: { sourceExcerpt: true, thought: true, queryBudget: 2 }, graphExpansion: false },
+    adapters: {
+      planQueries: async () => ({ queries: Array.from({ length: 7 }, (_, index) => ({ kind: "generated", text: `plan-${index}` })) }),
+      retrieve: async ({ queries }) => { executed = queries; return { candidates: [] }; },
+      selectCandidates: async () => [],
+      judgeRelations: async () => ({ ok: true, candidates: [] }),
+    },
+  });
+  assert.deepEqual(executed.map((query) => query.provenance ?? "generated"), ["generated", "generated", "deterministic", "deterministic"]);
+  assert.deepEqual(state.generatedQuery.queries, executed);
+});
+
 test("v2 pipeline composes supplements, graph seeds, and chunked fail-closed judging", async () => {
   const reviewed = [];
   const { result, state } = await runRetrievalPipeline({

@@ -130,7 +130,7 @@ function wrapperRuntimeArgs(settings: AhaPluginSettings): string[] {
     "--obsidian-command",
     settings.obsidianCommand,
     "--retrieval-policy",
-    settings.retrievalPolicy || "product-v2",
+    settings.retrievalPolicy || "legacy-v1",
   ];
 
   if (settings.qmdSdkModule.trim()) {

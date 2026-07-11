@@ -82,6 +82,7 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
       "--runtime-codex-model", "codex-product-test",
       "--runtime-codex-reasoning-effort", "medium",
       "--runtime-codex-sandbox", "read-only",
+      "--retrieval-policy", "product-v2",
     ], { cwd: root, encoding: "utf8", env, timeout: 30_000 });
 
     assert.equal(productRun.status, 0, productRun.stderr);
@@ -168,6 +169,7 @@ test("pipeline benchmark separates product parity from diagnostic enhancement", 
       graph_seed_limit: 4,
       graph_candidate_budget: 24,
     });
+    assert.equal(productTrace.steps.query_generation.query_count, productTrace.steps.qmd_runs.length);
     assert.equal(
       productReport.metadata.effective_config_id,
       createHash("sha256")

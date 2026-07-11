@@ -91,7 +91,7 @@ export function loadPluginRuntimeConfiguration(pluginDataPath, options = {}) {
   if (typeof settings.qmdRerank !== "boolean") throw new Error("Aha plugin qmdRerank must be boolean.");
   const retrievalPolicy = typeof settings.retrievalPolicy === "string" && settings.retrievalPolicy.trim()
     ? settings.retrievalPolicy.trim()
-    : "product-v2";
+    : "legacy-v1";
   if (!["product-v2", "legacy-v1"].includes(retrievalPolicy)) {
     throw new Error("Aha plugin retrievalPolicy must be product-v2 or legacy-v1.");
   }

@@ -4,8 +4,10 @@
  * @param {object} input
  * @param {object} input.insight Current insight text and optional source identity.
  * @param {object} input.policy Retrieval budgets and enabled strategies. Supported
- * keys are queryLimit, finalCandidateLimit, and graphExpansion; adapters may read
- * additional profile-specific policy without changing the orchestration.
+ * keys include queryLimit, supplements.queryBudget, graphExpansion, and either
+ * finalCandidateLimit (legacy/simple judging) or candidateBudgets.finalDisplayBudget
+ * (chunked judging). The final display budget caps returned panel candidates; it
+ * does not cap retrieval or judge input pools.
  * @param {object} input.adapters Runtime operations for query planning, retrieval,
  * graph expansion, candidate selection, relation judging, result formatting, and
  * trace construction. Benchmark labels, scoring, diagnosis, reports, and promotion
@@ -55,7 +57,17 @@ export async function runRetrievalPipeline({ insight, policy = {}, adapters }) {
       thought: insight.thought,
       policy: policy.supplements ?? { sourceExcerpt: false, thought: false },
     });
-    state.queries = (state.generatedQuery?.queries ?? []).slice(0, positiveLimit(policy.queryLimit));
+    const plannedQueries = state.generatedQuery?.queries ?? [];
+    const supplements = plannedQueries.filter((query) => query?.provenance === "deterministic");
+    const generated = plannedQueries.filter((query) => query?.provenance !== "deterministic");
+    const supplementBudget = positiveLimit(policy.supplements?.queryBudget ?? 2);
+    state.queries = [
+      ...generated.slice(0, positiveLimit(policy.queryLimit)),
+      ...supplements.slice(0, supplementBudget),
+    ];
+    // From this point onward query_generation is execution evidence, not the
+    // unsliced model proposal.
+    state.generatedQuery = { ...state.generatedQuery, queries: state.queries };
   } catch (error) {
     return fail("query_generation", error);
   }

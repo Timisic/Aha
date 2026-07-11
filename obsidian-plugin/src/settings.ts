@@ -47,7 +47,7 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   obsidianCommand: "obsidian",
   wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
   targetCandidates: 20,
-  retrievalPolicy: "product-v2",
+  retrievalPolicy: "legacy-v1",
   useFixtureResult: false,
 };
 
@@ -177,7 +177,7 @@ export class AhaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Retrieval policy")
-      .setDesc("Product v2 is the default. Legacy v1 is the explicit rollback contract.")
+      .setDesc("Legacy v1 remains shipped by default. Product v2 is the candidate pending eligible private comparison evidence.")
       .addDropdown((dropdown) => dropdown
         .addOption("product-v2", "Product v2")
         .addOption("legacy-v1", "Legacy v1 (rollback)")

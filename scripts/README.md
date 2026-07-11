@@ -70,7 +70,7 @@ node scripts/bench/run-pipeline-bench.mjs --profile diagnostic-enhanced --suite 
 
 Named workflow runs are immutable under `bench/reports/runs/<run-id>/`. `bench/reports/latest/product-parity.json` is an atomic, hash-verified pointer and is updated only by a complete eligible baseline. Raw runners may still write legacy latest/archive paths when used directly.
 
-The shipped wrapper and diagnostic runner both execute the shared v2 retrieval mechanisms. Product defaults keep up to 80 retrieval candidates, review up to 60 in bounded chunks, and display up to 20. Source excerpts and an optional `--thought` add deterministic, deduplicated QMD queries. Source-note and top-seed graph expansion share admission, identity, per-origin, and global budgets. `legacy-v1` in `retrieval-policies.mjs` is the rollback contract.
+The diagnostic runner and `product-v2` candidate use the shared v2 mechanisms: up to 80 retrieved candidates, 60 reviewed in bounded chunks, and 20 displayed. The shipped wrapper currently defaults to `legacy-v1` (20/20/20, no deterministic supplements, and source-only graph behavior) until comparison gates promote v2. Under v2, source excerpts and an optional `--thought` have a separate deterministic query budget, while source-note and top-seed graph expansion share admission, identity, per-origin, and global budgets.
 
 The Obsidian setting and product-parity runner pass `--retrieval-policy product-v2|legacy-v1`; the policy id/version is part of both effective configuration identity and every runtime trace. Compare candidate and rollback reports per suite with `scripts/bench/compare-retrieval-policies.mjs`; its output is private benchmark evidence and must not be committed.
 
