@@ -20,7 +20,11 @@ import {
   qmdQueryFromObject as sharedQmdQueryFromObject,
   unique,
 } from "./query-plan.mjs";
-import { judgeCandidateRelations, normalizeStructuredResult } from "./relation-judge.mjs";
+import {
+  judgeCandidateRelations,
+  normalizeStructuredResult,
+  orderJudgedCandidatesForPolicy,
+} from "./relation-judge.mjs";
 import { isNoProxyHost, parseMacProxyConfig } from "../lib/https-proxy.mjs";
 import {
   DEFAULT_OPENAI_MAX_ATTEMPTS,
@@ -1112,7 +1116,14 @@ async function pipelineRecall(args, sourceText) {
         }
         return judged.candidates;
       },
-      judgeRelations: ({ candidates }) => judgePipelineCandidates(args, sourceText, candidates),
+      judgeRelations: async ({ candidates }) => {
+        const judged = await judgePipelineCandidates(args, sourceText, candidates);
+        if (!judged.ok) return judged;
+        return {
+          ...judged,
+          candidates: orderJudgedCandidatesForPolicy(judged.candidates, candidates, policy),
+        };
+      },
       candidateId: (candidate) => candidate.notePath,
       validateRelationEvidence: (candidate) => candidate,
       formatResult: ({ state, finalCandidates }) => formatRuntimePipelineResult(args, state, finalCandidates),

@@ -51,16 +51,26 @@ export const LEGACY_RETRIEVAL_POLICY_V1 = Object.freeze({
   }),
 });
 
+// Candidate policy: keep the stable rollback retrieval surface, then let the
+// quote-validated Relation Judge order the review slate with retrieval reserves.
+export const RANKED_RETRIEVAL_POLICY_V1 = Object.freeze({
+  ...LEGACY_RETRIEVAL_POLICY_V1,
+  id: "ranked-v1",
+  relationOrdering: "strength-with-pool-reserve",
+});
+
 // Keep the shipped default on the rollback contract until private development
 // and holdout comparisons produce eligible promotion evidence.
 export const DEFAULT_RETRIEVAL_POLICY_ID = LEGACY_RETRIEVAL_POLICY_V1.id;
 export const RETRIEVAL_POLICY_IDS = Object.freeze([
   PRODUCT_RETRIEVAL_POLICY_V2.id,
+  RANKED_RETRIEVAL_POLICY_V1.id,
   LEGACY_RETRIEVAL_POLICY_V1.id,
 ]);
 
 export function retrievalPolicyById(id = DEFAULT_RETRIEVAL_POLICY_ID) {
   if (id === PRODUCT_RETRIEVAL_POLICY_V2.id) return PRODUCT_RETRIEVAL_POLICY_V2;
+  if (id === RANKED_RETRIEVAL_POLICY_V1.id) return RANKED_RETRIEVAL_POLICY_V1;
   if (id === LEGACY_RETRIEVAL_POLICY_V1.id) return LEGACY_RETRIEVAL_POLICY_V1;
   throw new Error(`Unsupported retrieval policy: ${id}`);
 }

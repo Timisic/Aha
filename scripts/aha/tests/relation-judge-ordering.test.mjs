@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { orderJudgedCandidates } from "../relation-judge.mjs";
+import { orderJudgedCandidates, orderJudgedCandidatesForPolicy } from "../relation-judge.mjs";
 
 const pool = [
   { notePath: "A.md" },
@@ -39,4 +39,21 @@ test("unknown relations rank as weak and missing notePath entries are dropped", 
   ];
   const ordered = orderJudgedCandidates(judged, pool).map((c) => c.notePath);
   assert.deepEqual(ordered, ["A.md", "B.md"]);
+});
+
+test("policy-gated ordering promotes strong relations while preserving rollback order", () => {
+  const retrieval = Array.from({ length: 12 }, (_, index) => ({
+    notePath: `${index + 1}.md`,
+    relation: index < 10 ? "weak" : "supports",
+  }));
+
+  const rollback = orderJudgedCandidatesForPolicy(retrieval, retrieval, { relationOrdering: "retrieval" });
+  const ranked = orderJudgedCandidatesForPolicy(retrieval, retrieval, {
+    relationOrdering: "strength-with-pool-reserve",
+  });
+
+  assert.deepEqual(rollback.map(({ notePath }) => notePath), retrieval.map(({ notePath }) => notePath));
+  assert.deepEqual(ranked.slice(0, 4).map(({ notePath }) => notePath), ["11.md", "12.md", "1.md", "2.md"]);
+  assert.equal(ranked.length, retrieval.length);
+  assert.equal(new Set(ranked.map(({ notePath }) => notePath)).size, retrieval.length);
 });

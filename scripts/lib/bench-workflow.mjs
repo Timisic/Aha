@@ -8,6 +8,7 @@ import {
   mergeOpenAiTransportStats,
   normalizeOpenAiTransportStats,
 } from "./openai-transport.mjs";
+import { RETRIEVAL_POLICY_IDS } from "../aha/retrieval-policies.mjs";
 
 const WORKFLOW_SCHEMA = "AhaBenchmarkWorkflowRun";
 const POINTER_SCHEMA = "AhaBenchmarkLatestPointer";
@@ -92,8 +93,8 @@ export function loadPluginRuntimeConfiguration(pluginDataPath, options = {}) {
   const retrievalPolicy = typeof settings.retrievalPolicy === "string" && settings.retrievalPolicy.trim()
     ? settings.retrievalPolicy.trim()
     : "legacy-v1";
-  if (!["product-v2", "legacy-v1"].includes(retrievalPolicy)) {
-    throw new Error("Aha plugin retrievalPolicy must be product-v2 or legacy-v1.");
+  if (!RETRIEVAL_POLICY_IDS.includes(retrievalPolicy)) {
+    throw new Error(`Aha plugin retrievalPolicy must be one of: ${RETRIEVAL_POLICY_IDS.join(", ")}.`);
   }
 
   const effective = {

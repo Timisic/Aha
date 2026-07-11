@@ -1171,6 +1171,73 @@ test("legacy runtime restores the complete source graph with historical edge sco
   }
 });
 
+test("ranked policy applies relation strength ordering after the single-batch judge", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-ranked-policy-"));
+  const vault = path.join(temp, "vault");
+  const source = path.join(vault, "source.md");
+  const codex = path.join(temp, "codex-helper.mjs");
+  const qmd = path.join(temp, "qmd-helper.mjs");
+  const obsidian = path.join(temp, "obsidian-helper.mjs");
+  const notePaths = Array.from({ length: 12 }, (_, index) => `Memory/Candidate ${index + 1}.md`);
+  const qmdRows = notePaths.map((file, index) => ({
+    score: 1 - index / 100,
+    file: `qmd://obsidian/${file}?index=obsidian`,
+    title: path.basename(file, ".md"),
+    snippet: '"Safe vault evidence."',
+  }));
+  const judgedCandidates = notePaths.map((notePath, index) => ({
+    notePath,
+    noteTitle: path.basename(notePath, ".md"),
+    relation: index < 10 ? "weak" : "supports",
+    hit: '"Safe vault evidence."',
+    why: "Quote-backed relation evidence.",
+    quotes: ["Safe vault evidence."],
+    selected: true,
+  }));
+  await mkdir(vault, { recursive: true });
+  await writeFile(source, "# Source\n\nA current insight with enough text for query planning.");
+  for (const notePath of notePaths) {
+    const absolutePath = path.join(vault, notePath);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, "# Candidate\n\nSafe vault evidence.");
+  }
+  await writePipelineHelpers({
+    codex,
+    qmd,
+    obsidian,
+    relationJudge: "success",
+    qmdRows,
+    judgedCandidates,
+  });
+
+  try {
+    const result = spawnSync(process.execPath, [
+      wrapper,
+      "--workspace", repoRoot,
+      "--llm-provider", "codex-cli",
+      "--qmd-runner", "cli",
+      "--source-path", "source.md",
+      "--source-absolute-path", source,
+      "--vault-root", vault,
+      "--codex-command", codex,
+      "--qmd-command", qmd,
+      "--obsidian-command", obsidian,
+      "--retrieval-policy", "ranked-v1",
+    ], { encoding: "utf8", timeout: 10000 });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output.candidates.slice(0, 4).map(({ notePath }) => notePath), [
+      "Memory/Candidate 11.md",
+      "Memory/Candidate 12.md",
+      "Memory/Candidate 1.md",
+      "Memory/Candidate 2.md",
+    ]);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 test("pipeline bounds QMD plan query timeouts serially", async () => {
   const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-qmd-timeout-bound-"));
   const vault = path.join(temp, "vault");
@@ -1941,7 +2008,22 @@ async function writeSafeCandidate(vault) {
   await writeFile(candidate, "# Candidate\n\nSafe vault evidence.");
 }
 
-async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsidePath = "", outsideSnippet = "outside snippet", noCandidates = false, graphPaths = [], graphLinks = graphPaths, graphBacklinks = graphPaths, qmdHang = false, qmdHangQueryOnly = false, qmdHangRawQueryOnce = false }) {
+async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsidePath = "", outsideSnippet = "outside snippet", noCandidates = false, graphPaths = [], graphLinks = graphPaths, graphBacklinks = graphPaths, qmdRows = null, judgedCandidates = null, qmdHang = false, qmdHangQueryOnly = false, qmdHangRawQueryOnce = false }) {
+  const relationCandidates = judgedCandidates ?? [{
+    notePath: "Memory/Candidate.md",
+    noteTitle: "Candidate",
+    relation: "supports",
+    hit: '"Safe vault evidence."',
+    why: "The candidate includes quote-backed evidence for the source insight.",
+    quotes: ["Safe vault evidence."],
+    selected: true,
+  }];
+  const retrievalRows = qmdRows ?? [{
+    score: 0.91,
+    file: "qmd://obsidian/Memory/Candidate.md?index=obsidian",
+    title: "Candidate",
+    snippet: '"Safe vault evidence."',
+  }];
   await writeFile(codex, [
     "#!/usr/bin/env node",
     "import { writeFileSync } from 'node:fs';",
@@ -1963,9 +2045,7 @@ async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsi
           "if (outputFile.endsWith('relation-judge.json')) {",
           "  const prompt = args[args.length - 1] || '';",
           "  if (prompt.includes('SUPER_SECRET_SHOULD_NOT_LEAK')) { console.error('secret leaked into judge prompt'); process.exit(66); }",
-          "  writeFileSync(outputFile, JSON.stringify({ ok: true, sourcePath: 'source.md', summary: 'judge ok', warnings: [], candidates: [",
-          "    { notePath: 'Memory/Candidate.md', noteTitle: 'Candidate', relation: 'supports', hit: '\"Safe vault evidence.\"', why: 'The candidate includes quote-backed evidence for the source insight.', quotes: ['Safe vault evidence.'], selected: true }",
-          "  ] }));",
+          `  writeFileSync(outputFile, JSON.stringify({ ok: true, sourcePath: 'source.md', summary: 'judge ok', warnings: [], candidates: ${JSON.stringify(relationCandidates)} }));`,
           "  process.exit(0);",
           "}",
         ].join("\n"),
@@ -2001,13 +2081,11 @@ async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsi
     noCandidates
       ? "  console.log('[]');"
       : [
-          "  console.log(JSON.stringify([",
-          outsidePath
-            ? `    { score: 0.99, file: ${JSON.stringify(outsidePath)}, title: 'Secret', snippet: ${JSON.stringify(outsideSnippet)} },`
-            : "",
-          "    { score: 0.91, file: 'qmd://obsidian/Memory/Candidate.md?index=obsidian', title: 'Candidate', snippet: '\"Safe vault evidence.\"' }",
-          "  ]));",
-        ].filter((line) => line !== "").join("\n"),
+          `  console.log(JSON.stringify(${JSON.stringify([
+            ...(outsidePath ? [{ score: 0.99, file: outsidePath, title: "Secret", snippet: outsideSnippet }] : []),
+            ...retrievalRows,
+          ])}));`,
+        ].join("\n"),
     "}",
     qmdHang
       ? "setInterval(() => {}, 1000);"

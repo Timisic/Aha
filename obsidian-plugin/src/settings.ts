@@ -177,9 +177,10 @@ export class AhaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Retrieval policy")
-      .setDesc("Legacy v1 remains shipped by default. Product v2 is the candidate pending eligible private comparison evidence.")
+      .setDesc("Legacy v1 remains the rollback. Ranked v1 adds relation-strength ordering; Product v2 keeps the larger chunk-judged pool.")
       .addDropdown((dropdown) => dropdown
         .addOption("product-v2", "Product v2")
+        .addOption("ranked-v1", "Ranked v1")
         .addOption("legacy-v1", "Legacy v1 (rollback)")
         .setValue(this.plugin.settings.retrievalPolicy)
         .onChange(async (value) => {

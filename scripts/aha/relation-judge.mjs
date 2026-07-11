@@ -416,6 +416,14 @@ export function orderJudgedCandidates(judgedCandidates, retrievalCandidates) {
     .map((entry) => entry.candidate);
 }
 
+export function orderJudgedCandidatesForPolicy(judgedCandidates, retrievalCandidates, policy = {}) {
+  if (policy.relationOrdering !== "strength-with-pool-reserve") return judgedCandidates ?? [];
+  return composeFinalSlate(
+    orderJudgedCandidates(judgedCandidates, retrievalCandidates),
+    retrievalCandidates,
+  );
+}
+
 function relationStrength(candidate) {
   return RELATION_STRENGTH[candidate?.relation] ?? RELATION_STRENGTH.weak;
 }

@@ -30,7 +30,11 @@ import {
 } from "../aha/relation-judge.mjs";
 import { QUERY_PLAN_PROMPT_VERSION } from "../aha/query-plan.mjs";
 import { runRetrievalPipeline } from "../aha/retrieval-pipeline.mjs";
-import { DIAGNOSTIC_RETRIEVAL_POLICY_V2, retrievalPolicyById } from "../aha/retrieval-policies.mjs";
+import {
+  DIAGNOSTIC_RETRIEVAL_POLICY_V2,
+  RETRIEVAL_POLICY_IDS,
+  retrievalPolicyById,
+} from "../aha/retrieval-policies.mjs";
 import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
 import {
   PIPELINE_TRACE_SCHEMA,
@@ -175,7 +179,7 @@ function usage() {
     "  --runtime-codex-reasoning-effort <value> Product parity only; default: low",
     "  --runtime-codex-sandbox <mode>  Product parity only; default: danger-full-access",
     "  --runtime-timeout-ms <n>        Product parity wrapper timeout, default: 900000",
-    "  --retrieval-policy <product-v2|legacy-v1> Product parity policy; default: product-v2",
+    "  --retrieval-policy <product-v2|ranked-v1|legacy-v1> Product parity policy; default: product-v2",
   ].join("\n");
 }
 
@@ -400,8 +404,8 @@ function parseArgs() {
   if (!["sdk", "cli"].includes(options.runtimeQmdRunner)) {
     throw new Error("runtimeQmdRunner must be sdk or cli.");
   }
-  if (!["product-v2", "legacy-v1"].includes(options.retrievalPolicy)) {
-    throw new Error("retrievalPolicy must be product-v2 or legacy-v1.");
+  if (!RETRIEVAL_POLICY_IDS.includes(options.retrievalPolicy)) {
+    throw new Error(`retrievalPolicy must be one of: ${RETRIEVAL_POLICY_IDS.join(", ")}.`);
   }
   for (const [key, value] of [
     ["llmProvider", options.llmProvider],
