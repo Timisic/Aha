@@ -183,7 +183,7 @@ function execFileJson(command: string, args: string[], cwd: string, timeoutMs: n
     const jsonStdout = extractJsonPayload(result.stdout);
     if (result.code === 0) return jsonStdout;
     if (looksLikeJson(jsonStdout)) return jsonStdout;
-    throw new Error(firstLine(result.stderr) || firstLine(stripAnsiControls(result.stdout)) || `Aha wrapper exited with code ${result.code ?? "unknown"}.`);
+    throw new Error(firstLine(stripAnsiControls(result.stderr)) || firstLine(stripAnsiControls(result.stdout)) || `Aha wrapper exited with code ${result.code ?? "unknown"}.`);
   });
 }
 
@@ -266,7 +266,21 @@ function wrapperChildEnv(settings?: AhaPluginSettings): NodeJS.ProcessEnv {
   if (settings?.llmProvider === "openai" && directKey && keyEnvName) {
     env[keyEnvName] = directKey;
   }
+  for (const [name, value] of qmdRemoteEnvironment(settings)) {
+    if (value) env[name] = value;
+  }
   return env;
+}
+
+function qmdRemoteEnvironment(settings?: AhaPluginSettings): Array<[string, string]> {
+  return [
+    ["QMD_REMOTE_EMBED_URL", settings?.qmdRemoteEmbedUrl?.trim() ?? ""],
+    ["QMD_REMOTE_EMBED_MODEL", settings?.qmdRemoteEmbedModel?.trim() ?? ""],
+    ["QMD_REMOTE_GENERATE_URL", settings?.qmdRemoteGenerateUrl?.trim() ?? ""],
+    ["QMD_REMOTE_GENERATE_MODEL", settings?.qmdRemoteGenerateModel?.trim() ?? ""],
+    ["QMD_REMOTE_RERANK_URL", settings?.qmdRemoteRerankUrl?.trim() ?? ""],
+    ["QMD_REMOTE_RERANK_MODEL", settings?.qmdRemoteRerankModel?.trim() ?? ""],
+  ];
 }
 
 function desktopToolPath(currentPath: string | undefined): string {

@@ -19,6 +19,12 @@ export interface AhaPluginSettings {
   qmdIndex: string;
   qmdSdkModule: string;
   qmdRerank: boolean;
+  qmdRemoteEmbedUrl: string;
+  qmdRemoteEmbedModel: string;
+  qmdRemoteGenerateUrl: string;
+  qmdRemoteGenerateModel: string;
+  qmdRemoteRerankUrl: string;
+  qmdRemoteRerankModel: string;
   obsidianCommand: string;
   wrapperRelativePath: string;
   targetCandidates: number;
@@ -43,6 +49,12 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   qmdIndex: "obsidian",
   qmdSdkModule: "",
   qmdRerank: false,
+  qmdRemoteEmbedUrl: "",
+  qmdRemoteEmbedModel: "",
+  qmdRemoteGenerateUrl: "",
+  qmdRemoteGenerateModel: "",
+  qmdRemoteRerankUrl: "",
+  qmdRemoteRerankModel: "",
   obsidianCommand: "obsidian",
   wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
   targetCandidates: 20,
@@ -159,6 +171,12 @@ export class AhaSettingTab extends PluginSettingTab {
     this.textSetting("qmdCommand", "QMD command", "QMD CLI fallback and SDK module inference path.");
     this.textSetting("qmdIndex", "QMD index", "QMD index and collection name used for the Obsidian vault.");
     this.textSetting("qmdSdkModule", "QMD SDK module", "Optional module path. Leave empty to import @tobilu/qmd or infer from QMD command.", { placeholder: "auto", keepEmpty: true });
+    this.textSetting("qmdRemoteEmbedUrl", "QMD remote embed URL", "Optional OpenAI-compatible embedding endpoint injected into the QMD SDK child process.", { placeholder: "inherit environment", keepEmpty: true });
+    this.textSetting("qmdRemoteEmbedModel", "QMD remote embed model", "Model name used by the remote embedding endpoint.", { placeholder: "inherit environment", keepEmpty: true });
+    this.textSetting("qmdRemoteGenerateUrl", "QMD remote generate URL", "Optional query-expansion endpoint injected into the QMD SDK child process.", { placeholder: "inherit environment", keepEmpty: true });
+    this.textSetting("qmdRemoteGenerateModel", "QMD remote generate model", "Model name used by the remote query-expansion endpoint.", { placeholder: "inherit environment", keepEmpty: true });
+    this.textSetting("qmdRemoteRerankUrl", "QMD remote rerank URL", "Optional rerank endpoint injected into the QMD SDK child process.", { placeholder: "inherit environment", keepEmpty: true });
+    this.textSetting("qmdRemoteRerankModel", "QMD remote rerank model", "Model name used by the remote rerank endpoint.", { placeholder: "inherit environment", keepEmpty: true });
 
     new Setting(containerEl)
       .setName("QMD rerank")

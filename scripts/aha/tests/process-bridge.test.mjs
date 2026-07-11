@@ -80,7 +80,15 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
     "#!/usr/bin/env node",
     "import { writeFileSync } from 'node:fs';",
     `writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)));`,
-    `writeFileSync(${JSON.stringify(envLog)}, process.env.AHA_TEST_OPENAI_KEY || '');`,
+    `writeFileSync(${JSON.stringify(envLog)}, JSON.stringify({`,
+    "  apiKey: process.env.AHA_TEST_OPENAI_KEY || '',",
+    "  embedUrl: process.env.QMD_REMOTE_EMBED_URL || '',",
+    "  embedModel: process.env.QMD_REMOTE_EMBED_MODEL || '',",
+    "  generateUrl: process.env.QMD_REMOTE_GENERATE_URL || '',",
+    "  generateModel: process.env.QMD_REMOTE_GENERATE_MODEL || '',",
+    "  rerankUrl: process.env.QMD_REMOTE_RERANK_URL || '',",
+    "  rerankModel: process.env.QMD_REMOTE_RERANK_MODEL || '',",
+    "}));",
     "process.stdout.write('\\u001b[?25l');",
     "console.log(JSON.stringify({ ok: true, sourcePath: 'Idea/Source.md', generatedAt: new Date().toISOString(), summary: 'ok', warnings: [], candidates: [] }));",
     "",
@@ -105,6 +113,12 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
     qmdIndex: "obsidian",
     qmdSdkModule: "/tmp/qmd-sdk.mjs",
     qmdRerank: true,
+    qmdRemoteEmbedUrl: "http://127.0.0.1:28081/v1/embeddings",
+    qmdRemoteEmbedModel: "test-embed-model",
+    qmdRemoteGenerateUrl: "http://127.0.0.1:28082/completion",
+    qmdRemoteGenerateModel: "test-generate-model",
+    qmdRemoteRerankUrl: "http://127.0.0.1:28083/v1/rerank",
+    qmdRemoteRerankModel: "test-rerank-model",
     obsidianCommand: "/tmp/obsidian",
     wrapperRelativePath: wrapper,
     targetCandidates: 20,
@@ -119,7 +133,7 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
       vaultRoot: "/vault",
     });
     const argv = JSON.parse(await readFile(argvLog, "utf8"));
-    const envValue = await readFile(envLog, "utf8");
+    const envValue = JSON.parse(await readFile(envLog, "utf8"));
     assertIncludesPair(argv, "--llm-provider", "openai");
     assertIncludesPair(argv, "--llm-base-url", "https://api.openai.test/v1");
     assertIncludesPair(argv, "--llm-model", "gpt-5.5");
@@ -129,8 +143,73 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
     assertIncludesPair(argv, "--qmd-index", "obsidian");
     assertIncludesPair(argv, "--qmd-sdk-module", "/tmp/qmd-sdk.mjs");
     assert.ok(argv.includes("--qmd-rerank"));
-    assert.equal(envValue, "direct-openai-key");
+    assert.deepEqual(envValue, {
+      apiKey: "direct-openai-key",
+      embedUrl: "http://127.0.0.1:28081/v1/embeddings",
+      embedModel: "test-embed-model",
+      generateUrl: "http://127.0.0.1:28082/completion",
+      generateModel: "test-generate-model",
+      rerankUrl: "http://127.0.0.1:28083/v1/rerank",
+      rerankModel: "test-rerank-model",
+    });
     assert.ok(!argv.includes("direct-openai-key"));
+  } finally {
+    if (previousRequire === undefined) {
+      delete globalThis.require;
+    } else {
+      globalThis.require = previousRequire;
+    }
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("process bridge skips leading ANSI-only stderr lines when reporting wrapper failure", async () => {
+  const processBridge = await loadProcessModule();
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-process-error-"));
+  const wrapper = path.join(temp, "wrapper.mjs");
+  const previousRequire = globalThis.require;
+  globalThis.require = createRequire(import.meta.url);
+
+  await writeFile(wrapper, [
+    "#!/usr/bin/env node",
+    "process.stderr.write('\\u001b[?25l\\nOpenAI relation judge timed out.\\n');",
+    "process.exitCode = 2;",
+    "",
+  ].join("\n"));
+  await chmod(wrapper, 0o755);
+
+  try {
+    await assert.rejects(
+      processBridge.runAhaWrapper({
+        ahaWorkspace: repoRoot,
+        nodeCommand: process.execPath,
+        llmProvider: "openai",
+        llmBaseUrl: "https://api.openai.test/v1",
+        llmModel: "gpt-5.5",
+        llmApiKey: "test-key",
+        llmApiKeyEnv: "AHA_TEST_OPENAI_KEY",
+        codexModel: "gpt-5.3-codex-spark",
+        codexReasoningEffort: "low",
+        codexSandbox: "danger-full-access",
+        reviewFolder: "Aha/Reviews",
+        codexCommand: "/tmp/codex",
+        qmdRunner: "sdk",
+        qmdCommand: "/tmp/qmd",
+        qmdIndex: "obsidian",
+        qmdSdkModule: "",
+        qmdRerank: false,
+        obsidianCommand: "/tmp/obsidian",
+        wrapperRelativePath: wrapper,
+        targetCandidates: 20,
+        useFixtureResult: false,
+      }, {
+        reviewPath: "Aha/Reviews/Source.md",
+        sourceAbsolutePath: "/vault/Idea/Source.md",
+        sourcePath: "Idea/Source.md",
+        vaultRoot: "/vault",
+      }),
+      /OpenAI relation judge timed out\./,
+    );
   } finally {
     if (previousRequire === undefined) {
       delete globalThis.require;

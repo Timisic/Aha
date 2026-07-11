@@ -1848,8 +1848,9 @@ function clampPositiveInteger(value, fallback) {
 }
 
 function emitJson(value, exitCode = 0) {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-  process.exit(exitCode);
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`, () => {
+    process.exit(exitCode);
+  });
 }
 
 function failedAhaResult({
