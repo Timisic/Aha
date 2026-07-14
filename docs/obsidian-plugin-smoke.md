@@ -21,7 +21,7 @@ npm run verify
 - Node command：可留空自动探测；如果 Obsidian 内运行时报 `env: node: No such file or directory`，填 `/opt/homebrew/bin/node`。
 - LLM provider：可选 `OpenAI API`、`DeepSeek API` 或 `Codex CLI`。OpenAI 与 DeepSeek 的配置独立保存，切换不会覆盖另一方。
 - OpenAI：Base URL 默认 `https://api.openai.com/v1`，Model 默认 `gpt-5.5`，key env 默认 `OPENAI_API_KEY`。
-- DeepSeek：Base URL 默认 `https://api.deepseek.com`，Model 默认 `deepseek-v4-pro`，key env 默认 `DEEPSEEK_API_KEY`。
+- DeepSeek：Base URL 默认 `https://api.deepseek.com`，Model 默认 `deepseek-v4-pro`，key env 默认 `DEEPSEEK_API_KEY`；请求显式关闭 thinking。
 - API key 可直接填在插件设置里；插件只把当前 provider 的 key 注入 wrapper 子进程环境，不作为 CLI 参数传递。直接 key 保存在当前 vault 的 Obsidian 插件数据中。
 - 每套 API 配置下都有检测按钮，向所选模型发出最小 JSON 请求，验证网络、鉴权、endpoint 与 model ID。
 - API 网络统一使用受控代理配置和有限重试的 curl transport；macOS GUI 环境会从 `HTTPS_PROXY` 或系统代理读取代理地址，并放入权限为 `0600` 的临时 config，不会在 fallback 时静默改走直连，也不会把代理凭据暴露在 argv。
@@ -38,7 +38,8 @@ npm run verify
 search runner 默认使用 bounded `pipeline`：
 
 ```text
-OpenAI/DeepSeek/Codex 生成 3-5 条 QMD query
+OpenAI/DeepSeek/Codex 生成 3-5 条改写 QMD query
+-> runtime 追加 1 条保留原 source note 表达的确定性 fallback query
 -> search runner 通过 QMD SDK/CLI 混合语义检索与 Obsidian links/backlinks
 -> 合并、去 source self-hit、按分数/排名/跨 query 多样性重排
 -> 只读取 qmd://obsidian 或 vault 内候选正文

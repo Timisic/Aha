@@ -64,6 +64,27 @@ test("shared relation judge downgrades hallucinated quote evidence to weak", asy
   assert.match(result.candidates[0].why, /Downgraded to weak/);
 });
 
+test("shared relation judge retries one schema-invalid non-thinking response", async () => {
+  let calls = 0;
+  const result = await judgeCandidateRelations({
+    sourcePath: "Source.md",
+    sourceText: "I need old notes about feedback loops.",
+    candidates: retrievalCandidates,
+    candidateInputs,
+    adapterName: "deepseek",
+    adapter: async ({ prompt }) => {
+      calls += 1;
+      if (calls === 1) return resultPayload({ why: "太短" });
+      assert.match(prompt, /previous JSON failed validation/i);
+      return resultPayload({ why: "旧笔记里的反馈闭环说明，沉默或缺少回应本身也可以成为修正当前判断的具体证据。" });
+    },
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.ok, true);
+  assert.equal(result.relation_judge_generated_by, "deepseek");
+});
+
 test("shared relation judge returns structured failure when adapter output is malformed", async () => {
   const result = await judgeCandidateRelations({
     sourcePath: "Source.md",

@@ -96,12 +96,16 @@ export async function runOpenAiJsonAsync(options) {
 
 function compatibleRequestBody(options) {
   if (options.protocol === "chat-completions") {
-    return {
+    const body = {
       model: String(options.model || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL,
       messages: [{ role: "user", content: String(options.prompt ?? "") }],
       response_format: { type: "json_object" },
       stream: false,
     };
+    if (options.thinking === "disabled" || options.thinking === "enabled") {
+      body.thinking = { type: options.thinking };
+    }
+    return body;
   }
   const body = {
     model: String(options.model || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL,

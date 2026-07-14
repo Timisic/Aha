@@ -91,16 +91,29 @@ export async function judgeCandidateRelations({
       outputFileName: "relation-judge.json",
       timeoutMs: 120_000,
     });
-    const parsed = normalizeStructuredResult(parseJsonOutput(output));
-    const validation = validateAhaResult(parsed);
-    if (!validation.ok) {
-      throw new Error(validation.errors.join("; "));
+    let parsed;
+    let repaired = false;
+    try {
+      parsed = validatedRelationJudgeOutput(output);
+    } catch (validationError) {
+      repaired = true;
+      const repairedOutput = await adapter({
+        prompt: buildRelationJudgeRepairPrompt(prompt, validationError.message),
+        schema: RESULT_SCHEMA,
+        schemaName: RELATION_JUDGE_SCHEMA_NAME,
+        outputFileName: "relation-judge.json",
+        timeoutMs: 120_000,
+      });
+      parsed = validatedRelationJudgeOutput(repairedOutput);
     }
     const judged = mergeJudgedCandidates(candidates, parsed.candidates ?? [], inputs, { preserveOrder });
     return {
       ok: true,
       reviewedCount: inputs.length,
-      warnings: (parsed.warnings ?? []).map((warning) => `Relation Judge: ${warning}`),
+      warnings: [
+        ...(repaired ? ["Relation Judge retried once after schema validation failed."] : []),
+        ...(parsed.warnings ?? []).map((warning) => `Relation Judge: ${warning}`),
+      ],
       candidates: judged,
       summary: parsed.summary,
       relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
@@ -118,6 +131,24 @@ export async function judgeCandidateRelations({
       relation_judge_generated_by: adapterName,
     };
   }
+}
+
+function validatedRelationJudgeOutput(output) {
+  const parsed = normalizeStructuredResult(parseJsonOutput(output));
+  const validation = validateAhaResult(parsed);
+  if (!validation.ok) throw new Error(validation.errors.join("; "));
+  return parsed;
+}
+
+function buildRelationJudgeRepairPrompt(originalPrompt, validationError) {
+  return [
+    originalPrompt,
+    "",
+    "Your previous JSON failed validation:",
+    validationError,
+    "Return the complete JSON object again. Repair every listed field; do not omit candidates.",
+    "Each why must be a concrete, sufficiently detailed bridge between the quoted old-note evidence and the current source insight.",
+  ].join("\n");
 }
 
 export function buildRelationJudgePrompt({ sourcePath, sourceText, candidateInputs }) {

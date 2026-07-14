@@ -323,6 +323,7 @@ test("LLM connection check exercises the configured DeepSeek model", async () =>
     assert.equal(requests[0].url, "/chat/completions");
     assert.equal(requests[0].headers.authorization, "Bearer deepseek-test-key");
     assert.equal(requests[0].body.model, "deepseek-v4-pro");
+    assert.deepEqual(requests[0].body.thinking, { type: "disabled" });
     assert.deepEqual(requests[0].body.response_format, { type: "json_object" });
     assert.match(requests[0].body.messages[0].content, /connection check/i);
   } finally {
@@ -380,6 +381,7 @@ test("pipeline can use DeepSeek chat completions for query planning and relation
     assert.equal(requests.length, 2);
     assert.ok(requests.every((request) => request.url === "/chat/completions"));
     assert.ok(requests.every((request) => request.body.model === "deepseek-v4-pro"));
+    assert.ok(requests.every((request) => request.body.thinking?.type === "disabled"));
     assert.ok(requests.every((request) => request.body.response_format?.type === "json_object"));
   } finally {
     await server.close();
@@ -906,18 +908,18 @@ test("pipeline bounds QMD plan query timeouts serially", async () => {
     const elapsedMs = Date.now() - started;
 
     assert.equal(result.status, 0, result.stderr);
-    assert.ok(elapsedMs >= 750, `expected serial timeout work to take at least three query timeouts, got ${elapsedMs}ms`);
+    assert.ok(elapsedMs >= 1000, `expected serial timeout work to include the deterministic source fallback, got ${elapsedMs}ms`);
     assert.ok(elapsedMs < 6500, `expected bounded serial timeout handling, got ${elapsedMs}ms`);
     const output = JSON.parse(result.stdout);
     assert.equal(output.ok, true);
     assert.equal(output.candidates.length, 1);
-    assert.equal(output.warnings.filter((warning) => warning.includes("timed out after 250ms")).length, 3);
+    assert.equal(output.warnings.filter((warning) => warning.includes("timed out after 250ms")).length, 4);
     const qmdCalls = (await readFile(qmdCallLog, "utf8")).trim().split("\n").map((line) => {
       const [time, subcommand] = line.split(":");
       return { time: Number(time), subcommand };
     });
     const planCalls = qmdCalls.filter((call) => call.subcommand !== "get");
-    assert.ok(planCalls.length >= 3 && planCalls.length <= 6, `expected bounded query attempts, got ${planCalls.length}`);
+    assert.ok(planCalls.length >= 4 && planCalls.length <= 8, `expected bounded query attempts, got ${planCalls.length}`);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
@@ -972,10 +974,10 @@ test("pipeline preserves structured QMD query timeout without vsearch fallback",
     const output = JSON.parse(result.stdout);
     assert.equal(output.ok, true);
     assert.equal(output.candidates.length, 1);
-    assert.equal(output.warnings.filter((warning) => warning.includes("timed out after 500ms")).length, 3);
+    assert.equal(output.warnings.filter((warning) => warning.includes("timed out after 500ms")).length, 4);
     assert.ok(!output.warnings.some((warning) => warning.includes("vsearch fallback")));
     const qmdCalls = (await readFile(qmdCallLog, "utf8")).trim().split("\n").map((line) => line.split(":")[1]);
-    assert.deepEqual(qmdCalls.filter((subcommand) => subcommand !== "get"), ["query", "query", "query", "query", "query", "query"]);
+    assert.deepEqual(qmdCalls.filter((subcommand) => subcommand !== "get"), ["query", "query", "query", "query", "query", "query", "query", "query"]);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

@@ -36,7 +36,7 @@ export const QUERY_PLAN_SCHEMA = {
     queries: {
       type: "array",
       minItems: 3,
-      maxItems: 6,
+      maxItems: 5,
       items: {
         type: "object",
         additionalProperties: false,
@@ -189,7 +189,7 @@ export function buildQueryPlanPrompt(args, sourceText) {
   const sourceSummary = queryPlanSourceSummary(args, sourceText);
   return [
     "你是 Aha/Pi /insight 的检索查询生成子 agent。",
-    "只根据下面 source summary 生成 3-6 条 QMD 检索查询计划；不要读取文件、不要运行命令、不要搜索外部资料、不要检查仓库。",
+    "只根据下面 source summary 生成 3-5 条 QMD 检索查询计划；不要读取文件、不要运行命令、不要搜索外部资料、不要检查仓库。系统会在你的计划之后另加一条保留原笔记表达的确定性兜底查询，你不需要替代它。",
     "",
     "目标：让 Aha 后续用 QMD 混合召回旧笔记中的旧判断、反例、边界条件、相似结构和明确线索。",
     "",
@@ -266,7 +266,20 @@ export function normalizeQueryPlan(value, args = {}, sourceText = "") {
   if (queries.length < 3) {
     throw new Error(`${args.displayName || "agent"} query plan returned fewer than 3 usable queries.`);
   }
-  return { queries };
+  const modelQueryCount = queries.length;
+  queries.push(deterministicSourceFallbackQuery(args, sourceText));
+  return { queries, model_query_count: modelQueryCount };
+}
+
+export function deterministicSourceFallbackQuery(args = {}, sourceText = "") {
+  const qmd = normalizeQmdObject(fallbackQmdObject(args, sourceText), args, sourceText);
+  return {
+    kind: "source_fallback",
+    command: "qmd query",
+    text: qmd.vec,
+    query: qmdQueryFromObject(qmd),
+    qmd,
+  };
 }
 
 export function normalizeQueryPlanItem(item, args = {}, sourceText = "", index = 0) {
@@ -554,6 +567,7 @@ function withQueryPlanMetadata(plan, metadata) {
     queries,
     query_object: queries[0]?.qmd,
     query_objects: queries.map((query) => query.qmd),
+    model_query_count: plan.model_query_count ?? queries.filter((query) => query.kind !== "source_fallback").length,
     query_generated_by: metadata.generatedBy,
     query_generation_fallback: metadata.fallback,
     query_generation_error: metadata.error,

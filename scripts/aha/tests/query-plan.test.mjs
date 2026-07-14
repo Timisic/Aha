@@ -30,11 +30,37 @@ test("shared query-plan module normalizes valid adapter output with production b
 
   assert.equal(plan.query_generated_by, "fake-agent");
   assert.equal(plan.query_generation_fallback, false);
-  assert.equal(plan.queries.length, 3);
+  assert.equal(plan.queries.length, 4);
   assert.ok(plan.queries.every((query) => query.command === "qmd query"));
   assert.ok(plan.queries.every((query) => query.qmd.lex.length <= 4));
   assert.match(plan.queries[0].query, /intent:/);
-  assert.equal(plan.query_objects.length, 3);
+  assert.equal(plan.query_objects.length, 4);
+  assert.equal(plan.model_query_count, 3);
+  assert.equal(plan.queries.at(-1).kind, "source_fallback");
+  assert.match(plan.queries.at(-1).qmd.vec, /反馈闭环暴露经验差距/);
+});
+
+test("shared query-plan keeps five model rewrites plus one deterministic source fallback", async () => {
+  const plan = await generateQueryPlanWithAdapter({
+    sourcePath: "Source.md",
+    sourceText: "# 原始判断\n\n事情没有回应时，也许要把沉默看作现实的一部分，而不是继续等待解释。",
+    primaryName: "fake-agent",
+    adapter: async () => ({
+      queries: Array.from({ length: 5 }, (_, index) => ({
+        ...validPlan.queries[index % validPlan.queries.length],
+        text: `rewrite-${index + 1}`,
+        qmd: {
+          ...validPlan.queries[index % validPlan.queries.length].qmd,
+          vec: `rewritten vector ${index + 1}`,
+        },
+      })),
+    }),
+  });
+
+  assert.equal(plan.model_query_count, 5);
+  assert.equal(plan.queries.length, 6);
+  assert.equal(plan.queries.at(-1).kind, "source_fallback");
+  assert.match(plan.queries.at(-1).qmd.vec, /事情没有回应/);
 });
 
 test("shared query-plan module records fallback provenance", async () => {

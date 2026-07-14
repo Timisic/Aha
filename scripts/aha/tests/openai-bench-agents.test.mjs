@@ -47,7 +47,9 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
 
     assert.equal(queryPlan.query_generated_by, "agent");
     assert.equal(queryPlan.query_generation_fallback, false);
-    assert.equal(queryPlan.queries.length, 3);
+    assert.equal(queryPlan.queries.length, 4);
+    assert.equal(queryPlan.model_query_count, 3);
+    assert.equal(queryPlan.queries.at(-1).kind, "source_fallback");
     assert.match(queryPlan.queries[0].query, /intent:/);
 
     const reranked = await relationJudgeCandidatesForCase({
