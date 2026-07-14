@@ -20,6 +20,15 @@ export interface ReadinessResult {
   checks: ReadinessCheck[];
 }
 
+export type ApiProvider = "deepseek" | "openai";
+
+export interface ProviderConnectionResult {
+  ok: boolean;
+  provider: string;
+  model: string;
+  message: string;
+}
+
 const WRAPPER_TIMEOUT_MS = 16 * 60 * 1000;
 const COMMAND_CHECK_TIMEOUT_MS = 15 * 1000;
 const MAX_WRAPPER_OUTPUT_BYTES = 5 * 1024 * 1024;
@@ -101,18 +110,45 @@ export async function runAhaWrapper(settings: AhaPluginSettings, input: WrapperR
   return runWrapperJson(settings, args);
 }
 
+export async function runProviderConnectionCheck(settings: AhaPluginSettings, provider: ApiProvider): Promise<ProviderConnectionResult> {
+  const selectedSettings = { ...settings, llmProvider: provider };
+  const payload = await runWrapperJson(selectedSettings, [
+    "--check-llm-connection",
+    ...wrapperRuntimeArgs(selectedSettings),
+  ]);
+  return payload as ProviderConnectionResult;
+}
+
+function providerConfig(settings: AhaPluginSettings): { apiKey: string; apiKeyEnv: string; baseUrl: string; model: string } {
+  if (settings.llmProvider === "deepseek") {
+    return {
+      apiKey: settings.deepseekApiKey,
+      apiKeyEnv: settings.deepseekApiKeyEnv,
+      baseUrl: settings.deepseekBaseUrl,
+      model: settings.deepseekModel,
+    };
+  }
+  return {
+    apiKey: settings.llmApiKey,
+    apiKeyEnv: settings.llmApiKeyEnv,
+    baseUrl: settings.llmBaseUrl,
+    model: settings.llmModel,
+  };
+}
+
 function wrapperRuntimeArgs(settings: AhaPluginSettings): string[] {
+  const provider = providerConfig(settings);
   const args = [
     "--workspace",
     settings.ahaWorkspace,
     "--llm-provider",
     settings.llmProvider,
     "--llm-base-url",
-    settings.llmBaseUrl,
+    provider.baseUrl,
     "--llm-model",
-    settings.llmModel,
+    provider.model,
     "--llm-api-key-env",
-    settings.llmApiKeyEnv,
+    provider.apiKeyEnv,
     "--codex-command",
     settings.codexCommand,
     "--codex-model",
@@ -261,9 +297,10 @@ function wrapperChildEnv(settings?: AhaPluginSettings): NodeJS.ProcessEnv {
     ...process.env,
     PATH: desktopToolPath(process.env.PATH),
   };
-  const directKey = (settings?.llmApiKey ?? "").trim();
-  const keyEnvName = (settings?.llmApiKeyEnv ?? "").trim();
-  if (settings?.llmProvider === "openai" && directKey && keyEnvName) {
+  const provider = settings ? providerConfig(settings) : null;
+  const directKey = (provider?.apiKey ?? "").trim();
+  const keyEnvName = (provider?.apiKeyEnv ?? "").trim();
+  if (settings && settings.llmProvider !== "codex-cli" && directKey && keyEnvName) {
     env[keyEnvName] = directKey;
   }
   for (const [name, value] of qmdRemoteEnvironment(settings)) {

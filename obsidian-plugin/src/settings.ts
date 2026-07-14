@@ -1,5 +1,6 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type AhaPlugin from "./main";
+import { runProviderConnectionCheck, type ApiProvider } from "./process";
 
 export interface AhaPluginSettings {
   ahaWorkspace: string;
@@ -8,6 +9,10 @@ export interface AhaPluginSettings {
   llmModel: string;
   llmApiKey: string;
   llmApiKeyEnv: string;
+  deepseekBaseUrl: string;
+  deepseekModel: string;
+  deepseekApiKey: string;
+  deepseekApiKeyEnv: string;
   codexModel: string;
   codexReasoningEffort: string;
   codexSandbox: string;
@@ -38,6 +43,10 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   llmModel: "gpt-5.5",
   llmApiKey: "",
   llmApiKeyEnv: "OPENAI_API_KEY",
+  deepseekBaseUrl: "https://api.deepseek.com",
+  deepseekModel: "deepseek-v4-pro",
+  deepseekApiKey: "",
+  deepseekApiKeyEnv: "DEEPSEEK_API_KEY",
   codexModel: "gpt-5.3-codex-spark",
   codexReasoningEffort: "low",
   codexSandbox: "danger-full-access",
@@ -88,6 +97,42 @@ export class AhaSettingTab extends PluginSettingTab {
         }));
   }
 
+  private apiKeySetting(key: "llmApiKey" | "deepseekApiKey", name: string, desc: string): void {
+    new Setting(this.containerEl)
+      .setName(name)
+      .setDesc(desc)
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text
+          .setPlaceholder("sk-...")
+          .setValue(this.plugin.settings[key] ?? "")
+          .onChange(async (value) => {
+            this.plugin.settings[key] = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+  }
+
+  private providerTestSetting(provider: ApiProvider, label: string): void {
+    new Setting(this.containerEl)
+      .setName(`Test ${label}`)
+      .setDesc(`Send a minimal JSON request to verify the configured ${label} key, endpoint, and model.`)
+      .addButton((button) => button
+        .setButtonText(`Test ${label}`)
+        .onClick(async () => {
+          button.setDisabled(true).setButtonText("Testing...");
+          try {
+            const result = await runProviderConnectionCheck(this.plugin.settings, provider);
+            new Notice(result.ok ? result.message : `${label} test failed: ${result.message}`, result.ok ? 6000 : 12000);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            new Notice(`${label} test failed: ${message}`, 12000);
+          } finally {
+            button.setDisabled(false).setButtonText(`Test ${label}`);
+          }
+        }));
+  }
+
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
@@ -98,9 +143,10 @@ export class AhaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("LLM provider")
-      .setDesc("OpenAI API is the normal fast path. Codex CLI remains available as a local fallback.")
+      .setDesc("Choose the provider used for query planning and Relation Judge. Provider profiles remain stored separately when switching.")
       .addDropdown((dropdown) => dropdown
         .addOption("openai", "OpenAI API")
+        .addOption("deepseek", "DeepSeek API")
         .addOption("codex-cli", "Codex CLI")
         .setValue(this.plugin.settings.llmProvider)
         .onChange(async (value) => {
@@ -108,24 +154,21 @@ export class AhaSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    this.textSetting("llmBaseUrl", "OpenAI base URL", "OpenAI-compatible API base URL.");
+    containerEl.createEl("h3", { text: "OpenAI" });
+    this.textSetting("llmBaseUrl", "OpenAI base URL", "OpenAI Responses API base URL.");
     this.textSetting("llmModel", "OpenAI model", "Model used for query planning and bounded Relation Judge.");
-
-    new Setting(containerEl)
-      .setName("OpenAI API key")
-      .setDesc("Stored in Obsidian plugin data for this local vault. Leave empty to read the environment variable below.")
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text
-          .setPlaceholder("sk-...")
-          .setValue(this.plugin.settings.llmApiKey ?? "")
-          .onChange(async (value) => {
-            this.plugin.settings.llmApiKey = value.trim();
-            await this.plugin.saveSettings();
-          });
-      });
-
+    this.apiKeySetting("llmApiKey", "OpenAI API key", "Stored in this local vault's plugin data. Leave empty to read the environment variable below.");
     this.textSetting("llmApiKeyEnv", "OpenAI key env", "Environment variable name used when the API key field above is empty.");
+    this.providerTestSetting("openai", "OpenAI");
+
+    containerEl.createEl("h3", { text: "DeepSeek" });
+    this.textSetting("deepseekBaseUrl", "DeepSeek base URL", "DeepSeek OpenAI-compatible base URL.");
+    this.textSetting("deepseekModel", "DeepSeek model", "Model used for query planning and bounded Relation Judge.");
+    this.apiKeySetting("deepseekApiKey", "DeepSeek API key", "Stored separately from the OpenAI key. Leave empty to read the environment variable below.");
+    this.textSetting("deepseekApiKeyEnv", "DeepSeek key env", "Environment variable name used when the DeepSeek API key field is empty.");
+    this.providerTestSetting("deepseek", "DeepSeek");
+
+    containerEl.createEl("h3", { text: "Codex fallback" });
     this.textSetting("codexCommand", "Codex command", "Fallback command used only when LLM provider is Codex CLI.");
 
     new Setting(containerEl)

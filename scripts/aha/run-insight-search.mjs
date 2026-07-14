@@ -1,10 +1,7 @@
 #!/usr/bin/env node
-import { access, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
-import { connect as tlsConnect } from "node:tls";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -21,8 +18,7 @@ import {
   unique,
 } from "./query-plan.mjs";
 import { judgeCandidateRelations, normalizeStructuredResult } from "./relation-judge.mjs";
-import { isNoProxyHost, parseMacProxyConfig } from "../lib/https-proxy.mjs";
-import { extractOpenAiOutputText, openAiResponsesUrl } from "../lib/openai-json-agent.mjs";
+import { runOpenAiJsonAsync } from "../lib/openai-json-agent.mjs";
 
 const JSON_BEGIN = "AHA_RESULT_JSON_BEGIN";
 const JSON_END = "AHA_RESULT_JSON_END";
@@ -37,7 +33,7 @@ const DEFAULT_LLM_MODEL = "gpt-5.5";
 const DEFAULT_LLM_API_KEY_ENV = "OPENAI_API_KEY";
 const DEFAULT_QMD_RUNNER = "sdk";
 const DEFAULT_QMD_INDEX = "obsidian";
-const VALID_LLM_PROVIDERS = new Set(["codex-cli", "openai"]);
+const VALID_LLM_PROVIDERS = new Set(["codex-cli", "deepseek", "openai"]);
 const VALID_QMD_RUNNERS = new Set(["cli", "sdk"]);
 const COMMON_COMMAND_DIRS = [
   "/opt/homebrew/bin",
@@ -63,6 +59,12 @@ main().catch((error) => {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args.checkLlmConnection) {
+    const result = await checkLlmConnection(args);
+    emitJson(result, result.ok ? 0 : 2);
+    return;
+  }
 
   if (args.checkReadiness) {
     const result = await readiness(args);
@@ -213,17 +215,17 @@ async function readiness(args) {
   const checks = [];
   checks.push(await checkWorkspace(args.workspace));
   checks.push(await checkReadableSourceNote(args));
-  if (args.llmProvider === "openai") {
-    checks.push(checkOpenAiApiKey(args));
+  if (isApiProvider(args.llmProvider)) {
+    checks.push(checkLlmApiKey(args));
   } else {
-    checks.push(await checkCommand("Codex CLI", args.codexCommand, ["--version"]));
+    checks.push(await checkCommand("Codex CLI", args.codexCommand, ["--version"], args.llmApiKeyEnv));
   }
   if (args.qmdRunner === "sdk") {
     checks.push(await checkQmdSdk(args));
   } else {
-    checks.push(await checkCommand("QMD CLI", args.qmdCommand, ["--version"]));
+    checks.push(await checkCommand("QMD CLI", args.qmdCommand, ["--version"], args.llmApiKeyEnv));
   }
-  checks.push(await checkCommand("Obsidian CLI", args.obsidianCommand, ["files", "total"]));
+  checks.push(await checkCommand("Obsidian CLI", args.obsidianCommand, ["files", "total"], args.llmApiKeyEnv));
   return {
     ok: checks.every((check) => check.ok),
     checks,
@@ -256,10 +258,10 @@ async function checkReadableSourceNote(args) {
   }
 }
 
-async function checkCommand(name, command, args) {
+async function checkCommand(name, command, args, sensitiveEnvName = "") {
   if (!command) return { name, ok: false, message: "Not configured." };
   try {
-    const result = await runCommand(command, args, { timeoutMs: 15_000 });
+    const result = await runCommand(command, args, { timeoutMs: 15_000, sensitiveEnvName });
     return result.code === 0
       ? { name, ok: true, message: firstLine(result.stdout || result.stderr) || "OK" }
       : { name, ok: false, message: firstLine(result.stderr || result.stdout) || `Exited ${result.code}` };
@@ -268,12 +270,55 @@ async function checkCommand(name, command, args) {
   }
 }
 
-function checkOpenAiApiKey(args) {
+function checkLlmApiKey(args) {
   const envName = String(args.llmApiKeyEnv || "").trim();
-  if (!envName) return { name: "OpenAI API key", ok: false, message: "API key environment variable is not configured." };
+  const name = `${llmDisplayName(args)} API key`;
+  if (!envName) return { name, ok: false, message: "API key environment variable is not configured." };
   return process.env[envName]
-    ? { name: "OpenAI API key", ok: true, message: `${envName} is set.` }
-    : { name: "OpenAI API key", ok: false, message: `${envName} is not set.` };
+    ? { name, ok: true, message: `${envName} is set.` }
+    : { name, ok: false, message: `${envName} is not set.` };
+}
+
+async function checkLlmConnection(args) {
+  if (!isApiProvider(args.llmProvider)) {
+    return {
+      ok: false,
+      provider: args.llmProvider,
+      model: args.llmModel,
+      message: "Connection checks are available for OpenAI and DeepSeek API providers.",
+    };
+  }
+  const keyCheck = checkLlmApiKey(args);
+  if (!keyCheck.ok) {
+    return { ok: false, provider: args.llmProvider, model: args.llmModel, message: keyCheck.message };
+  }
+  try {
+    const result = await runLlm(args, "Aha connection check. Return only this JSON object: {\"ok\":true}", {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok"],
+        properties: { ok: { type: "boolean", enum: [true] } },
+      },
+      schemaName: "aha_connection_check",
+      timeoutMs: 60_000,
+    });
+    const parsed = extractCodexJson(result.stdout);
+    if (parsed?.ok !== true) throw new Error("Provider returned an unexpected connection-check payload.");
+    return {
+      ok: true,
+      provider: args.llmProvider,
+      model: args.llmModel,
+      message: `${llmDisplayName(args)} model ${args.llmModel} is reachable and generated valid JSON.`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      provider: args.llmProvider,
+      model: args.llmModel,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function checkQmdSdk(args) {
@@ -387,6 +432,7 @@ async function runCodex(args, prompt, options = {}) {
   try {
     const result = await runCommand(args.codexCommand, codexArgs, {
       cwd: codexCwd,
+      sensitiveEnvName: args.llmApiKeyEnv,
       timeoutMs: Number(options.timeoutMs ?? args.timeoutMs),
     });
     const lastMessage = await readFile(outputFile, "utf8").catch(() => "");
@@ -400,288 +446,36 @@ async function runCodex(args, prompt, options = {}) {
 }
 
 async function runLlm(args, prompt, options = {}) {
-  if (args.llmProvider === "openai") {
+  if (isApiProvider(args.llmProvider)) {
     return runOpenAi(args, prompt, options);
   }
   return runCodex(args, prompt, options);
 }
 
 async function runOpenAi(args, prompt, options = {}) {
-  const apiKey = process.env[args.llmApiKeyEnv];
-  if (!apiKey) {
-    throw new Error(`${args.llmApiKeyEnv} is not set.`);
-  }
-
   const schemaPath = options.schemaPath ?? path.join(args.workspace, "scripts/aha/aha-result.schema.json");
-  const schema = await readJsonIfExists(schemaPath);
-  const requestBody = {
+  const schema = options.schema ?? await readJsonIfExists(schemaPath);
+  const stdout = await runOpenAiJsonAsync({
+    apiKeyEnv: args.llmApiKeyEnv,
+    baseUrl: args.llmBaseUrl,
     model: args.llmModel,
-    input: prompt,
-  };
-  if (schema) {
-    requestBody.text = {
-      format: {
-        type: "json_schema",
-        name: schemaNameForPath(schemaPath),
-        schema,
-        strict: true,
-      },
-    };
-  }
-
-  const timeoutMs = Number(options.timeoutMs ?? args.timeoutMs);
-  const response = await postJson(openAiResponsesUrl(args.llmBaseUrl), requestBody, {
-    "Authorization": `Bearer ${apiKey}`,
-  }, timeoutMs);
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`OpenAI API exited ${response.statusCode}: ${compactLine(response.body, 500) || response.statusMessage}`);
-  }
-  const payload = JSON.parse(response.body);
-  if (process.env.AHA_LOG_USAGE === "1" && payload?.usage) {
-    process.stderr.write(`AHA_USAGE ${JSON.stringify({ model: payload.model, usage: payload.usage })}\n`);
-  }
+    prompt,
+    protocol: args.llmProvider === "deepseek" ? "chat-completions" : "responses",
+    providerName: llmDisplayName(args),
+    schema,
+    schemaName: options.schemaName ?? schemaNameForPath(schemaPath),
+    timeoutMs: Number(options.timeoutMs ?? args.timeoutMs),
+    onResponse: (payload) => {
+      if (process.env.AHA_LOG_USAGE === "1" && payload?.usage) {
+        process.stderr.write(`AHA_USAGE ${JSON.stringify({ model: payload.model, usage: payload.usage })}\n`);
+      }
+    },
+  });
   return {
     code: 0,
-    stdout: extractOpenAiOutputText(payload),
+    stdout,
     stderr: "",
   };
-}
-
-async function postJson(url, payload, headers, timeoutMs) {
-  const target = new URL(url);
-  const body = JSON.stringify(payload);
-  try {
-    const proxyUrl = proxyUrlFor(target);
-    if (proxyUrl && target.protocol === "https:") {
-      const socket = await openHttpsProxyTunnel(target, proxyUrl, timeoutMs);
-      return await postJsonWithRequest(httpsRequest, target, body, headers, timeoutMs, {
-        createConnection: () => socket,
-        agent: false,
-      }).catch((error) => {
-        socket.destroy();
-        throw error;
-      });
-    }
-    const requestFn = target.protocol === "http:" ? httpRequest : httpsRequest;
-    return await postJsonWithRequest(requestFn, target, body, headers, timeoutMs);
-  } catch (error) {
-    if (target.protocol !== "https:") throw error;
-    return postJsonWithCurl(target, body, headers, timeoutMs, error);
-  }
-}
-
-function postJsonWithRequest(requestFn, target, body, headers, timeoutMs, extraOptions = {}) {
-  return new Promise((resolve, reject) => {
-    const request = requestFn({
-      protocol: target.protocol,
-      hostname: target.hostname,
-      port: target.port || (target.protocol === "https:" ? 443 : 80),
-      path: `${target.pathname}${target.search}`,
-      method: "POST",
-      headers: {
-        ...headers,
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-        "Connection": "close",
-      },
-      timeout: timeoutMs,
-      ...extraOptions,
-    }, (response) => {
-      let responseBody = "";
-      response.setEncoding("utf8");
-      response.on("data", (chunk) => {
-        responseBody += chunk;
-      });
-      response.on("end", () => {
-        resolve({
-          statusCode: response.statusCode ?? 0,
-          statusMessage: response.statusMessage ?? "",
-          body: responseBody,
-        });
-      });
-    });
-    request.on("timeout", () => {
-      request.destroy(new Error(`OpenAI API timed out after ${timeoutMs}ms.`));
-    });
-    request.on("error", reject);
-    request.end(body);
-  });
-}
-
-function proxyUrlFor(target) {
-  if (isNoProxyHost(target.hostname, process.env.NO_PROXY || process.env.no_proxy || "")) return null;
-  const rawProxy = target.protocol === "https:"
-    ? process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy
-    : process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy;
-  const raw = rawProxy || systemProxyUrlFor(target);
-  if (!raw) return null;
-  try {
-    const proxy = new URL(raw);
-    return proxy.protocol === "http:" ? proxy : null;
-  } catch {
-    return null;
-  }
-}
-
-function systemProxyUrlFor(target) {
-  if (process.platform !== "darwin") return "";
-  const result = spawnSync("scutil", ["--proxy"], {
-    encoding: "utf8",
-    timeout: 2_000,
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  if (result.status !== 0 || !result.stdout) return "";
-  const proxyConfig = parseMacProxyConfig(result.stdout);
-  const exceptions = proxyConfig.ExceptionsList || [];
-  if (Array.isArray(exceptions) && exceptions.some((item) => isNoProxyHost(target.hostname, item))) return "";
-  const prefix = target.protocol === "https:" ? "HTTPS" : "HTTP";
-  if (proxyConfig[`${prefix}Enable`] !== "1") return "";
-  const host = proxyConfig[`${prefix}Proxy`];
-  const port = proxyConfig[`${prefix}Port`];
-  if (!host || !port) return "";
-  return `http://${host}:${port}`;
-}
-
-function openHttpsProxyTunnel(target, proxy, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const targetPort = target.port || "443";
-    const finish = (error, socket) => {
-      if (settled) {
-        if (socket) socket.destroy();
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve(socket);
-    };
-    const headers = {
-      Host: `${target.hostname}:${targetPort}`,
-    };
-    if (proxy.username || proxy.password) {
-      headers["Proxy-Authorization"] = `Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString("base64")}`;
-    }
-    const request = httpRequest({
-      host: proxy.hostname,
-      port: proxy.port || 80,
-      method: "CONNECT",
-      path: `${target.hostname}:${targetPort}`,
-      headers,
-    });
-    const timer = setTimeout(() => {
-      request.destroy(new Error(`OpenAI proxy tunnel timed out after ${timeoutMs}ms.`));
-    }, timeoutMs);
-    request.on("connect", (response, socket) => {
-      if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
-        finish(new Error(`OpenAI proxy tunnel exited ${response.statusCode ?? 0}: ${response.statusMessage || "CONNECT failed"}`));
-        socket.destroy();
-        return;
-      }
-      const secureSocket = tlsConnect({
-        socket,
-        servername: target.hostname,
-      });
-      secureSocket.once("secureConnect", () => finish(null, secureSocket));
-      secureSocket.once("error", (error) => finish(error));
-    });
-    request.on("error", (error) => finish(error));
-    request.end();
-  });
-}
-
-async function postJsonWithCurl(target, body, headers, timeoutMs, nodeError) {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "aha-openai-curl-"));
-  const bodyPath = path.join(tempDir, "body.json");
-  const statusMarker = "\nAHA_CURL_HTTP_STATUS:";
-  try {
-    await writeFile(bodyPath, body, { mode: 0o600 });
-    const config = [
-      `url = "${target.href.replace(/"/g, "%22")}"`,
-      'request = "POST"',
-      ...Object.entries(headers).map(([name, value]) => `header = "${name}: ${String(value).replace(/"/g, '\\"')}"`),
-      'header = "Content-Type: application/json"',
-      'header = "Connection: close"',
-      "",
-    ].join("\n");
-    const result = await runCurl([
-      "-q",
-      "-sS",
-      "--no-progress-meter",
-      "--max-time",
-      String(Math.max(1, Math.ceil(timeoutMs / 1000))),
-      "--config",
-      "-",
-      "--data-binary",
-      `@${bodyPath}`,
-      "--write-out",
-      `${statusMarker}%{http_code}`,
-    ], config, timeoutMs + 5_000);
-    const statusIndex = result.stdout.lastIndexOf(statusMarker);
-    if (result.code !== 0 || statusIndex === -1) {
-      const detail = firstLine(result.stderr || result.stdout) || `curl exited ${result.code ?? "unknown"}`;
-      throw new Error(`OpenAI API request failed with Node HTTPS (${nodeError.message}); curl fallback failed: ${detail}`);
-    }
-    return {
-      statusCode: Number(result.stdout.slice(statusIndex + statusMarker.length).trim()) || 0,
-      statusMessage: "",
-      body: result.stdout.slice(0, statusIndex),
-    };
-  } finally {
-    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-  }
-}
-
-function runCurl(args, stdin, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("curl", args, {
-      env: process.env,
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    let stdout = "";
-    let stderr = "";
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let settled = false;
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.kill("SIGTERM");
-      reject(error);
-    };
-    const timer = setTimeout(() => {
-      fail(new Error(`curl timed out after ${timeoutMs}ms.`));
-    }, timeoutMs);
-    child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
-      stdoutBytes += Buffer.byteLength(text);
-      if (stdoutBytes > DEFAULT_MAX_OUTPUT_BYTES) {
-        fail(new Error(`curl stdout exceeded ${DEFAULT_MAX_OUTPUT_BYTES} bytes.`));
-        return;
-      }
-      stdout += text;
-    });
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
-      stderrBytes += Buffer.byteLength(text);
-      if (stderrBytes > DEFAULT_MAX_OUTPUT_BYTES) {
-        fail(new Error(`curl stderr exceeded ${DEFAULT_MAX_OUTPUT_BYTES} bytes.`));
-        return;
-      }
-      stderr += text;
-    });
-    child.on("error", (error) => fail(error));
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr });
-    });
-    child.stdin.end(stdin);
-  });
 }
 
 function schemaNameForPath(schemaPath) {
@@ -694,15 +488,22 @@ async function readJsonIfExists(filePath) {
 }
 
 function llmDisplayName(args) {
-  return args.llmProvider === "openai" ? "OpenAI" : "Codex";
+  if (args.llmProvider === "openai") return "OpenAI";
+  if (args.llmProvider === "deepseek") return "DeepSeek";
+  return "Codex";
 }
 
 function llmToolName(args) {
-  return args.llmProvider === "openai" ? "openai" : "codex";
+  return isApiProvider(args.llmProvider) ? args.llmProvider : "codex";
+}
+
+function isApiProvider(provider) {
+  return provider === "openai" || provider === "deepseek";
 }
 
 function queryPlannerDisplayName(value) {
   if (value === "openai") return "OpenAI";
+  if (value === "deepseek") return "DeepSeek";
   if (value === "codex") return "Codex";
   return value || "Unknown";
 }
@@ -856,6 +657,7 @@ async function obsidianGraphExpansion(args) {
         : [command, `path=${args.sourcePath}`];
       const result = await runCommand(args.obsidianCommand, commandArgs, {
         cwd: args.workspace,
+        sensitiveEnvName: args.llmApiKeyEnv,
         timeoutMs: 15_000,
       });
       if (result.code !== 0) {
@@ -993,7 +795,7 @@ async function generateQueryPlan(args, sourceText) {
     fallbackName: "codex",
     displayName: llmDisplayName(args),
     adapter: queryPlanAdapter(args),
-    fallbackAdapter: args.llmProvider === "openai" ? queryPlanAdapter({ ...args, llmProvider: "codex-cli" }) : null,
+    fallbackAdapter: isApiProvider(args.llmProvider) ? queryPlanAdapter({ ...args, llmProvider: "codex-cli" }) : null,
   });
 }
 
@@ -1062,7 +864,11 @@ async function runQmdPlanQueryCommand(args, query, options) {
     commandArgs.push("--no-rerank");
   }
 
-  const result = await runCommand(args.qmdCommand, commandArgs, { cwd: args.workspace, timeoutMs: options.timeoutMs });
+  const result = await runCommand(args.qmdCommand, commandArgs, {
+    cwd: args.workspace,
+    sensitiveEnvName: args.llmApiKeyEnv,
+    timeoutMs: options.timeoutMs,
+  });
 
   if (result.code !== 0) {
     throw new Error(firstLine(result.stderr || result.stdout) || `QMD exited ${result.code}`);
@@ -1638,7 +1444,7 @@ function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: process.env,
+      env: childCommandEnvironment(options.sensitiveEnvName),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -1695,6 +1501,12 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+function childCommandEnvironment(sensitiveEnvName) {
+  const env = { ...process.env };
+  if (sensitiveEnvName) delete env[sensitiveEnvName];
+  return env;
+}
+
 function withTimeout(promise, timeoutMs, message) {
   let timer;
   return Promise.race([
@@ -1708,6 +1520,7 @@ function withTimeout(promise, timeoutMs, message) {
 function parseArgs(rawArgs) {
   const args = {
     checkReadiness: false,
+    checkLlmConnection: false,
     codexCommand: "codex",
     codexModel: "gpt-5.3-codex-spark",
     codexReasoningEffort: "low",
@@ -1741,6 +1554,9 @@ function parseArgs(rawArgs) {
     switch (arg) {
       case "--check-readiness":
         args.checkReadiness = true;
+        break;
+      case "--check-llm-connection":
+        args.checkLlmConnection = true;
         break;
       case "--codex-command":
         args.codexCommand = next();

@@ -19,10 +19,12 @@ npm run verify
 - Aha workspace：当前仓库根目录。
 - Review note location：默认 `Aha/Reviews`。
 - Node command：可留空自动探测；如果 Obsidian 内运行时报 `env: node: No such file or directory`，填 `/opt/homebrew/bin/node`。
-- LLM provider：默认 `OpenAI API`；Base URL 默认 `https://api.openai.com/v1`，Model 默认 `gpt-5.5`。
-- OpenAI API key：可直接填在插件设置里；插件会把它注入 wrapper 子进程环境，不作为 CLI 参数传递。该值保存在当前 vault 的 Obsidian 插件数据中。
-- OpenAI key env：默认 `OPENAI_API_KEY`。如果 OpenAI API key 字段留空，search runner 会回退读取这个环境变量。
-- OpenAI 网络：wrapper 优先用 Node HTTPS；如果本机代理让 Node TLS 握手失败，会回退到 curl，并可在 macOS GUI 环境中读取系统 HTTPS 代理。
+- LLM provider：可选 `OpenAI API`、`DeepSeek API` 或 `Codex CLI`。OpenAI 与 DeepSeek 的配置独立保存，切换不会覆盖另一方。
+- OpenAI：Base URL 默认 `https://api.openai.com/v1`，Model 默认 `gpt-5.5`，key env 默认 `OPENAI_API_KEY`。
+- DeepSeek：Base URL 默认 `https://api.deepseek.com`，Model 默认 `deepseek-v4-pro`，key env 默认 `DEEPSEEK_API_KEY`。
+- API key 可直接填在插件设置里；插件只把当前 provider 的 key 注入 wrapper 子进程环境，不作为 CLI 参数传递。直接 key 保存在当前 vault 的 Obsidian 插件数据中。
+- 每套 API 配置下都有检测按钮，向所选模型发出最小 JSON 请求，验证网络、鉴权、endpoint 与 model ID。
+- API 网络统一使用受控代理配置和有限重试的 curl transport；macOS GUI 环境会从 `HTTPS_PROXY` 或系统代理读取代理地址，并放入权限为 `0600` 的临时 config，不会在 fallback 时静默改走直连，也不会把代理凭据暴露在 argv。
 - Codex command：本机 Codex CLI 命令或绝对路径，仅在 LLM provider 设为 `Codex CLI` 时使用。
 - QMD runner：默认 `SDK`；`CLI` 保留为诊断和 fallback。
 - QMD command：本机 QMD CLI 命令或绝对路径。SDK runner 会优先 import `@tobilu/qmd`，失败后可用该路径推导 SDK module。
@@ -36,7 +38,7 @@ npm run verify
 search runner 默认使用 bounded `pipeline`：
 
 ```text
-OpenAI/Codex 生成 3-5 条 QMD query
+OpenAI/DeepSeek/Codex 生成 3-5 条 QMD query
 -> search runner 通过 QMD SDK/CLI 混合语义检索与 Obsidian links/backlinks
 -> 合并、去 source self-hit、按分数/排名/跨 query 多样性重排
 -> 只读取 qmd://obsidian 或 vault 内候选正文
@@ -83,6 +85,14 @@ OpenAI/Codex 生成 3-5 条 QMD query
 2. 运行 `Aha: Check local readiness`。
 3. 确认 readiness 显示 `OpenAI API key` 失败，且不会要求 Codex CLI 通过。
 4. 恢复 OpenAI API key，或恢复 OpenAI key env 为 `OPENAI_API_KEY`。
+
+## Provider 切换与连接检测 smoke
+
+1. 在设置页选择 `OpenAI API`，点击 `Test OpenAI`，确认提示包含当前 OpenAI model 且成功。
+2. 切换到 `DeepSeek API`，确认 OpenAI 的 base URL、model 与 key 未被覆盖。
+3. 点击 `Test DeepSeek`，确认提示包含当前 DeepSeek model 且成功。
+4. 临时把 DeepSeek model 改成不存在的 ID，确认检测明确失败；恢复 model 后再次检测通过。
+5. 在两个 provider 间往返切换并各跑一次真实 source note，确认 session record 标记的失败工具名与当前 provider 一致。
 
 ## Relation Judge 失败 smoke
 
