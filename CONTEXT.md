@@ -9,6 +9,7 @@ Sections:
 - Insight & Judgment Workflow
 - Source Material
 - Memory Retrieval
+- Runtime Capability Tiers
 - Relation Judging
 - Review & Selection
 - Aha Session Records & Exports
@@ -153,6 +154,28 @@ _Avoid_: backlinks, automatic related notes
 **Search Signal**:
 A retrieval clue such as rank, score, or query source that helps the agent organize candidates. Search signals are not part of the user's judgment and should not be presented as evidence by default.
 _Avoid_: evidence, confidence, priority
+
+### Runtime Capability Tiers
+
+**Capability Tier**:
+The level of Memory Surface capability available for one memory search round, decided at round time from which dependencies are currently usable. A tier is a per-round runtime determination, not an installation-time mode switch, and no tier is an error state.
+_Avoid_: mode switch, install profile, error state, feature flag
+
+**Neighborhood Tier**:
+The capability tier used when no retrieval backend is available. Recall comes only from the link and backlink neighborhood of the source note, and results are presented honestly as neighborhood recall rather than disguised as full retrieval.
+_Avoid_: broken state, empty result, fake full result
+
+**Recall Tier**:
+The capability tier used when the retrieval backend works but no LLM access is available. Deterministic queries plus graph expansion produce a ranked candidate list by retrieval prior, without relation judging; review feedback is still collected as seed material.
+_Avoid_: degraded error, judged candidates, read-only mode
+
+**Full Tier**:
+The capability tier where the complete pipeline runs: LLM query planning, retrieval, relation judging with quote-backed evidence, and grill handoff.
+_Avoid_: normal mode, only mode, premium mode
+
+**Runtime Tier Fallback**:
+The within-round behavior when a Full Tier round loses LLM access mid-run: the round lands on Recall Tier results, keeps a structured failure record, and names the fallback reason in the result. It never fakes a successful full result.
+_Avoid_: silent retry, fake success, error abort
 
 ### Relation Judging
 
