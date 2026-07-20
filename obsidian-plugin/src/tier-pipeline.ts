@@ -7,6 +7,13 @@
 // fresh on every call (no caching anywhere in this module or its deps), so
 // an environment repair (installing qmd, fixing an API key) upgrades the
 // tier on the very next round without restarting Obsidian.
+//
+// Issue #59 additions: settings.excludedFolders is parsed and threaded into
+// every tier's candidate filtering; the Full Tier branch threads a computed
+// query-plan prompt-override version (settings.queryPromptOverride) into
+// core's additive parameter; and, when settings.traceDirectory is set, every
+// round writes a plugin-origin Pipeline Trace (pipeline-trace.ts) after the
+// tier's result is computed.
 
 import {
   DEFAULT_LLM_TIMEOUT_MS,
@@ -18,6 +25,7 @@ import {
 } from "./core";
 import { resolveLlmRequestProfile, requestUrlHttpPost } from "./llm-request";
 import { buildNeighborhoodTierResult, type NeighborhoodMetadataCacheLike, type NeighborhoodSourceLike } from "./neighborhood-tier";
+import { buildPluginPipelineTrace, writePluginPipelineTrace, type BuildPluginPipelineTraceInput } from "./pipeline-trace";
 import { createQmdRequestDeps, probeQmdAvailable } from "./qmd-request";
 import { runRecallTier } from "./recall-tier";
 import type { AhaPluginSettings } from "./settings";
@@ -41,6 +49,58 @@ export interface TieredSearchInput {
 
 function waitMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getNodeRequire(): NodeRequire {
+  const globalRequire = (globalThis as { require?: NodeRequire }).require;
+  if (typeof globalRequire === "function") return globalRequire;
+  const windowRequire = (globalThis as { window?: { require?: NodeRequire } }).window?.require;
+  if (typeof windowRequire === "function") return windowRequire;
+  throw new Error("Node require is unavailable.");
+}
+
+/**
+ * Parses the visible "Excluded folders" settings field (issue #59): comma
+ * or newline separated vault-relative folder paths. Absorbs the old
+ * bench-side AHA_EXCLUDED_FOLDERS environment-variable convention into a
+ * plugin settings field -- this has nothing to do with a real environment
+ * variable in the plugin (the plugin never read process.env.AHA_EXCLUDED_FOLDERS
+ * for the internalized path). Returns an array even when empty (an
+ * intentionally cleared field means "exclude nothing via this mechanism";
+ * the always-on isGeneratedReviewCandidate check in core/pool.ts still
+ * unconditionally excludes the review folder regardless of this list).
+ */
+export function excludedFoldersFromSettings(raw: string): readonly string[] {
+  return String(raw ?? "")
+    .split(/[,\n]/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Computes the query-plan prompt-override parameter for
+ * generateQueryPlanViaLlm (core/query-plan-llm.ts's additive optional
+ * parameter, issue #59): undefined when settings.queryPromptOverride is
+ * empty/whitespace-only (preserving the built-in prompt/version exactly),
+ * otherwise `{ text, version }` with version computed as a content hash of
+ * the override text using Node's `crypto` via getNodeRequire() -- core
+ * itself must stay free of node imports, so the hash is computed here and
+ * injected as a plain string, per the issue's resolved-ambiguity guidance.
+ *
+ * Version format: `aha-query-plan-custom-<16 lowercase hex chars>`, where
+ * the hex chars are the first 16 characters of the override text's SHA-256
+ * hex digest. 16 hex chars (64 bits) is ample to distinguish override
+ * revisions in a Pipeline Trace without the version string becoming
+ * unwieldy; the "aha-query-plan-custom-" prefix keeps it visually
+ * distinguishable from the built-in QUERY_PLAN_PROMPT_VERSION
+ * ("aha-query-plan-v6") at a glance.
+ */
+export function queryPromptOverrideFromSettings(raw: string): { text: string; version: string } | undefined {
+  const text = String(raw ?? "").trim();
+  if (!text) return undefined;
+  const crypto = getNodeRequire()("crypto") as typeof import("crypto");
+  const hash = crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
+  return { text, version: `aha-query-plan-custom-${hash}` };
 }
 
 function filterArgsFor(input: TieredSearchInput): CandidateFilterArgs {
@@ -70,10 +130,34 @@ async function recallOutcome(input: TieredSearchInput): Promise<TieredOutcome> {
       ...planArgsFor(input),
       sourcePath: input.sourceFile.path,
       targetCandidates: input.settings.targetCandidates,
+      excludedFolders: excludedFoldersFromSettings(input.settings.excludedFolders),
     },
     { ...qmdDeps, ...vaultBoundaryDeps },
   );
   return { tier: "recall", result };
+}
+
+interface QueryPlanTraceMetadata {
+  generatedBy: "llm" | "rules";
+  fallback: boolean;
+  error: string | null;
+  promptVersion: string;
+}
+
+/** Writes a plugin-origin Pipeline Trace only when settings.traceDirectory is a non-empty string; otherwise does nothing (no filesystem access at all). */
+function writePluginTraceIfConfigured(input: TieredSearchInput, outcome: TieredOutcome, queryPlan: QueryPlanTraceMetadata | undefined): void {
+  const traceDirectory = input.settings.traceDirectory?.trim();
+  if (!traceDirectory) return;
+  const traceInput: BuildPluginPipelineTraceInput = {
+    sourcePath: input.sourceFile.path,
+    sourceTitle: input.sourceFile.basename,
+    sourceText: input.sourceText,
+    tier: outcome.tier,
+    result: outcome.result,
+    queryPlan,
+  };
+  const trace = buildPluginPipelineTrace(traceInput);
+  writePluginPipelineTrace(trace, traceDirectory);
 }
 
 /**
@@ -89,18 +173,23 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
   const tier = decideCapabilityTier({ qmdAvailable, llmConfigured: llmProfile.ok });
 
   if (tier === "neighborhood") {
-    return {
+    const outcome: TieredOutcome = {
       tier,
       result: buildNeighborhoodTierResult({
         sourceFile: input.sourceFile,
         metadataCache: input.metadataCache,
         targetCandidates: settings.targetCandidates,
+        excludedFolders: excludedFoldersFromSettings(settings.excludedFolders),
       }),
     };
+    writePluginTraceIfConfigured(input, outcome, undefined);
+    return outcome;
   }
 
   if (tier === "recall") {
-    return recallOutcome(input);
+    const outcome = await recallOutcome(input);
+    writePluginTraceIfConfigured(input, outcome, undefined);
+    return outcome;
   }
 
   if (!llmProfile.ok) {
@@ -108,7 +197,9 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
     // llmProfile.ok value as llmConfigured, so tier === "full" implies
     // llmProfile.ok === true. Kept as a TS narrowing guard and a defensive
     // fallback in case that invariant is ever broken by a future edit.
-    return recallOutcome(input);
+    const outcome = await recallOutcome(input);
+    writePluginTraceIfConfigured(input, outcome, undefined);
+    return outcome;
   }
 
   const vaultBoundaryDeps = createVaultBoundaryDeps();
@@ -126,6 +217,8 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
       sourcePath: input.sourceFile.path,
       sourceText: input.sourceText,
       targetCandidates: settings.targetCandidates,
+      excludedFolders: excludedFoldersFromSettings(settings.excludedFolders),
+      queryPromptOverride: queryPromptOverrideFromSettings(settings.queryPromptOverride),
     },
     {
       baseUrl: llmProfile.request.baseUrl,
@@ -136,5 +229,12 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
     },
     orchestratorDeps,
   );
-  return shapeFullTierResult(fullResult);
+  const outcome = shapeFullTierResult(fullResult);
+  writePluginTraceIfConfigured(input, outcome, {
+    generatedBy: fullResult.queryPlanGeneratedBy,
+    fallback: fullResult.queryPlanFallback,
+    error: null,
+    promptVersion: fullResult.queryPlanPromptVersion,
+  });
+  return outcome;
 }

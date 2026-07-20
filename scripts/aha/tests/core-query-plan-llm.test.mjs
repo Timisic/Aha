@@ -138,3 +138,63 @@ test("non-JSON model output falls back to rules with a parse-kind error", async 
   assert.equal(outcome.fallback, true);
   assert.match(outcome.error, /not valid JSON/);
 });
+
+// --- Prompt override coverage (issue #59) -----------------------------------
+// The plugin settings page can supply a query-plan prompt override; core's
+// job is purely additive: when omitted, behavior and promptVersion stay
+// byte-identical to before this parameter existed (covered by every test
+// above, none of which pass a 5th argument). These tests cover the new
+// parameter itself.
+
+test("omitting promptOverride records the built-in QUERY_PLAN_PROMPT_VERSION", async () => {
+  const { deps } = fakeDeps([responsesEnvelope(validPlan)]);
+  const outcome = await generateQueryPlanViaLlm(
+    { sourcePath: "Source.md", _resolved_insight_input: "无覆盖时应使用内置 prompt。" },
+    "无覆盖时应使用内置 prompt。",
+    transportRequest(),
+    deps,
+  );
+  assert.equal(outcome.promptVersion, QUERY_PLAN_PROMPT_VERSION);
+});
+
+test("a non-empty promptOverride replaces the built-in prompt text and records the override version", async () => {
+  const { deps, calls } = fakeDeps([responsesEnvelope(validPlan)]);
+  const overrideText = "CUSTOM OVERRIDE PROMPT: only follow this instruction.";
+  const outcome = await generateQueryPlanViaLlm(
+    { sourcePath: "Source.md", _resolved_insight_input: "覆盖 prompt 的测试输入。" },
+    "覆盖 prompt 的测试输入。",
+    transportRequest(),
+    deps,
+    { text: overrideText, version: "aha-query-plan-custom-deadbeefdeadbeef" },
+  );
+  assert.equal(outcome.promptVersion, "aha-query-plan-custom-deadbeefdeadbeef");
+  assert.equal(calls[0].body.input, overrideText);
+  assert.equal(buildQueryPlanPrompt({ sourcePath: "Source.md" }, "ignored", overrideText), overrideText);
+});
+
+test("a promptOverride is still recorded on the promptVersion even when the LLM call falls back to rules", async () => {
+  const { deps } = fakeDeps([new Error("network down")]);
+  const outcome = await generateQueryPlanViaLlm(
+    { sourcePath: "Source.md", _resolved_insight_input: "覆盖 + 兜底组合。" },
+    "覆盖 + 兜底组合。",
+    transportRequest(),
+    deps,
+    { text: "override text", version: "aha-query-plan-custom-abc123" },
+  );
+  assert.equal(outcome.generatedBy, "rules");
+  assert.equal(outcome.fallback, true);
+  assert.equal(outcome.promptVersion, "aha-query-plan-custom-abc123");
+});
+
+test("an empty-string promptOverride.text is treated as no override (byte-identical behavior)", async () => {
+  const { deps: depsA, calls: callsA } = fakeDeps([responsesEnvelope(validPlan)]);
+  const { deps: depsB, calls: callsB } = fakeDeps([responsesEnvelope(validPlan)]);
+  const args = { sourcePath: "Source.md", _resolved_insight_input: "空覆盖应等同于未传覆盖。" };
+
+  const withoutParam = await generateQueryPlanViaLlm(args, args._resolved_insight_input, transportRequest(), depsA);
+  const withEmptyOverride = await generateQueryPlanViaLlm(args, args._resolved_insight_input, transportRequest(), depsB, { text: "   ", version: "should-not-be-used" });
+
+  assert.equal(withoutParam.promptVersion, QUERY_PLAN_PROMPT_VERSION);
+  assert.equal(withEmptyOverride.promptVersion, QUERY_PLAN_PROMPT_VERSION);
+  assert.deepEqual(callsA[0].body.input, callsB[0].body.input);
+});

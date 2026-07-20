@@ -18,6 +18,7 @@ import { legacySourceIdentity, sourceIdentityForFile, sourceReviewIndexKey } fro
 import { AHA_COMMANDS } from "./commands";
 import { runTieredSearch } from "./tier-pipeline";
 import { createVaultReadNote } from "./vault-read";
+import { CURRENT_SETTINGS_SCHEMA_VERSION, migrateAhaPluginSettings, shouldShowSimplificationNotice } from "./settings-migration";
 import {
   appendSessionFeedback,
   createEmptySessionStore,
@@ -42,12 +43,20 @@ interface AhaPluginData {
   settings: AhaPluginSettings;
   reviewIndex: Record<string, string>;
   sessionStore: AhaSessionStoreData;
+  /**
+   * Settings schema version marker (issue #59), absent on any data saved
+   * before this field existed. Used only to decide whether the one-time
+   * "settings simplified" notice has already been shown -- see
+   * loadSettings() and settings-migration.ts's shouldShowSimplificationNotice.
+   */
+  schemaVersion?: number;
 }
 
 export default class AhaPlugin extends Plugin {
   settings: AhaPluginSettings = { ...DEFAULT_SETTINGS };
   reviewIndex: Record<string, string> = {};
   sessionStore: AhaSessionStoreData = createEmptySessionStore();
+  schemaVersion: number = CURRENT_SETTINGS_SCHEMA_VERSION;
   private statusBar?: HTMLElement;
   private activeRun?: { startedAt: number; sourcePath: string };
   private timerId?: number;
@@ -120,11 +129,40 @@ export default class AhaPlugin extends Plugin {
     this.registerInterval(this.timerId);
   }
 
+  // Settings migration + one-time simplification notice (issue #59). The
+  // *notice* fires at most once per upgrade, guarded by schemaVersion: only
+  // when the stored data predates CURRENT_SETTINGS_SCHEMA_VERSION (absent or
+  // older) does this run migrateAhaPluginSettings against the raw old data
+  // and bump/persist schemaVersion. On every subsequent load (schemaVersion
+  // already current), a plain DEFAULT_SETTINGS merge is used instead --
+  // deliberately NOT re-running migrateAhaPluginSettings on every load, even
+  // though that function is itself pure/idempotent (see
+  // settings-migration.ts's own idempotency guarantee and test coverage):
+  // migrateAhaPluginSettings intentionally still carries the six legacy
+  // qmdRemote* fields forward verbatim (for process.ts's frozen legacy
+  // wrapper), so re-running it after schema-version bump would silently
+  // resurrect a qmdEnvironment value from those stale fields even after a
+  // user explicitly cleared the qmdEnvironment field by hand -- the version
+  // guard is what prevents that regression.
   async loadSettings(): Promise<void> {
     const data = (await this.loadData()) as Partial<AhaPluginData> | null;
-    this.settings = { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
+    const storedVersion = data?.schemaVersion;
+    const needsMigrationNotice = shouldShowSimplificationNotice(storedVersion, CURRENT_SETTINGS_SCHEMA_VERSION);
+
+    this.settings = needsMigrationNotice
+      ? migrateAhaPluginSettings(data?.settings ?? {})
+      : { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
     this.reviewIndex = data?.reviewIndex ?? {};
     this.sessionStore = normalizeSessionStore(data?.sessionStore);
+    this.schemaVersion = CURRENT_SETTINGS_SCHEMA_VERSION;
+
+    if (needsMigrationNotice) {
+      await this.saveSettings();
+      new Notice(
+        "Aha settings were simplified in this update: legacy fields were dropped or hidden, and the six QMD remote-endpoint fields were merged into one QMD environment field under Advanced. Open Settings > Aha to see the new layout.",
+        15000,
+      );
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -132,6 +170,7 @@ export default class AhaPlugin extends Plugin {
       settings: this.settings,
       reviewIndex: this.reviewIndex,
       sessionStore: this.sessionStore,
+      schemaVersion: this.schemaVersion,
     });
   }
 

@@ -85,12 +85,18 @@ export const QUERY_PLAN_SCHEMA = {
 };
 
 /**
- * Verbatim port of buildQueryPlanPrompt from scripts/aha/query-plan.mjs.
- * Kept as an exported core constant/function (not just an implementation
- * detail) so a future prompt-override diff (issue #59) can hash and compare
- * this exact prompt text.
+ * Verbatim port of buildQueryPlanPrompt from scripts/aha/query-plan.mjs, plus
+ * an additive optional `promptOverrideText` parameter (issue #59): when a
+ * non-empty override string is passed, it is returned as-is instead of the
+ * built-in template below. Omitting the parameter (or passing
+ * `undefined`/an empty/whitespace-only string) preserves the exact existing
+ * behavior byte-for-byte -- bench's call site (buildQueryPlanPrompt({
+ * sourcePath }, sourceText), no third argument) is therefore unaffected by
+ * this change.
  */
-export function buildQueryPlanPrompt(args: DeterministicPlanArgs, sourceText: string): string {
+export function buildQueryPlanPrompt(args: DeterministicPlanArgs, sourceText: string, promptOverrideText?: string): string {
+  const override = promptOverrideText?.trim();
+  if (override) return override;
   const sourceSummary = queryPlanSourceSummary(args, sourceText);
   return [
     "你是 Aha/Pi /insight 的检索查询生成子 agent。",
@@ -174,9 +180,35 @@ export interface QueryPlanLlmOutcome {
   generatedBy: "llm" | "rules";
   fallback: boolean;
   error: string | null;
+  /**
+   * The prompt-version string configured for this attempt: the built-in
+   * QUERY_PLAN_PROMPT_VERSION when no override was supplied, or the
+   * override's own version string when one was (issue #59). This mirrors the
+   * bench convention (scripts/aha/query-plan.mjs's withQueryPlanMetadata),
+   * which always records "whichever prompt version was configured", not
+   * "whichever prompt version actually produced the returned queries" -- so
+   * this field stays set to the override's version even on a rules fallback,
+   * exactly like bench's unconditional QUERY_PLAN_PROMPT_VERSION assignment.
+   */
+  promptVersion: string;
 }
 
 export type QueryPlanLlmTransportRequest = Omit<LlmJsonCallRequest, "prompt" | "schema" | "schemaName">;
+
+/**
+ * Additive parameter shape (issue #59) for a settings-level query-plan
+ * prompt override. `text` replaces the built-in prompt verbatim when
+ * non-empty; `version` is the prompt-version string to record instead of
+ * QUERY_PLAN_PROMPT_VERSION -- computed by the caller (plugin-side, via
+ * Node's `crypto` through getNodeRequire(), the same pattern process.ts and
+ * qmd-request.ts already use for other Node built-ins) because this core
+ * module must stay free of node imports and therefore cannot hash the
+ * override text itself.
+ */
+export interface QueryPlanPromptOverride {
+  text: string;
+  version: string;
+}
 
 /**
  * Builds the query-plan prompt, calls llmJsonCall, and normalizes the result
@@ -189,14 +221,25 @@ export type QueryPlanLlmTransportRequest = Omit<LlmJsonCallRequest, "prompt" | "
  * succeeded" should inspect the `fallback` flag; this function itself always
  * returns a usable plan because the rules fallback is unconditionally safe
  * (established by #56).
+ *
+ * `promptOverride` (issue #59) is an additive optional parameter: omitting
+ * it (or passing `undefined`, or `{ text: "" }` / whitespace-only text)
+ * preserves the exact existing behavior byte-for-byte -- the built-in prompt
+ * is built and QUERY_PLAN_PROMPT_VERSION is recorded, exactly as before this
+ * parameter existed. When a non-empty `promptOverride.text` is supplied, it
+ * replaces the built-in prompt verbatim and `promptOverride.version` is
+ * recorded in `promptVersion` instead.
  */
 export async function generateQueryPlanViaLlm(
   args: DeterministicPlanArgs,
   sourceText: string,
   transportRequest: QueryPlanLlmTransportRequest,
   deps: LlmTransportDeps,
+  promptOverride?: QueryPlanPromptOverride,
 ): Promise<QueryPlanLlmOutcome> {
-  const prompt = buildQueryPlanPrompt(args, sourceText);
+  const overrideText = promptOverride?.text?.trim();
+  const promptVersion = overrideText ? promptOverride!.version : QUERY_PLAN_PROMPT_VERSION;
+  const prompt = buildQueryPlanPrompt(args, sourceText, overrideText);
   const result = await llmJsonCall(
     { ...transportRequest, prompt, schema: QUERY_PLAN_SCHEMA, schemaName: QUERY_PLAN_SCHEMA_NAME },
     deps,
@@ -210,15 +253,16 @@ export async function generateQueryPlanViaLlm(
         generatedBy: "llm",
         fallback: false,
         error: null,
+        promptVersion,
       };
     } catch (error) {
-      return fallbackQueryPlanOutcome(args, errorMessage(error));
+      return fallbackQueryPlanOutcome(args, errorMessage(error), promptVersion);
     }
   }
-  return fallbackQueryPlanOutcome(args, result.error);
+  return fallbackQueryPlanOutcome(args, result.error, promptVersion);
 }
 
-function fallbackQueryPlanOutcome(args: DeterministicPlanArgs, error: string): QueryPlanLlmOutcome {
+function fallbackQueryPlanOutcome(args: DeterministicPlanArgs, error: string, promptVersion: string): QueryPlanLlmOutcome {
   const plan = queryPlanFromFallbackRules(args);
   return {
     queries: plan.queries,
@@ -226,6 +270,7 @@ function fallbackQueryPlanOutcome(args: DeterministicPlanArgs, error: string): Q
     generatedBy: "rules",
     fallback: true,
     error,
+    promptVersion,
   };
 }
 

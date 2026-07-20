@@ -116,18 +116,41 @@ function firstLine(value: string): string {
   return value.trim().split(/\r?\n/, 1)[0] ?? "";
 }
 
-/** Same QMD_REMOTE_* env-injection convention process.ts's wrapperChildEnv applies for the legacy path. */
+/**
+ * Parses the settings-page "QMD environment" advanced field (issue #59):
+ * one `KEY=VALUE` line per entry, injected into the qmd subprocess verbatim
+ * -- not restricted to the old fixed QMD_REMOTE_* key allowlist, per the
+ * issue text ("KEY=VALUE lines injected into the qmd subprocess", i.e. fully
+ * general). Blank lines and lines without an `=` are ignored; leading/
+ * trailing whitespace around both key and value is trimmed; a key that
+ * appears more than once keeps its last occurrence (same "last wins"
+ * convention a real .env-style file would apply).
+ */
+export function parseQmdEnvironment(raw: string): Record<string, string> {
+  const entries: Record<string, string> = {};
+  for (const line of String(raw ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex <= 0) continue;
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const value = trimmed.slice(separatorIndex + 1).trim();
+    if (key) entries[key] = value;
+  }
+  return entries;
+}
+
+/**
+ * Builds the qmd subprocess env: inherits the plugin's own process.env, then
+ * overlays whatever KEY=VALUE pairs settings.qmdEnvironment parses to
+ * (issue #59; replaces the old 6 discrete qmdRemote* fields this function
+ * used to read one by one -- see process.ts's still-frozen
+ * wrapperChildEnv/qmdRemoteEnvironment for the legacy wrapper's own
+ * unrelated copy of that old convention).
+ */
 function qmdChildEnv(settings: AhaPluginSettings): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  const remoteEnv: Array<[string, string]> = [
-    ["QMD_REMOTE_EMBED_URL", settings.qmdRemoteEmbedUrl?.trim() ?? ""],
-    ["QMD_REMOTE_EMBED_MODEL", settings.qmdRemoteEmbedModel?.trim() ?? ""],
-    ["QMD_REMOTE_GENERATE_URL", settings.qmdRemoteGenerateUrl?.trim() ?? ""],
-    ["QMD_REMOTE_GENERATE_MODEL", settings.qmdRemoteGenerateModel?.trim() ?? ""],
-    ["QMD_REMOTE_RERANK_URL", settings.qmdRemoteRerankUrl?.trim() ?? ""],
-    ["QMD_REMOTE_RERANK_MODEL", settings.qmdRemoteRerankModel?.trim() ?? ""],
-  ];
-  for (const [name, value] of remoteEnv) {
+  for (const [name, value] of Object.entries(parseQmdEnvironment(settings.qmdEnvironment))) {
     if (value) env[name] = value;
   }
   return env;
@@ -213,4 +236,53 @@ export function createQmdRequestDeps(settings: AhaPluginSettings): QmdDeps {
       return result.stdout;
     },
   };
+}
+
+// --- Health section / embed-button subprocess adapters (issue #59) ---------
+// Thin injected-I/O wrappers only: all decision logic (parsing qmd status
+// text, deciding a light's color, sequencing update-then-embed) lives in
+// health-checks.ts as pure/injectable functions so it is testable without a
+// real qmd binary. These three functions are the only place that actually
+// spawns `qmd status` / `qmd update` / `qmd embed`.
+
+const STATUS_PROBE_TIMEOUT_MS = 20_000;
+const EMBED_STEP_TIMEOUT_MS = 10 * 60 * 1000;
+
+export interface QmdSubcommandResult {
+  ok: boolean;
+  stdout: string;
+  message: string;
+}
+
+async function runQmdSubcommand(settings: AhaPluginSettings, args: string[], timeoutMs: number): Promise<QmdSubcommandResult> {
+  const command = settings.qmdCommand?.trim() || "qmd";
+  try {
+    const result = await runBoundedCommand(command, args, {
+      cwd: settings.ahaWorkspace?.trim() || undefined,
+      env: qmdChildEnv(settings),
+      timeoutMs,
+    });
+    if (result.code !== 0) {
+      return { ok: false, stdout: result.stdout, message: firstLine(result.stderr || result.stdout) || `${command} ${args.join(" ")} exited ${result.code}` };
+    }
+    return { ok: true, stdout: result.stdout, message: firstLine(result.stdout) || `${command} ${args.join(" ")} succeeded.` };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, stdout: "", message };
+  }
+}
+
+/** Runs `qmd status --index <qmdIndex>` for the index-coverage/endpoints health lights. Never throws. */
+export function runQmdStatus(settings: AhaPluginSettings): Promise<QmdSubcommandResult> {
+  return runQmdSubcommand(settings, ["status", "--index", settings.qmdIndex], STATUS_PROBE_TIMEOUT_MS);
+}
+
+/** Runs `qmd update --index <qmdIndex>` -- the first of the embed button's two sequenced steps. Never throws. */
+export function runQmdUpdate(settings: AhaPluginSettings): Promise<QmdSubcommandResult> {
+  return runQmdSubcommand(settings, ["update", "--index", settings.qmdIndex], EMBED_STEP_TIMEOUT_MS);
+}
+
+/** Runs `qmd embed --index <qmdIndex>` -- the second of the embed button's two sequenced steps. Never throws. */
+export function runQmdEmbed(settings: AhaPluginSettings): Promise<QmdSubcommandResult> {
+  return runQmdSubcommand(settings, ["embed", "--index", settings.qmdIndex], EMBED_STEP_TIMEOUT_MS);
 }

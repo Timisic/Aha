@@ -9,8 +9,17 @@ import {
   candidateSourceList,
 } from "./candidate-fields.mjs";
 
-const TRACE_SCHEMA = "PipelineTrace";
-const TRACE_VERSION = 1;
+// Exported (not just module-private) so obsidian-plugin/src/pipeline-trace.ts
+// (issue #59's plugin-side, lighter trace writer) can assert its own
+// duplicated TRACE_SCHEMA/TRACE_VERSION literals stay in sync with this
+// bench-side source of truth, via a dedicated guard test -- mirroring the
+// AHA_RESULT_SCHEMA literal-vs-JSON-import guard #57 established in
+// core/result-validator.ts / core-result-validator.test.mjs. The plugin
+// module duplicates the constants as literals rather than importing this
+// .mjs file directly because this file has node:crypto/node:fs/node:path
+// imports, which is the same bundling hazard #57 hit with result-validator.mjs.
+export const TRACE_SCHEMA = "PipelineTrace";
+export const TRACE_VERSION = 1;
 const DEFAULT_SNIPPET_CHARS = 300;
 
 function sha256(value) {
@@ -174,6 +183,10 @@ export function buildPipelineTrace({
   return {
     schema: TRACE_SCHEMA,
     version: TRACE_VERSION,
+    // Additive (issue #59): distinguishes bench-produced traces from the
+    // plugin's own lighter trace writer (pipeline-trace.ts). Every existing
+    // field above/below is unchanged.
+    origin: "bench",
     case: {
       id: caseItem.id,
       state: caseItem.state,
