@@ -4,3 +4,4 @@
 // imports, node imports, and module-level I/O.
 
 export * from "./note-identity";
+export * from "./llm-transport";

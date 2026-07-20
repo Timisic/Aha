@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type AhaPlugin from "./main";
-import { runProviderConnectionCheck, type ApiProvider } from "./process";
+import { testProviderConnection, type LlmApiProvider } from "./llm-request";
 
 export interface AhaPluginSettings {
   ahaWorkspace: string;
@@ -113,7 +113,10 @@ export class AhaSettingTab extends PluginSettingTab {
       });
   }
 
-  private providerTestSetting(provider: ApiProvider, label: string): void {
+  // Runs through the in-plugin requestUrl transport adapter (issue #55), not
+  // the legacy external-process wrapper, so the Test buttons exercise the same
+  // network path (and proxy behavior) the internalized pipeline will use.
+  private providerTestSetting(provider: LlmApiProvider, label: string): void {
     new Setting(this.containerEl)
       .setName(`Test ${label}`)
       .setDesc(`Send a minimal JSON request to verify the configured ${label} key, endpoint, and model.`)
@@ -122,7 +125,7 @@ export class AhaSettingTab extends PluginSettingTab {
         .onClick(async () => {
           button.setDisabled(true).setButtonText("Testing...");
           try {
-            const result = await runProviderConnectionCheck(this.plugin.settings, provider);
+            const result = await testProviderConnection(this.plugin.settings, provider);
             new Notice(result.ok ? result.message : `${label} test failed: ${result.message}`, result.ok ? 6000 : 12000);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

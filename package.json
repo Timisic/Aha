@@ -8,6 +8,7 @@
     "lint": "eslint \"scripts/**/*.mjs\" \"obsidian-plugin/*.mjs\"",
     "check:scripts": "find scripts obsidian-plugin -name '*.mjs' -not -path '*/node_modules/*' -print0 | xargs -0 -n 1 node --check",
     "test": "node --test scripts/aha/tests/*.test.mjs",
+    "dev:install": "node scripts/dev/install-dev-plugin.mjs",
     "verify": "npm run lint && npm run check:scripts && npm --prefix obsidian-plugin run verify"
   },
   "devDependencies": {
