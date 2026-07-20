@@ -5,6 +5,7 @@
 
 export * from "./note-identity";
 export * from "./llm-transport";
+export * from "./capability-tier";
 export * from "./candidates";
 export * from "./query-plan-deterministic";
 export * from "./qmd";

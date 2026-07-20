@@ -86,6 +86,48 @@ test("successful search rounds replace generated blocks without deleting surroun
   assert.doesNotMatch(second, /aha-open-candidate|<button|Open<\/button>/);
 });
 
+test("human-edited content immediately touching every marker pair survives a round trip across search results, failure, and benchmark seed appends (issue #58)", async () => {
+  const reviewNote = await loadReviewNoteModule();
+  const markerNames = ["search-results", "selected-memories", "review-benchmark-seeds", "grill-handoff"];
+  let humanNote = reviewNote.makeReviewNoteContent({
+    createdAt: new Date("2026-06-28T00:00:00Z"),
+    sourceId: "src:marker-adjacency",
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+  });
+  for (const marker of markerNames) {
+    humanNote = humanNote
+      .replace(`<!-- aha:${marker}:start -->`, `Human note directly before the ${marker} marker.\n\n<!-- aha:${marker}:start -->`)
+      .replace(`<!-- aha:${marker}:end -->`, `<!-- aha:${marker}:end -->\n\nHuman note directly after the ${marker} marker.`);
+  }
+
+  const afterSuccess = reviewNote.appendSuccessfulSearchRound(humanNote, searchRound("2026-06-28T10:00:00Z"));
+  const afterFailure = reviewNote.appendFailureRecord(afterSuccess, {
+    message: "Aha Relation Judge failed.",
+    tool: "llm",
+    details: "LLM call failed after 3 attempts.",
+  }, new Date("2026-06-28T10:05:00Z"));
+  const candidate = searchRound("2026-06-28T10:00:00Z").result.candidates[0];
+  const afterSeed = reviewNote.appendReviewBenchmarkSeed(afterFailure, {
+    action: "accept",
+    createdAt: new Date("2026-06-28T10:06:00Z"),
+    sourcePath: "Source/Insight.md",
+    sourceTitle: "Insight",
+    candidate,
+  });
+
+  for (const marker of markerNames) {
+    assert.match(afterSeed, new RegExp(`Human note directly before the ${marker} marker\\.`), `before-text for ${marker} must survive`);
+    assert.match(afterSeed, new RegExp(`Human note directly after the ${marker} marker\\.`), `after-text for ${marker} must survive`);
+  }
+  // Sanity: the generated content inside the markers actually changed across
+  // these operations, so the above is not a vacuous no-op test.
+  assert.doesNotMatch(afterSeed, /还没有完成的搜索轮次/);
+  assert.match(afterSeed, /### 检索失败 - 2026-06-28T10:05:00\.000Z/);
+  assert.match(afterSeed, /### 纳入 Handoff 的记忆 - 2026-06-28T10:00:00Z/);
+  assert.match(afterSeed, /### Review Benchmark Seed - 2026-06-28T10:06:00\.000Z/);
+});
+
 test("successful search round uses markers when headings are edited", async () => {
   const reviewNote = await loadReviewNoteModule();
   const initial = reviewNote.makeReviewNoteContent({
@@ -625,6 +667,41 @@ test("session store keeps latest successful panel state after a failed run", asy
   assert.ok(failed.error.details.length < 2100);
   assert.equal(latest.generatedAt, "2026-06-28T08:20:00Z");
   assert.equal(latest.candidates.length, 1);
+});
+
+test("a successful round can carry a structured failure record for Runtime Tier Fallback (issue #58), without disturbing an ordinary success", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts", obsidianStubPlugin());
+  const store = sessionStore.createEmptySessionStore();
+  const ordinarySource = sourceInput("srcfs:ordinary-success", "Source/Ordinary.md");
+  const ordinaryRecord = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T09:40:00Z"),
+    source: ordinarySource,
+    result: searchRound("2026-06-28T09:40:00Z").result,
+  });
+  const ordinaryRound = sessionStore.latestSuccessfulRound(ordinaryRecord);
+  assert.equal(ordinaryRound.error, undefined, "an ordinary success round never carries a failure record");
+
+  const fallbackSource = sourceInput("srcfs:fallback-source", "Source/Fallback.md");
+  const fallbackRecord = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T09:41:00Z"),
+    source: fallbackSource,
+    result: {
+      ...searchRound("2026-06-28T09:41:00Z").result,
+      summary: "Recall Tier (Full Tier fallback: Relation Judge failed - LLM call failed after 3 attempts). Deterministic multi-query retrieval ranked 1 candidate(s).",
+      error: {
+        message: "Aha Relation Judge failed.",
+        tool: "llm",
+        details: "LLM call failed after 3 attempts: network error: connection refused",
+      },
+    },
+  });
+  const fallbackRound = sessionStore.latestSuccessfulRound(fallbackRecord);
+
+  assert.equal(fallbackRound.status, "success", "Runtime Tier Fallback still lands on a successful round -- it is not an error state");
+  assert.match(fallbackRound.summary, /^Recall Tier \(Full Tier fallback:/, "Search Round History names the fallback honestly, not a fake Full Tier success");
+  assert.ok(fallbackRound.error, "the structured failure record survives into Search Round History");
+  assert.equal(fallbackRound.error.tool, "llm");
+  assert.match(fallbackRound.error.details, /LLM call failed after 3 attempts/);
 });
 
 test("session store syncs panel selections and draft feedback without review notes", async () => {

@@ -34,6 +34,15 @@ export interface AhaPluginSettings {
   wrapperRelativePath: string;
   targetCandidates: number;
   useFixtureResult: boolean;
+  /**
+   * Hidden dev-only rollback switch (issue #58): when true,
+   * searchFromCurrentNote calls the frozen legacy runAhaWrapper exactly as
+   * before instead of the internalized Capability Tier pipeline. Default
+   * off. No dedicated settings-page row yet -- issue #59 moves this under a
+   * "hidden developer settings" section; for now it is only reachable via
+   * this data.json field or the temporary toggle in display() below.
+   */
+  useLegacyWrapper: boolean;
 }
 
 export const DEFAULT_SETTINGS: AhaPluginSettings = {
@@ -68,6 +77,7 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
   targetCandidates: 20,
   useFixtureResult: false,
+  useLegacyWrapper: false,
 };
 
 type StringSettingKey = {
@@ -256,6 +266,20 @@ export class AhaSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.useFixtureResult)
         .onChange(async (value) => {
           this.plugin.settings.useFixtureResult = value;
+          await this.plugin.saveSettings();
+        }));
+
+    // TEMPORARY dev-only toggle (issue #58). Issue #59 moves this under a
+    // "hidden developer settings" section; this row exists only so a
+    // developer can flip it during manual dev-channel testing without
+    // editing data.json by hand.
+    new Setting(containerEl)
+      .setName("Use legacy wrapper (dev rollback)")
+      .setDesc("Temporary rollback switch: run the frozen external Node wrapper instead of the internalized Capability Tier pipeline. Off by default.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.useLegacyWrapper)
+        .onChange(async (value) => {
+          this.plugin.settings.useLegacyWrapper = value;
           await this.plugin.saveSettings();
         }));
   }

@@ -201,6 +201,11 @@ export function recordSuccessfulSessionRound(store: AhaSessionStoreData, input: 
     summary: compactText(input.result.summary?.trim() || "Aha completed a memory search round.", MAX_SUMMARY_LENGTH),
     warnings: compactWarnings(input.result.warnings ?? []),
     candidates,
+    // Runtime Tier Fallback (issue #58): a successful round can still carry
+    // a structured failure record (e.g. Full Tier's Relation Judge failing
+    // mid-round, landing on Recall Tier results) attached in result.error.
+    // Ordinary success results never set this, so this is additive.
+    error: input.result.error ? compactFailure(input.result.error) : undefined,
   };
   replaceRound(record, round);
   record.latestSuccessfulRoundId = round.id;

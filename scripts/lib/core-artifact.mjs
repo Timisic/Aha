@@ -52,6 +52,12 @@ export function buildVaultPathResolver(root) {
   return core.buildVaultPathResolver(root, coreNodeDeps);
 }
 
+// --- capability-tier (issue #58) ---
+
+export const decideCapabilityTier = core.decideCapabilityTier;
+export const tierLabel = core.tierLabel;
+export const formatTierHeader = core.formatTierHeader;
+
 // --- candidates (issue #56) ---
 
 export const DEFAULT_EXCLUDED_CANDIDATE_FOLDERS = core.DEFAULT_EXCLUDED_CANDIDATE_FOLDERS;

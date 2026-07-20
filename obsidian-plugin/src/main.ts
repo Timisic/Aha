@@ -13,9 +13,11 @@ import { firstWikiLinkTarget, linkTargetBase } from "./wikilink";
 import { AHA_REVIEW_PANEL_VIEW_TYPE, AhaReviewPanelView, type AhaReviewPanelContext } from "./review-panel";
 import { canRunExternalProcesses, runAhaWrapper, runReadinessCheck } from "./process";
 import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
-import { validateAhaWrapperResult } from "./schema";
+import { validateAhaWrapperResult, type AhaWrapperResult } from "./schema";
 import { legacySourceIdentity, sourceIdentityForFile, sourceReviewIndexKey } from "./source-identity";
 import { AHA_COMMANDS } from "./commands";
+import { runTieredSearch } from "./tier-pipeline";
+import { createVaultReadNote } from "./vault-read";
 import {
   appendSessionFeedback,
   createEmptySessionStore,
@@ -162,12 +164,14 @@ export default class AhaPlugin extends Plugin {
     new Notice(`Aha search started: ${sourceFile.path}`, 8000);
 
     try {
-      const payload = await runAhaWrapper(this.settings, {
-        reviewPath: this.expectedReviewPathFor(sourceFile, startedAt),
-        sourceAbsolutePath: this.absolutePathForFile(sourceFile),
-        sourcePath: sourceFile.path,
-        vaultRoot: this.vaultRoot(),
-      });
+      const payload = this.settings.useLegacyWrapper
+        ? await runAhaWrapper(this.settings, {
+            reviewPath: this.expectedReviewPathFor(sourceFile, startedAt),
+            sourceAbsolutePath: this.absolutePathForFile(sourceFile),
+            sourcePath: sourceFile.path,
+            vaultRoot: this.vaultRoot(),
+          })
+        : (await this.runTieredSearchForFile(sourceFile, startedAt)).result;
       const validation = validateAhaWrapperResult(payload);
       if (!validation.ok || !validation.result) {
         throw new Error(`Malformed Aha result: ${validation.errors.join("; ")}`);
@@ -210,6 +214,28 @@ export default class AhaPlugin extends Plugin {
       this.activeRun = undefined;
       this.updateStatusBar();
     }
+  }
+
+  // Capability Tier engine entry point (issue #58): readiness pre-check ->
+  // decideCapabilityTier -> Neighborhood/Recall/Full (with Full's Runtime
+  // Tier Fallback), internalized with no external Node subprocess. The qmd
+  // CLI probe and LLM profile resolution both re-run fresh on every call
+  // (see tier-pipeline.ts / qmd-request.ts), so an environment repair
+  // upgrades the tier on the next round without restarting Obsidian.
+  private async runTieredSearchForFile(sourceFile: TFile, startedAt: Date): Promise<{ result: AhaWrapperResult }> {
+    const sourceText = await this.app.vault.cachedRead(sourceFile);
+    const vaultRoot = this.vaultRoot();
+    const outcome = await runTieredSearch({
+      settings: this.settings,
+      sourceFile: { path: sourceFile.path, basename: sourceFile.basename },
+      sourceText,
+      sourceAbsolutePath: this.absolutePathForFile(sourceFile),
+      vaultRoot,
+      reviewPath: this.expectedReviewPathFor(sourceFile, startedAt),
+      metadataCache: this.app.metadataCache,
+      readNote: createVaultReadNote(this.app, vaultRoot),
+    });
+    return { result: outcome.result };
   }
 
   private async ensureReviewNote(sourceFile: TFile): Promise<TFile> {
