@@ -97,38 +97,42 @@ function parseArgs() {
   };
 }
 
-function main() {
+async function main() {
   const { inputPath, outputPath, options } = parseArgs();
   const { input, cases, collection, expectedInTopK, expectedNiceInTopK } = readBenchmarkCases(inputPath, {
     includeDraft: options.includeDraft,
   });
+  // Sequential (not Promise.all) to preserve the original one-at-a-time
+  // generation order now that resolveQmdQueryForCase is async (issue #57).
+  const queries = [];
+  for (const caseItem of cases) {
+    const generatedQuery = await resolveQmdQueryForCase(caseItem, options);
+    queries.push({
+      id: caseItem.id,
+      query: generatedQuery.query,
+      query_object: generatedQuery.query_object,
+      query_generated_by: generatedQuery.query_generated_by,
+      query_generation_fallback: generatedQuery.query_generation_fallback,
+      query_generation_error: generatedQuery.query_generation_error,
+      state: caseItem.state,
+      title: caseItem.title || caseItem.id,
+      why: caseItem.why || undefined,
+      type: caseItem.type || "real",
+      description: caseItem.title || caseItem.description || caseItem.id,
+      expected_files: caseItem.must_recall.map(qmdExpectedPath),
+      expected_in_top_k: Math.max(
+        Number(caseItem.expected_in_top_k ?? expectedInTopK),
+        Number(caseItem.nice_expected_in_top_k ?? expectedNiceInTopK),
+      ),
+      must_expected_in_top_k: Number(caseItem.expected_in_top_k ?? expectedInTopK),
+      nice_expected_in_top_k: Number(caseItem.nice_expected_in_top_k ?? expectedNiceInTopK),
+    });
+  }
   const fixture = {
     description: input.description || "Aha Memory Candidate Recall Benchmark",
     version: input.version ?? 1,
     collection,
-    queries: cases.map((caseItem) => {
-      const generatedQuery = resolveQmdQueryForCase(caseItem, options);
-      return {
-        id: caseItem.id,
-        query: generatedQuery.query,
-        query_object: generatedQuery.query_object,
-        query_generated_by: generatedQuery.query_generated_by,
-        query_generation_fallback: generatedQuery.query_generation_fallback,
-        query_generation_error: generatedQuery.query_generation_error,
-        state: caseItem.state,
-        title: caseItem.title || caseItem.id,
-        why: caseItem.why || undefined,
-        type: caseItem.type || "real",
-        description: caseItem.title || caseItem.description || caseItem.id,
-        expected_files: caseItem.must_recall.map(qmdExpectedPath),
-        expected_in_top_k: Math.max(
-          Number(caseItem.expected_in_top_k ?? expectedInTopK),
-          Number(caseItem.nice_expected_in_top_k ?? expectedNiceInTopK),
-        ),
-        must_expected_in_top_k: Number(caseItem.expected_in_top_k ?? expectedInTopK),
-        nice_expected_in_top_k: Number(caseItem.nice_expected_in_top_k ?? expectedNiceInTopK),
-      };
-    }),
+    queries,
   };
 
   mkdirSync(dirname(resolve(outputPath)), { recursive: true });
@@ -136,4 +140,7 @@ function main() {
   console.log(`Wrote ${fixture.queries.length} active benchmark queries to ${outputPath}`);
 }
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

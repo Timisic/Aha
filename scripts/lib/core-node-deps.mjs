@@ -37,6 +37,46 @@ export const coreVaultBoundaryDeps = {
   realpath: (absolutePath) => realpath(absolutePath),
 };
 
+// --- LLM transport deps (issue #57) ---
+//
+// Node binding for llm-transport.ts's llmJsonCall: a fetch-based HTTP POST
+// (Node 25 ships a global fetch; see esbuild.config.mjs's core "platform:
+// neutral" build, which never touches this file) plus a setTimeout-based
+// sleep. This intentionally does NOT shell out to curl the way the legacy
+// scripts/lib/openai-json-agent.mjs did — the entire point of the #55/#57
+// migration is moving off a subprocess-per-call transport. Known gap: unlike
+// openai-json-agent.mjs's curl path, this does not consult HTTPS_PROXY /
+// scripts/lib/https-proxy.mjs; Node's global fetch does not honor proxy env
+// vars without an extra dependency (undici's ProxyAgent, not currently a
+// project dependency). Bench/plugin traffic in this migration's environment
+// does not require a proxy; if one becomes necessary, add undici as a
+// dependency and wire a ProxyAgent dispatcher in here, not in core.
+export async function coreHttpJsonPost(url, headers, body, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+      signal: controller.signal,
+    });
+    const bodyText = await response.text();
+    return { status: response.status, bodyText };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function coreSleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+export const coreLlmTransportDeps = {
+  httpPost: coreHttpJsonPost,
+  sleep: coreSleep,
+};
+
 function firstLine(value) {
   return String(value ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
 }

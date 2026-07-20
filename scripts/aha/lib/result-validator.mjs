@@ -1,3 +1,19 @@
+// This module intentionally stays self-contained (no core-artifact.mjs
+// import): obsidian-plugin/src/schema.ts imports validateAhaResult from here
+// directly, and schema.ts is bundled into the real Obsidian plugin via
+// main.ts. core-artifact.mjs rebuilds the shared core artifact with a
+// synchronous spawnSync keyed off its own module location (import.meta.dirname)
+// -- that breaks when bundled (esbuild bundling collapses import.meta.url to
+// the bundle's own location) and must never end up inside the plugin bundle.
+//
+// The validation logic is still ported into
+// obsidian-plugin/src/core/result-validator.ts as the single source of truth
+// for the NEW core-based Relation Judge / orchestrator path (issue #57); this
+// file remains the pre-existing, independent implementation the frozen
+// legacy wrapper (scripts/aha/run-insight-search.mjs) and the plugin's own
+// schema.ts already depended on before this migration. A dedicated test
+// (core-result-validator.test.mjs) deep-equals this file's schema against the
+// core literal so the two cannot silently drift.
 import schema from "../aha-result.schema.json" with { type: "json" };
 
 export const AHA_RESULT_SCHEMA = schema;

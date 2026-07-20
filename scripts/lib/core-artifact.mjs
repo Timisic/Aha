@@ -10,9 +10,10 @@
 // core itself never touches process.env.
 
 import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { coreNodeDeps, coreVaultBoundaryDeps, createQmdCliRunner } from "./core-node-deps.mjs";
+import { coreLlmTransportDeps, coreNodeDeps, coreVaultBoundaryDeps, createQmdCliRunner } from "./core-node-deps.mjs";
 import { DEFAULT_VAULT_ROOT } from "./vault-paths.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
@@ -143,3 +144,61 @@ export const normalizeLineRange = core.normalizeLineRange;
 export const sliceLineRange = core.sliceLineRange;
 export const lineCount = core.lineCount;
 export const excerptNoteMarkdown = core.excerptNoteMarkdown;
+
+// --- result-validator (issue #57) ---
+
+export const AHA_RESULT_SCHEMA = core.AHA_RESULT_SCHEMA;
+export const RELATIONS = core.RELATIONS;
+export const validateAhaResult = core.validateAhaResult;
+
+// --- query-plan-llm (issue #57) ---
+
+export const QUERY_PLAN_PROMPT_VERSION = core.QUERY_PLAN_PROMPT_VERSION;
+export const QUERY_PLAN_SCHEMA_NAME = core.QUERY_PLAN_SCHEMA_NAME;
+export const QUERY_PLAN_SCHEMA = core.QUERY_PLAN_SCHEMA;
+export const buildQueryPlanPrompt = core.buildQueryPlanPrompt;
+export const queryPlanSourceSummary = core.queryPlanSourceSummary;
+
+export function generateQueryPlanViaLlm(args, sourceText, transportRequest) {
+  return core.generateQueryPlanViaLlm(args, sourceText, transportRequest, coreLlmTransportDeps);
+}
+
+// --- relation-judge (issue #57) ---
+
+export const RELATION_JUDGE_PROMPT_VERSION = core.RELATION_JUDGE_PROMPT_VERSION;
+export const RELATION_JUDGE_SCHEMA_NAME = core.RELATION_JUDGE_SCHEMA_NAME;
+export const DEFAULT_RELATION_JUDGE_CHUNK_SIZE = core.DEFAULT_RELATION_JUDGE_CHUNK_SIZE;
+export const DEFAULT_RELATION_JUDGE_CONCURRENCY = core.DEFAULT_RELATION_JUDGE_CONCURRENCY;
+export const RELATION_STRENGTH = core.RELATION_STRENGTH;
+export const buildRelationJudgePrompt = core.buildRelationJudgePrompt;
+export const buildRelationJudgeRepairPrompt = core.buildRelationJudgeRepairPrompt;
+export const normalizeStructuredResult = core.normalizeStructuredResult;
+export const enforceQuoteBackedRelation = core.enforceQuoteBackedRelation;
+export const hasQuoteEvidence = core.hasQuoteEvidence;
+export const mergeJudgedCandidates = core.mergeJudgedCandidates;
+export const orderJudgedCandidates = core.orderJudgedCandidates;
+
+export function composeFinalSlate(judgedOrdered, retrievalCandidates, options = {}) {
+  const reservedPoolSlots = options.reservedPoolSlots
+    ?? Number(process.env.AHA_SLATE_POOL_RESERVE ?? core.DEFAULT_SLATE_POOL_RESERVE);
+  return core.composeFinalSlate(judgedOrdered, retrievalCandidates, { ...options, reservedPoolSlots });
+}
+
+export function judgeRelationsRawViaLlm(input, transportRequest) {
+  return core.judgeRelationsRawViaLlm(input, transportRequest, coreLlmTransportDeps);
+}
+
+export function judgeCandidateRelationsViaLlm(input, transportRequest) {
+  return core.judgeCandidateRelationsViaLlm(input, transportRequest, coreLlmTransportDeps);
+}
+
+// --- orchestrator (issue #57) ---
+
+export function runFullPipeline(args, llm, partialDeps) {
+  return core.runFullPipeline(args, llm, {
+    ...coreLlmTransportDeps,
+    ...coreVaultBoundaryDeps,
+    readNote: (absolutePath) => readFile(absolutePath, "utf-8"),
+    ...partialDeps,
+  });
+}

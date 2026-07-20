@@ -1106,7 +1106,7 @@ async function main() {
 
   for (const caseItem of cases) {
     const startedAt = Date.now();
-    const generatedQuery = resolveQmdQueriesForCase(caseItem, options);
+    const generatedQuery = await resolveQmdQueriesForCase(caseItem, options);
     const querySpecs = withDeterministicRawQuery(selectQuerySpecs(generatedQuery.queries, options), caseItem);
     const queryText = querySpecs.map((query) => query.query || query.text || "").join("\n\n---\n\n");
     const qmdRuns = runQmdQueries(querySpecs, collection, options);

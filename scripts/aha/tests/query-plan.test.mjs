@@ -80,8 +80,8 @@ test("shared query-plan module records fallback provenance", async () => {
   assert.match(plan.query_generation_error, /primary broke/);
 });
 
-test("benchmark rules path uses the same query-plan bounds", () => {
-  const plan = resolveQmdQueriesForCase({
+test("benchmark rules path uses the same query-plan bounds", async () => {
+  const plan = await resolveQmdQueriesForCase({
     id: "rules-case",
     _resolved_insight_input: "Source note:\n反馈闭环和行动修正。\n\nFresh thought:\n要找旧判断里的反例。",
   }, {

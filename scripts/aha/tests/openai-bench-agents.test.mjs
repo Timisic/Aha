@@ -38,7 +38,7 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
       relationJudgeAgentBin: "/definitely/missing/codex",
     };
 
-    const queryPlan = resolveQmdQueriesForCase(caseItem, {
+    const queryPlan = await resolveQmdQueriesForCase(caseItem, {
       ...commonOptions,
       queryGenerator: "agent",
       queryAgentProvider: "openai",

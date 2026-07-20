@@ -15,27 +15,45 @@ import {
   DEFAULT_OPENAI_API_KEY_ENV,
   DEFAULT_OPENAI_BASE_URL,
   DEFAULT_OPENAI_MODEL,
-  runOpenAiJsonAsync,
-  runOpenAiJsonSync,
 } from "../lib/openai-json-agent.mjs";
+// The LLM round-trip (prompt construction, the llmJsonCall call, the
+// validation-repair retry, quote-backed relation enforcement, merge, and
+// final-slate composition/ordering) now lives in
+// obsidian-plugin/src/core/relation-judge.ts (ADR 0005, issue #57) and is
+// consumed here through the compiled core artifact — plugin and bench judge
+// relations identically. Everything that stays local below is bench/Node
+// infrastructure: file-based caching, chunking/concurrency across candidate
+// batches, CLI option parsing, and the legacy codex-CLI provider path (kept
+// as a legacy-only fallback; see the module comment above
+// generateRelationJudgeWithCodexCliLegacy for why it was not carried into core).
+import {
+  AHA_RESULT_SCHEMA,
+  RELATION_JUDGE_PROMPT_VERSION,
+  buildRelationJudgePrompt,
+  buildRelationJudgeRepairPrompt,
+  composeFinalSlate,
+  enforceQuoteBackedRelation,
+  hasQuoteEvidence,
+  judgeRelationsRawViaLlm,
+  mergeJudgedCandidates,
+  normalizeStructuredResult,
+  orderJudgedCandidates,
+} from "../lib/core-artifact.mjs";
 
-export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v4";
 export const RELATION_JUDGE_SCHEMA_NAME = "aha_relation_judge";
 export const DEFAULT_RELATION_JUDGE_CHUNK_SIZE = 20;
 export const DEFAULT_RELATION_JUDGE_CONCURRENCY = 3;
 
-const RELATION_STRENGTH = {
-  supports: 3,
-  challenges: 3,
-  bounds: 2.5,
-  resembles: 2.5,
-  weak: 1,
+export {
+  RELATION_JUDGE_PROMPT_VERSION,
+  buildRelationJudgePrompt,
+  composeFinalSlate,
+  enforceQuoteBackedRelation,
+  hasQuoteEvidence,
+  mergeJudgedCandidates,
+  normalizeStructuredResult,
+  orderJudgedCandidates,
 };
-
-const RESULT_SCHEMA = JSON.parse(readFileSync(
-  new URL("./aha-result.schema.json", import.meta.url),
-  "utf-8",
-));
 
 export function defaultRelationJudgeOptions(overrides = {}) {
   const cleanOverrides = Object.fromEntries(
@@ -59,6 +77,12 @@ export function defaultRelationJudgeOptions(overrides = {}) {
   };
 }
 
+// Generic-adapter Relation Judge orchestration (bench/legacy entry point used
+// directly by scripts/aha/run-insight-search.mjs, the frozen legacy wrapper,
+// and covered by scripts/aha/tests/relation-judge.test.mjs). The adapter
+// callback stays provider-agnostic here (it can wrap OpenAI, DeepSeek, or the
+// legacy codex CLI); prompt construction, validation, quote-enforcement, and
+// merging all come from core.
 export async function judgeCandidateRelations({
   sourcePath,
   sourceText,
@@ -86,7 +110,7 @@ export async function judgeCandidateRelations({
   try {
     const output = await adapter({
       prompt,
-      schema: RESULT_SCHEMA,
+      schema: AHA_RESULT_SCHEMA,
       schemaName: RELATION_JUDGE_SCHEMA_NAME,
       outputFileName: "relation-judge.json",
       timeoutMs: 120_000,
@@ -99,7 +123,7 @@ export async function judgeCandidateRelations({
       repaired = true;
       const repairedOutput = await adapter({
         prompt: buildRelationJudgeRepairPrompt(prompt, validationError.message),
-        schema: RESULT_SCHEMA,
+        schema: AHA_RESULT_SCHEMA,
         schemaName: RELATION_JUDGE_SCHEMA_NAME,
         outputFileName: "relation-judge.json",
         timeoutMs: 120_000,
@@ -138,137 +162,6 @@ function validatedRelationJudgeOutput(output) {
   const validation = validateAhaResult(parsed);
   if (!validation.ok) throw new Error(validation.errors.join("; "));
   return parsed;
-}
-
-function buildRelationJudgeRepairPrompt(originalPrompt, validationError) {
-  return [
-    originalPrompt,
-    "",
-    "Your previous JSON failed validation:",
-    validationError,
-    "Return the complete JSON object again. Repair every listed field; do not omit candidates.",
-    "Each why must be a concrete, sufficiently detailed bridge between the quoted old-note evidence and the current source insight.",
-  ].join("\n");
-}
-
-export function buildRelationJudgePrompt({ sourcePath, sourceText, candidateInputs }) {
-  return [
-    "You are the bounded Aha Relation Judge.",
-    "Do not read files, run tools, or use external knowledge. Judge only from the source summary and candidate excerpts below.",
-    "Return JSON only. It must match the output schema.",
-    "",
-    "Relation rules:",
-    "- Use supports, challenges, resembles, or bounds only when the candidate excerpt contains a concrete quote that justifies the label.",
-    "- A strong label means the quoted evidence acts on the current insight's judgment: supports it, challenges it, bounds it, or maps its structure. Topical closeness with no such action is weak.",
-    "- Counter-material is first-class: when the source insight is looking for its own patterns, lessons, or things to improve, old notes recording failures, conflicts, or opposite experiences act on that judgment directly — label them challenges or bounds, not weak.",
-    "- When ranking candidates, prefer notes that deposit durable judgments, lessons, patterns, or boundaries over notes that merely log events, market moves, or daily happenings on the same topic.",
-    "- Use weak when the excerpt is only topically similar, too thin, or lacks quote evidence.",
-    "- hit must be a short quote or exact snippet from the candidate excerpt.",
-    "- why must explain why this old note matters for the current source insight, not just restate retrieval score.",
-    "- why and summary should be written primarily in Chinese when the source or candidate excerpt is Chinese. Keep JSON keys and relation labels in English.",
-    "- Write why as a compact, note-like bridge: lead with the concrete idea or tension, not with a generic phrase about the candidate.",
-    "- Avoid formulaic openings such as “这条旧笔记…”, “这条笔记…”, “这条候选…”, or “直接支撑当前 source…”. Do not reuse the same sentence frame across candidates.",
-    "- Preserve the candidate notePath values exactly.",
-    "",
-    `sourcePath: ${sourcePath}`,
-    "sourceSummary:",
-    sourceSummaryForRelationJudge(sourcePath, sourceText).slice(0, 3500),
-    "",
-    "candidates:",
-    JSON.stringify(candidateInputs, null, 2),
-    "",
-    "Return this JSON shape:",
-    JSON.stringify({
-      ok: true,
-      sourcePath,
-      generatedAt: null,
-      summary: "简短说明这一轮关系判断的结果",
-      warnings: [],
-      error: null,
-      candidates: [
-        {
-          notePath: "same candidate notePath",
-          noteTitle: "candidate title",
-          relation: "weak",
-          hit: "short quote/snippet from excerpt",
-          why: "用自然中文点出旧判断和当前 insight 的具体连接，或说明为什么只能算 weak。",
-          quotes: ["optional exact quote from excerpt"],
-          selected: true,
-        },
-      ],
-    }, null, 2),
-  ].join("\n");
-}
-
-export function mergeJudgedCandidates(retrievalCandidates, judgedCandidates, candidateInputs, options = {}) {
-  const preserveOrder = options.preserveOrder !== false;
-  const excerpts = new Map(candidateInputs.map((candidate) => [
-    candidate.notePath,
-    `${candidate.excerpt}\n${candidate.retrievalHit ?? ""}`,
-  ]));
-  const retrievalByPath = new Map((retrievalCandidates ?? []).map((candidate) => [candidate.notePath, candidate]));
-  const judgedByPath = new Map();
-  for (const candidate of judgedCandidates ?? []) {
-    if (!candidate?.notePath) continue;
-    judgedByPath.set(candidate.notePath, candidate);
-  }
-
-  const mergeOne = (retrievalCandidate) => {
-    const judged = judgedByPath.get(retrievalCandidate.notePath);
-    if (!judged) return retrievalCandidate;
-    const merged = {
-      ...retrievalCandidate,
-      ...judged,
-      notePath: retrievalCandidate.notePath,
-      noteTitle: judged.noteTitle || retrievalCandidate.noteTitle || retrievalCandidate.title,
-      selected: judged.selected ?? true,
-      quotes: Array.isArray(judged.quotes) ? judged.quotes : [],
-    };
-    return enforceQuoteBackedRelation(merged, excerpts.get(retrievalCandidate.notePath) || "");
-  };
-
-  if (preserveOrder) return (retrievalCandidates ?? []).map(mergeOne);
-
-  const ordered = [];
-  const seen = new Set();
-  for (const judged of judgedCandidates ?? []) {
-    const retrievalCandidate = retrievalByPath.get(judged?.notePath);
-    if (!retrievalCandidate || seen.has(retrievalCandidate.notePath)) continue;
-    ordered.push(mergeOne(retrievalCandidate));
-    seen.add(retrievalCandidate.notePath);
-  }
-  for (const retrievalCandidate of retrievalCandidates ?? []) {
-    if (seen.has(retrievalCandidate.notePath)) continue;
-    ordered.push(mergeOne(retrievalCandidate));
-  }
-  return ordered;
-}
-
-export function enforceQuoteBackedRelation(candidate, excerpt) {
-  if (candidate.relation === "weak") return candidate;
-  if (hasQuoteEvidence(candidate, excerpt)) return candidate;
-  return {
-    ...candidate,
-    relation: "weak",
-    why: `${candidate.why} Downgraded to weak because the bounded excerpt did not contain the returned quote evidence.`,
-    quotes: [],
-  };
-}
-
-export function hasQuoteEvidence(candidate, excerpt) {
-  const haystack = normalizeEvidenceText(excerpt);
-  const haystackFingerprint = evidenceFingerprint(excerpt);
-  const needles = [
-    candidate.hit,
-    ...(Array.isArray(candidate.quotes) ? candidate.quotes : []),
-  ]
-    .map((value) => normalizeEvidenceText(value).replace(/^["'“”‘’]+|["'“”‘’]+$/g, ""))
-    .filter((value) => value.length >= 8);
-  return needles.some((needle) => {
-    if (haystack.includes(needle)) return true;
-    const fingerprint = evidenceFingerprint(needle);
-    return fingerprint.length >= 8 && haystackFingerprint.includes(fingerprint);
-  });
 }
 
 export async function relationJudgeCandidatesForCase(caseItem, candidates, options = {}) {
@@ -370,70 +263,10 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
 // independent signal. Reserve a couple of slots per block of ten for the
 // best remaining retrieval-ranked candidates so a judge false-weak on a
 // pool-top note cannot exile it from the review budget.
-export function composeFinalSlate(judgedOrdered, retrievalCandidates, options = {}) {
-  const reserve = Math.max(0, options.reservedPoolSlots ?? Number(process.env.AHA_SLATE_POOL_RESERVE ?? 2));
-  const blockSize = 10;
-  if (reserve === 0) return judgedOrdered;
-  const poolOrder = (retrievalCandidates ?? []).map((candidate) => candidate.notePath).filter(Boolean);
-  const judgedByPath = new Map(judgedOrdered.map((candidate) => [candidate.notePath, candidate]));
-  const placed = new Set();
-  const slate = [];
-  let judgedIdx = 0;
-  let poolIdx = 0;
-  const nextJudged = () => {
-    while (judgedIdx < judgedOrdered.length) {
-      const candidate = judgedOrdered[judgedIdx];
-      judgedIdx += 1;
-      if (!placed.has(candidate.notePath)) return candidate;
-    }
-    return null;
-  };
-  const nextPool = () => {
-    while (poolIdx < poolOrder.length) {
-      const notePath = poolOrder[poolIdx];
-      poolIdx += 1;
-      if (!placed.has(notePath) && judgedByPath.has(notePath)) return judgedByPath.get(notePath);
-    }
-    return null;
-  };
-  while (slate.length < judgedOrdered.length) {
-    const blockStart = slate.length;
-    for (let i = 0; i < blockSize - reserve && slate.length < judgedOrdered.length; i += 1) {
-      const candidate = nextJudged();
-      if (!candidate) break;
-      placed.add(candidate.notePath);
-      slate.push(candidate);
-    }
-    for (let i = 0; i < reserve && slate.length < judgedOrdered.length; i += 1) {
-      const candidate = nextPool() ?? nextJudged();
-      if (!candidate) break;
-      placed.add(candidate.notePath);
-      slate.push(candidate);
-    }
-    if (slate.length === blockStart) break;
-  }
-  return slate;
-}
-
-export function orderJudgedCandidates(judgedCandidates, retrievalCandidates) {
-  const poolRank = new Map((retrievalCandidates ?? []).map((candidate, index) => [candidate.notePath, index]));
-  return (judgedCandidates ?? [])
-    .filter((candidate) => candidate?.notePath)
-    .map((candidate, judgedIndex) => ({ candidate, judgedIndex }))
-    .sort((left, right) => {
-      const strengthDiff = relationStrength(right.candidate) - relationStrength(left.candidate);
-      if (strengthDiff !== 0) return strengthDiff;
-      const leftRank = poolRank.get(left.candidate.notePath) ?? Number.MAX_SAFE_INTEGER;
-      const rightRank = poolRank.get(right.candidate.notePath) ?? Number.MAX_SAFE_INTEGER;
-      if (leftRank !== rightRank) return leftRank - rightRank;
-      return left.judgedIndex - right.judgedIndex;
-    })
-    .map((entry) => entry.candidate);
-}
-
-function relationStrength(candidate) {
-  return RELATION_STRENGTH[candidate?.relation] ?? RELATION_STRENGTH.weak;
-}
+//
+// composeFinalSlate itself now lives in core (imported above); this local
+// re-export keeps the AHA_SLATE_POOL_RESERVE env override working exactly as
+// before (core cannot read process.env — see core-artifact.mjs's binding).
 
 function relationJudgeInputsForCase(caseItem, candidates) {
   return candidates.map((candidate) => ({
@@ -474,7 +307,7 @@ function relationJudgeResult({ candidates, generatedBy, fallback, error }) {
 }
 
 function relationJudgeConcurrency(options) {
-  // Concurrency only helps the async OpenAI transport; the Codex CLI path
+  // Concurrency only helps the async LLM transport; the legacy Codex CLI path
   // shells out synchronously, so keep it at one lane.
   if (relationJudgeProvider(options) !== "openai") return 1;
   return Math.max(1, Number(process.env.AHA_RELATION_JUDGE_CONCURRENCY || DEFAULT_RELATION_JUDGE_CONCURRENCY));
@@ -508,43 +341,45 @@ export async function mapWithBoundedConcurrency(items, limit, worker) {
   return results;
 }
 
+// Dispatches to the core HTTP-only LLM path for "openai" (issue #57), or the
+// legacy codex CLI subprocess adapter for "codex"/"codex-cli" (kept as a
+// legacy-only path). Throws on any failure; relationJudgeCandidatesForCase
+// decides whether to fall back (relationJudgeAgentFallback).
 async function generateRelationJudgeWithAgentAsync(caseItem, candidateInputs, options) {
   if (relationJudgeProvider(options) === "openai") {
-    const prompt = buildRelationJudgePrompt({
+    const apiKeyEnv = String(options.llmApiKeyEnv || DEFAULT_OPENAI_API_KEY_ENV).trim() || DEFAULT_OPENAI_API_KEY_ENV;
+    const apiKey = process.env[apiKeyEnv];
+    if (!apiKey) throw new Error(`${apiKeyEnv} is not set.`);
+    const raw = await judgeRelationsRawViaLlm({
       sourcePath: caseItem.source_note_path || caseItem.id,
       sourceText: caseItem._resolved_insight_input,
       candidateInputs,
-    });
-    return parseRelationJudgeOutput(await runOpenAiJsonAsync({
+    }, {
       baseUrl: options.llmBaseUrl,
+      apiKey,
       model: relationJudgeModel(options),
-      apiKeyEnv: options.llmApiKeyEnv,
-      prompt,
-      schema: RESULT_SCHEMA,
-      schemaName: RELATION_JUDGE_SCHEMA_NAME,
+      protocol: "responses",
       timeoutMs: options.relationJudgeAgentTimeoutMs,
-    }), caseItem.id);
+    });
+    if (!raw.ok) throw new Error(raw.error);
+    return raw.candidates;
   }
-  return generateRelationJudgeWithAgent(caseItem, candidateInputs, options);
+  return generateRelationJudgeWithCodexCliLegacy(caseItem, candidateInputs, options);
 }
 
-function generateRelationJudgeWithAgent(caseItem, candidateInputs, options) {
+// Legacy codex CLI provider path (spawnSync codex exec). Issue #57 states the
+// codex CLI path is "not carried over" into the new core-based orchestration
+// (core is HTTP-only via llmJsonCall); this function is that pre-existing
+// behavior, kept reachable rather than deleted so a bench config that still
+// sets AHA_BENCH_RELATION_JUDGE_AGENT_PROVIDER=codex does not silently break.
+// It is legacy/deprecated: new work should use the "openai" provider (core
+// path).
+function generateRelationJudgeWithCodexCliLegacy(caseItem, candidateInputs, options) {
   const prompt = buildRelationJudgePrompt({
     sourcePath: caseItem.source_note_path || caseItem.id,
     sourceText: caseItem._resolved_insight_input,
     candidateInputs,
   });
-  if (relationJudgeProvider(options) === "openai") {
-    return parseRelationJudgeOutput(runOpenAiJsonSync({
-      baseUrl: options.llmBaseUrl,
-      model: relationJudgeModel(options),
-      apiKeyEnv: options.llmApiKeyEnv,
-      prompt,
-      schema: RESULT_SCHEMA,
-      schemaName: RELATION_JUDGE_SCHEMA_NAME,
-      timeoutMs: options.relationJudgeAgentTimeoutMs,
-    }), caseItem.id);
-  }
 
   if (!["codex", "codex-cli"].includes(relationJudgeProvider(options))) {
     throw new Error(`${caseItem.id}: unknown relation judge provider: ${options.relationJudgeAgentProvider}`);
@@ -553,7 +388,7 @@ function generateRelationJudgeWithAgent(caseItem, candidateInputs, options) {
   const tmpRoot = mkdtempSync(join(tmpdir(), "aha-relation-judge-"));
   const schemaPath = join(tmpRoot, "schema.json");
   const outputPath = join(tmpRoot, "relation-judge.json");
-  writeFileSync(schemaPath, `${JSON.stringify(RESULT_SCHEMA, null, 2)}\n`);
+  writeFileSync(schemaPath, `${JSON.stringify(AHA_RESULT_SCHEMA, null, 2)}\n`);
 
   const args = [
     "--ask-for-approval",
@@ -605,6 +440,13 @@ function parseRelationJudgeOutput(output, caseId) {
   return parsed.candidates ?? [];
 }
 
+// Only used by the generic-adapter path (judgeCandidateRelations, which
+// accepts arbitrary adapters including the legacy codex CLI text output) and
+// the legacy codex CLI subprocess path above. The core HTTP-only path
+// (judgeRelationsRawViaLlm / judgeCandidateRelationsViaLlm, via llmJsonCall)
+// does its own JSON parsing/extraction internally, so this is not a second
+// implementation of that parsing — it is the one remaining parser for
+// non-HTTP adapter output.
 function parseJsonOutput(output) {
   if (output && typeof output === "object" && !Array.isArray(output)) return output;
   const text = String(output ?? "").trim();
@@ -616,46 +458,6 @@ function parseJsonOutput(output) {
     if (!match) throw firstError;
     return JSON.parse(match[0]);
   }
-}
-
-export function normalizeStructuredResult(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const normalized = { ...value };
-  for (const key of ["sourcePath", "generatedAt", "summary", "warnings", "error", "candidates"]) {
-    if (normalized[key] === null) delete normalized[key];
-  }
-  if (Array.isArray(normalized.candidates)) {
-    normalized.candidates = normalized.candidates.map((candidate) => {
-      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
-      const next = { ...candidate };
-      for (const key of ["noteTitle", "quotes", "selected"]) {
-        if (next[key] === null) delete next[key];
-      }
-      return next;
-    });
-  }
-  if (normalized.error && typeof normalized.error === "object" && !Array.isArray(normalized.error)) {
-    normalized.error = { ...normalized.error };
-    for (const key of ["tool", "details"]) {
-      if (normalized.error[key] === null) delete normalized.error[key];
-    }
-  }
-  return normalized;
-}
-
-function sourceSummaryForRelationJudge(sourcePath, sourceText) {
-  return [
-    `sourcePath: ${sourcePath}`,
-    compactLine(sourceText, 3500),
-  ].join("\n");
-}
-
-function normalizeEvidenceText(value) {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
-}
-
-function evidenceFingerprint(value) {
-  return String(value ?? "").replace(/[\s\p{P}\p{S}]+/gu, "");
 }
 
 function relationJudgeCacheKey(caseItem, candidates, options) {
