@@ -6,7 +6,7 @@ import { normalizeLineRange, parseLineRange, sliceLineRange } from "./note-excer
 import {
   buildVaultPathResolver,
   resolveVaultPath,
-} from "../aha/lib/note-identity.mjs";
+} from "./core-artifact.mjs";
 
 export {
   compactLine,

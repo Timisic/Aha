@@ -40,7 +40,7 @@ import {
 import {
   buildVaultPathResolver as sharedBuildVaultPathResolver,
   resolveVaultPath as sharedResolveVaultPath,
-} from "../aha/lib/note-identity.mjs";
+} from "../lib/core-artifact.mjs";
 import { benchVaultRoot } from "../lib/vault-paths.mjs";
 import {
   DEFAULT_OPENAI_API_KEY_ENV,
