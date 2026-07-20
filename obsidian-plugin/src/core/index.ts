@@ -5,3 +5,8 @@
 
 export * from "./note-identity";
 export * from "./llm-transport";
+export * from "./candidates";
+export * from "./query-plan-deterministic";
+export * from "./qmd";
+export * from "./pool";
+export * from "./note-excerpt";

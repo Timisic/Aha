@@ -1,44 +1,28 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { sliceLineRange } from "./core-artifact.mjs";
 
-export function parseLineRange(value) {
-  if (Array.isArray(value)) {
-    return normalizeLineRange(value[0], value[1]);
-  }
-  const raw = String(value ?? "").trim();
-  if (!raw) return { start: undefined, end: undefined };
-  const match = raw.match(/^(\d+)(?::|-|,)(\d+)$/);
-  if (!match) {
-    throw new Error(`Line range must be START:END, got ${JSON.stringify(raw)}.`);
-  }
-  return normalizeLineRange(Number(match[1]), Number(match[2]));
-}
-
-export function normalizeLineRange(startValue, endValue) {
-  const start = Number(startValue);
-  const end = Number(endValue);
-  if (!Number.isInteger(start) || start < 1) {
-    throw new Error(`Line range start must be a positive integer, got ${JSON.stringify(startValue)}.`);
-  }
-  if (!Number.isInteger(end) || end < start) {
-    throw new Error(`Line range end must be an integer >= start, got ${JSON.stringify(endValue)}.`);
-  }
-  return { start, end };
-}
-
-export function sliceLineRange(content, range = {}) {
-  const hasStart = range.start !== undefined && range.start !== null && range.start !== "";
-  const hasEnd = range.end !== undefined && range.end !== null && range.end !== "";
-  if (!hasStart && !hasEnd) return content;
-  const { start, end } = normalizeLineRange(hasStart ? range.start : 1, hasEnd ? range.end : lineCount(content));
-  const lines = content.split(/\r?\n/);
-  return lines.slice(start - 1, Math.min(lines.length, end)).join("\n");
-}
-
-export function lineCount(content) {
-  if (!content) return 0;
-  return content.split(/\r?\n/).length;
-}
+// parseLineRange / normalizeLineRange / sliceLineRange / lineCount /
+// excerptNoteMarkdown are pure and now live in
+// obsidian-plugin/src/core/note-excerpt.ts (ADR 0005, issue #56); re-exported
+// here so every existing consumer (scripts/lib/bench-cases.mjs,
+// scripts/bench/run-pipeline-bench.mjs, the test suite) keeps working
+// unchanged.
+//
+// resolveNotePath/readNoteExcerpt stay local: they do real file-system search
+// across casesDir/vaultRoot candidates and a real read, and are consumed only
+// by the standalone bench debug CLI scripts/bench/extract-note-excerpt.mjs,
+// not by the deterministic retrieval path this issue re-points. Porting them
+// to core would mean inventing an injected-vault-read seam with no real
+// caller yet, so they were left as-is; they call the (now core-backed)
+// sliceLineRange synchronously, same as before.
+export {
+  excerptNoteMarkdown,
+  lineCount,
+  normalizeLineRange,
+  parseLineRange,
+  sliceLineRange,
+} from "./core-artifact.mjs";
 
 export function resolveNotePath(notePath, options = {}) {
   const rawPath = expandHome(String(notePath ?? "").trim());
@@ -73,18 +57,6 @@ export function readNoteExcerpt(notePath, range = {}, options = {}) {
     end: range.end,
     excerpt: sliceLineRange(content, range),
   };
-}
-
-export function excerptNoteMarkdown(markdown) {
-  return String(markdown ?? "")
-    .replace(/^qmd:\/\/[^\n]+\n(?:Folder Context:[^\n]*\n)?---\n?/m, "")
-    .replace(/^---[\s\S]*?---\s*/m, "")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^\d+:\s?/, "").trimEnd())
-    .filter((line) => line.trim() && !/^(create|cssclasses|tags|categories|emotion):\s*/.test(line.trim()))
-    .slice(0, 60)
-    .join("\n")
-    .slice(0, 1800);
 }
 
 export function expandHome(value) {
