@@ -142,6 +142,7 @@ interface QueryPlanTraceMetadata {
   fallback: boolean;
   error: string | null;
   promptVersion: string;
+  queries?: Array<{ kind: string; command: string; text: string }>;
 }
 
 /** Writes a plugin-origin Pipeline Trace only when settings.traceDirectory is a non-empty string; otherwise does nothing (no filesystem access at all). */
@@ -235,6 +236,7 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
     fallback: fullResult.queryPlanFallback,
     error: null,
     promptVersion: fullResult.queryPlanPromptVersion,
+    queries: fullResult.queryPlanQueries.map((q) => ({ kind: q.kind, command: q.command, text: q.text })),
   });
   return outcome;
 }

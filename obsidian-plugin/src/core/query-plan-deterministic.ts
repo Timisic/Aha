@@ -122,10 +122,20 @@ export function normalizeQueryPlan(value: unknown, args: DeterministicPlanArgs =
     queries.push(query);
     if (queries.length >= 5) break;
   }
-  if (queries.length < 3) {
-    throw new Error(`${args.displayName || "agent"} query plan returned fewer than 3 usable queries.`);
+  if (queries.length < 1) {
+    throw new Error(`${args.displayName || "agent"} query plan returned no usable queries.`);
   }
   const modelQueryCount = queries.length;
+  if (queries.length < 3) {
+    const rulesPlan = queryPlanFromFallbackRules({ ...args, _resolved_insight_input: sourceText || args._resolved_insight_input });
+    for (const ruleQuery of rulesPlan.queries) {
+      const key = `${ruleQuery.command}\0${ruleQuery.query}`;
+      if (!seen.has(key) && queries.length < 5) {
+        seen.add(key);
+        queries.push(ruleQuery);
+      }
+    }
+  }
   queries.push(deterministicSourceFallbackQuery(args, sourceText));
   return { queries, model_query_count: modelQueryCount };
 }

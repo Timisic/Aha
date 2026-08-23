@@ -21,10 +21,10 @@ import {
   resolveVaultContainedPath,
 } from "./candidates";
 import { type LlmProtocol, type LlmTransportDeps } from "./llm-transport";
-import { excerptNoteMarkdown } from "./note-excerpt";
+import { excerptNoteMarkdown, isSubstantiveExcerpt } from "./note-excerpt";
 import { mergeAndRankQueryResults, pipelineCandidate } from "./pool";
 import { type QmdDeps, runQmdPlanQueries } from "./qmd";
-import { type DeterministicPlanArgs, compactLine } from "./query-plan-deterministic";
+import { type DeterministicPlanArgs, type PlanQuery, compactLine } from "./query-plan-deterministic";
 import { generateQueryPlanViaLlm, type QueryPlanPromptOverride } from "./query-plan-llm";
 import {
   type RelationJudgeCandidate,
@@ -86,6 +86,7 @@ export interface AhaResultSuccess {
   queryPlanGeneratedBy: "llm" | "rules";
   queryPlanFallback: boolean;
   queryPlanPromptVersion: string;
+  queryPlanQueries: PlanQuery[];
 }
 
 export interface AhaResultFailure {
@@ -99,6 +100,7 @@ export interface AhaResultFailure {
   queryPlanGeneratedBy: "llm" | "rules";
   queryPlanFallback: boolean;
   queryPlanPromptVersion: string;
+  queryPlanQueries: PlanQuery[];
 }
 
 export type AhaResult = AhaResultSuccess | AhaResultFailure;
@@ -170,11 +172,13 @@ export async function runFullPipeline(
       queryPlanGeneratedBy: planOutcome.generatedBy,
       queryPlanFallback: planOutcome.fallback,
       queryPlanPromptVersion: planOutcome.promptVersion,
+      queryPlanQueries: planOutcome.queries,
     };
   }
 
   const candidateInputs: RelationJudgeCandidateInput[] = [];
   const excerptWarnings: string[] = [];
+  const substantiveCandidates: RelationJudgeCandidate[] = [];
   for (const candidate of candidates) {
     const excerpt = await readCandidateExcerpt(args, candidate, deps);
     if (!excerpt) {
@@ -183,12 +187,19 @@ export async function runFullPipeline(
       );
       continue;
     }
+    if (!isSubstantiveExcerpt(excerpt)) {
+      excerptWarnings.push(
+        `Skipped ${candidate.notePath}: excerpt has no substantive text (template or empty note).`,
+      );
+      continue;
+    }
+    substantiveCandidates.push(candidate);
     candidateInputs.push({
       notePath: candidate.notePath,
       noteTitle: candidate.noteTitle as string | undefined,
       retrievalHit: candidate.hit as string | undefined,
       retrievalWhy: candidate.why as string | undefined,
-      excerpt: compactLine(excerpt, 1400),
+      excerpt: compactLine(excerpt, 2800),
     });
   }
 
@@ -196,7 +207,7 @@ export async function runFullPipeline(
     {
       sourcePath: args.sourcePath,
       sourceText: args.sourceText,
-      candidates,
+      candidates: substantiveCandidates,
       candidateInputs,
       generatedBy: "llm",
     },
@@ -204,11 +215,12 @@ export async function runFullPipeline(
     deps,
   );
 
-  const finalCandidates = (relationJudge.candidates ?? candidates).map(stripInternalFields);
+  const finalCandidates = (relationJudge.candidates ?? substantiveCandidates).map(stripInternalFields);
   const plannerSummary = `LLM generated ${planOutcome.model_query_count} QMD query rewrites${
     planOutcome.fallback ? " (fallback rules used)" : ""
   }`;
-  const summary = `${plannerSummary}; mixed retrieval returned ${candidates.length} reranked candidates; Relation Judge reviewed ${relationJudge.reviewedCount} candidate excerpts.`;
+  const skippedCount = candidates.length - substantiveCandidates.length;
+  const summary = `${plannerSummary}; mixed retrieval returned ${candidates.length} reranked candidates${skippedCount > 0 ? ` (${skippedCount} empty/template skipped)` : ""}; Relation Judge reviewed ${relationJudge.reviewedCount} candidate excerpts.`;
   const warnings = [
     planWarning,
     relationJudge.ok
@@ -236,6 +248,7 @@ export async function runFullPipeline(
       queryPlanGeneratedBy: planOutcome.generatedBy,
       queryPlanFallback: planOutcome.fallback,
       queryPlanPromptVersion: planOutcome.promptVersion,
+      queryPlanQueries: planOutcome.queries,
     };
   }
 
@@ -250,6 +263,7 @@ export async function runFullPipeline(
     queryPlanGeneratedBy: planOutcome.generatedBy,
     queryPlanFallback: planOutcome.fallback,
     queryPlanPromptVersion: planOutcome.promptVersion,
+    queryPlanQueries: planOutcome.queries,
   };
 }
 

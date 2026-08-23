@@ -54,11 +54,18 @@ function boundedSnippet(value: string, maxChars = 300): string {
   return compact.length <= maxChars ? compact : `${compact.slice(0, maxChars).trimEnd()}...`;
 }
 
+export interface PluginTraceQuery {
+  kind: string;
+  command: string;
+  text: string;
+}
+
 export interface PluginTraceQueryGeneration {
   generated_by: "llm" | "rules" | null;
   fallback: boolean | null;
   error: string | null;
   prompt_version: string | null;
+  queries: PluginTraceQuery[];
 }
 
 export interface PluginTraceFinalCandidate {
@@ -124,6 +131,7 @@ export interface BuildPluginPipelineTraceInput {
     fallback: boolean;
     error: string | null;
     promptVersion: string;
+    queries?: Array<{ kind: string; command: string; text: string }>;
   };
 }
 
@@ -142,12 +150,14 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
         fallback: input.queryPlan.fallback,
         error: input.queryPlan.error,
         prompt_version: input.queryPlan.promptVersion,
+        queries: (input.queryPlan.queries ?? []).map((q) => ({ kind: q.kind, command: q.command, text: boundedSnippet(q.text, 400) })),
       }
     : {
         generated_by: input.tier === "recall" ? "rules" : null,
         fallback: input.tier === "recall" ? false : null,
         error: null,
         prompt_version: null,
+        queries: [],
       };
 
   return {

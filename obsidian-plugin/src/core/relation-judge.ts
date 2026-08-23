@@ -56,22 +56,23 @@ export interface BuildRelationJudgePromptArgs {
 /** Verbatim port of buildRelationJudgePrompt from scripts/aha/relation-judge.mjs. */
 export function buildRelationJudgePrompt({ sourcePath, sourceText, candidateInputs }: BuildRelationJudgePromptArgs): string {
   return [
-    "You are the bounded Aha Relation Judge.",
-    "Do not read files, run tools, or use external knowledge. Judge only from the source summary and candidate excerpts below.",
-    "Return JSON only. It must match the output schema.",
+    "You are the bounded Aha Relation Judge. Judge only from the source summary and candidate excerpts below.",
     "",
-    "Relation rules:",
-    "- Use supports, challenges, resembles, or bounds only when the candidate excerpt contains a concrete quote that justifies the label.",
-    "- A strong label means the quoted evidence acts on the current insight's judgment: supports it, challenges it, bounds it, or maps its structure. Topical closeness with no such action is weak.",
-    "- Counter-material is first-class: when the source insight is looking for its own patterns, lessons, or things to improve, old notes recording failures, conflicts, or opposite experiences act on that judgment directly — label them challenges or bounds, not weak.",
-    "- When ranking candidates, prefer notes that deposit durable judgments, lessons, patterns, or boundaries over notes that merely log events, market moves, or daily happenings on the same topic.",
-    "- Use weak when the excerpt is only topically similar, too thin, or lacks quote evidence.",
-    "- hit must be a short quote or exact snippet from the candidate excerpt.",
-    "- why must explain why this old note matters for the current source insight, not just restate retrieval score.",
-    "- why and summary should be written primarily in Chinese when the source or candidate excerpt is Chinese. Keep JSON keys and relation labels in English.",
-    "- Write why as a compact, note-like bridge: lead with the concrete idea or tension, not with a generic phrase about the candidate.",
-    "- Avoid formulaic openings such as “这条旧笔记…”, “这条笔记…”, “这条候选…”, or “直接支撑当前 source…”. Do not reuse the same sentence frame across candidates.",
-    "- Preserve the candidate notePath values exactly.",
+    "Each relation label requires a verbatim quote from the candidate excerpt that acts on the source insight's judgment:",
+    "- supports: the old evidence reinforces the current judgment.",
+    "- challenges: the old evidence undercuts or contradicts it.",
+    "- bounds: the old evidence marks where the judgment stops holding or needs qualification.",
+    "- resembles: a structurally parallel pattern from a different domain.",
+    "- weak: topically close, but no excerpt evidence acts on the judgment.",
+    "",
+    "Counter-material is first-class: old failures, conflicts, and opposite experiences that act on the source judgment earn challenges or bounds.",
+    "Ranking: durable judgments, lessons, and boundaries outrank event logs on the same topic.",
+    "",
+    "Output fields:",
+    "- hit: verbatim short quote from the candidate excerpt.",
+    "- why: \u7528\u81ea\u7136\u4e2d\u6587\u5199\uff0c\u4ee5\u5177\u4f53\u89c2\u70b9\u6216\u5f20\u529b\u5f00\u5934\uff0c\u70b9\u51fa\u65e7\u5224\u65ad\u548c\u5f53\u524d insight \u4e4b\u95f4\u7684\u5177\u4f53\u8fde\u63a5\u3002\u6bcf\u6761\u5019\u9009\u7528\u4e0d\u540c\u53e5\u5f0f\u3002",
+    "- quotes: exact excerpt quotes backing the label.",
+    "- Preserve notePath values exactly.",
     "",
     `sourcePath: ${sourcePath}`,
     "sourceSummary:",
@@ -176,21 +177,28 @@ export function hasQuoteEvidence(candidate: RelationJudgeCandidate, excerpt: str
     candidate.hit,
     ...(Array.isArray(candidate.quotes) ? (candidate.quotes as unknown[]) : []),
   ]
-    .map((value) => normalizeEvidenceText(value).replace(/^["'“”‘’]+|["'“”‘’]+$/g, ""))
+    .map((value) => normalizeEvidenceText(value).replace(/^["'\u201c\u201d\u2018\u2019]+|["'\u201c\u201d\u2018\u2019]+$/g, ""))
     .filter((value) => value.length >= 8);
   return needles.some((needle) => {
     if (haystack.includes(needle)) return true;
     const fingerprint = evidenceFingerprint(needle);
-    return fingerprint.length >= 8 && haystackFingerprint.includes(fingerprint);
+    if (fingerprint.length >= 8 && haystackFingerprint.includes(fingerprint)) return true;
+    const relaxedLen = Math.max(8, Math.floor(fingerprint.length * 0.6));
+    if (fingerprint.length >= 12 && haystackFingerprint.includes(fingerprint.slice(0, relaxedLen))) return true;
+    return false;
   });
 }
 
 function normalizeEvidenceText(value: unknown): string {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
+  return normalizeWidthVariants(String(value ?? "")).replace(/\s+/g, " ").trim();
 }
 
 function evidenceFingerprint(value: unknown): string {
-  return String(value ?? "").replace(/[\s\p{P}\p{S}]+/gu, "");
+  return normalizeWidthVariants(String(value ?? "")).replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function normalizeWidthVariants(text: string): string {
+  return text.replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
 }
 
 // --- Merge, ordering, and final-slate composition ---

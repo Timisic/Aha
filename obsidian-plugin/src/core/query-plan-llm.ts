@@ -46,7 +46,7 @@ export const QUERY_PLAN_SCHEMA = {
   properties: {
     queries: {
       type: "array",
-      minItems: 3,
+      minItems: 1,
       maxItems: 5,
       items: {
         type: "object",

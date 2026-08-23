@@ -183,7 +183,11 @@ export async function llmJsonCall(request: LlmJsonCallRequest, deps: LlmTranspor
       continue;
     }
     if (response.status >= 200 && response.status < 300) {
-      return successfulResponseResult(response.bodyText, attempt);
+      const parsed = successfulResponseResult(response.bodyText, attempt);
+      if (parsed.ok || parsed.kind !== "parse" || attempt >= LLM_MAX_ATTEMPTS) return parsed;
+      lastFailure = { kind: "parse", detail: parsed.error };
+      await deps.sleep(LLM_RETRY_BACKOFF_MS[attempt - 1]);
+      continue;
     }
     lastFailure = {
       kind: response.status === 401 || response.status === 403 ? "auth" : "http",

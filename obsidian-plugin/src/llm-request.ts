@@ -98,7 +98,7 @@ export function resolveLlmRequestProfile(settings: AhaPluginSettings, provider: 
         directKey: settings.deepseekApiKey,
         keyEnv: settings.deepseekApiKeyEnv,
         protocol: "chat-completions" as LlmProtocol,
-        thinking: "disabled" as LlmThinking,
+        thinking: undefined,
       }
     : {
         label: "OpenAI",

@@ -252,54 +252,30 @@ export class AhaSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    // --- Visible settings (issue #59: at most six conceptual items) -------
-    // Counting method: each `new Setting(...)`-producing call below that
-    // introduces a *new user-facing concern* counts as one item. The LLM
-    // service group's per-provider sub-fields (base URL/model/key/key-env,
-    // and the Test button) are visually grouped under one heading per
-    // provider but counted as a single conceptual item ("the LLM service
-    // group") because they are all just detail of the one decision "which
-    // provider, and how do I reach it" -- exactly like a single form
-    // section, not five independent settings. That yields five conceptual
-    // items total (LLM group, prompt override, review folder, target
-    // candidates, excluded folders), at most six per the acceptance
-    // criterion; the issue's own text lists exactly five named items, so a
-    // sixth was deliberately not invented to fill the count.
     containerEl.createEl("h2", { text: "Aha" });
 
     new Setting(containerEl)
       .setName("LLM provider")
-      .setDesc("Choose the provider used for query planning and Relation Judge. Provider profiles remain stored separately when switching. (Codex CLI is no longer offered here -- issue #57/#58 made LLM calls HTTP-only; the legacy wrapper's Codex CLI support only remains reachable by hand-editing data.json's llmProvider field for the hidden legacy-wrapper rollback switch.)")
+      .setDesc("Query planning 和 Relation Judge 使用的服务商。")
       .addDropdown((dropdown) => dropdown
-        .addOption("openai", "OpenAI API")
-        .addOption("deepseek", "DeepSeek API")
+        .addOption("openai", "OpenAI")
+        .addOption("deepseek", "DeepSeek")
         .setValue(this.plugin.settings.llmProvider === "deepseek" ? "deepseek" : "openai")
         .onChange(async (value) => {
           this.plugin.settings.llmProvider = value || DEFAULT_SETTINGS.llmProvider;
           await this.plugin.saveSettings();
+          this.renderProviderFields(providerContainer);
         }));
 
-    containerEl.createEl("h3", { text: "OpenAI" });
-    this.textSetting("llmBaseUrl", "OpenAI base URL", "OpenAI Responses API base URL.");
-    this.textSetting("llmModel", "OpenAI model", "Model used for query planning and bounded Relation Judge.");
-    this.apiKeySetting("llmApiKey", "OpenAI API key", "Stored in this local vault's plugin data. Leave empty to read the environment variable below.");
-    this.textSetting("llmApiKeyEnv", "OpenAI key env", "Environment variable name used when the API key field above is empty.");
-    this.providerTestSetting("openai", "OpenAI");
-
-    containerEl.createEl("h3", { text: "DeepSeek" });
-    this.textSetting("deepseekBaseUrl", "DeepSeek base URL", "DeepSeek OpenAI-compatible base URL.");
-    this.textSetting("deepseekModel", "DeepSeek model", "Model used for query planning and bounded Relation Judge.");
-    this.apiKeySetting("deepseekApiKey", "DeepSeek API key", "Stored separately from the OpenAI key. Leave empty to read the environment variable below.");
-    this.textSetting("deepseekApiKeyEnv", "DeepSeek key env", "Environment variable name used when the DeepSeek API key field is empty.");
-    this.providerTestSetting("deepseek", "DeepSeek");
+    const providerContainer = containerEl.createDiv();
+    this.renderProviderFields(providerContainer);
 
     containerEl.createEl("h3", { text: "Search" });
-    this.textAreaSetting("queryPromptOverride", "Query-plan prompt override", "Advanced: replaces the built-in query-plan prompt verbatim. Leave empty to use the built-in default. Pipeline Traces record a content-hash prompt version while an override is active.", { placeholder: "Leave empty for the built-in prompt", rows: 6 });
-    this.textSetting("reviewFolder", "Review note location", "Vault-relative folder for Aha Review Notes.");
+    this.textSetting("reviewFolder", "Review folder", "Review Note 存放位置。");
 
     new Setting(containerEl)
       .setName("Target candidates")
-      .setDesc("Aha targets 15-20 old-note candidates for the first MVP.")
+      .setDesc("候选笔记数量上限。")
       .addSlider((slider) => slider
         .setLimits(15, 20, 1)
         .setValue(this.plugin.settings.targetCandidates)
@@ -309,7 +285,7 @@ export class AhaSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    this.textSetting("excludedFolders", "Excluded folders", "Comma or newline separated vault folders excluded from candidate retrieval. Defaults to excluding \"templates\".", { placeholder: DEFAULT_SETTINGS.excludedFolders });
+    this.textSetting("excludedFolders", "Excluded folders", "逗号分隔，排除这些文件夹的笔记。", { placeholder: DEFAULT_SETTINGS.excludedFolders });
 
     // --- Advanced (collapsed, exactly two items) --------------------------
     this.renderAdvancedSection(containerEl);
@@ -317,6 +293,75 @@ export class AhaSettingTab extends PluginSettingTab {
     // --- Health section (separate concern, not counted against the six
     // visible items per the issue's own paragraph structure) --------------
     this.renderHealthSection(containerEl);
+  }
+
+  private renderProviderFields(container: HTMLElement): void {
+    container.empty();
+    const isDeepSeek = this.plugin.settings.llmProvider === "deepseek";
+
+    if (isDeepSeek) {
+      this.textSettingInto(container, "deepseekBaseUrl", "Base URL", "DeepSeek API 地址。");
+      this.textSettingInto(container, "deepseekModel", "Model", "DeepSeek 模型。");
+      this.apiKeySettingInto(container, "deepseekApiKey", "API key", "留空则读取下方环境变量。");
+      this.textSettingInto(container, "deepseekApiKeyEnv", "Key env var", "API key 环境变量名。");
+      this.providerTestSettingInto(container, "deepseek", "DeepSeek");
+    } else {
+      this.textSettingInto(container, "llmBaseUrl", "Base URL", "OpenAI API 地址。");
+      this.textSettingInto(container, "llmModel", "Model", "OpenAI 模型。");
+      this.apiKeySettingInto(container, "llmApiKey", "API key", "留空则读取下方环境变量。");
+      this.textSettingInto(container, "llmApiKeyEnv", "Key env var", "API key 环境变量名。");
+      this.providerTestSettingInto(container, "openai", "OpenAI");
+    }
+  }
+
+  private textSettingInto(container: HTMLElement, key: StringSettingKey, name: string, desc: string): void {
+    new Setting(container)
+      .setName(name)
+      .setDesc(desc)
+      .addText((text) => text
+        .setPlaceholder(DEFAULT_SETTINGS[key])
+        .setValue(this.plugin.settings[key])
+        .onChange(async (value) => {
+          const trimmed = value.trim();
+          this.plugin.settings[key] = trimmed || DEFAULT_SETTINGS[key];
+          await this.plugin.saveSettings();
+        }));
+  }
+
+  private apiKeySettingInto(container: HTMLElement, key: "llmApiKey" | "deepseekApiKey", name: string, desc: string): void {
+    new Setting(container)
+      .setName(name)
+      .setDesc(desc)
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text
+          .setPlaceholder("sk-...")
+          .setValue(this.plugin.settings[key] ?? "")
+          .onChange(async (value) => {
+            this.plugin.settings[key] = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+  }
+
+  private providerTestSettingInto(container: HTMLElement, provider: LlmApiProvider, label: string): void {
+    new Setting(container)
+      .setName(`Test ${label}`)
+      .setDesc(`验证 ${label} 连接。`)
+      .addButton((button) => button
+        .setButtonText(`Test`)
+        .onClick(async () => {
+          button.setDisabled(true).setButtonText("Testing...");
+          try {
+            const result = await testProviderConnection(this.plugin.settings, provider);
+            new Notice(result.ok ? result.message : `${label} test failed: ${result.message}`, result.ok ? 6000 : 12000);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            new Notice(`${label} test failed: ${message}`, 12000);
+          } finally {
+            button.setDisabled(false).setButtonText(`Test`);
+          }
+        }));
   }
 
   // Obsidian's Setting API has no built-in collapsible section, so this
@@ -333,7 +378,7 @@ export class AhaSettingTab extends PluginSettingTab {
 
     const toggle = new Setting(advancedContainer)
       .setName("Advanced")
-      .setDesc("QMD path override and QMD environment.")
+      .setDesc("QMD 路径与环境变量。")
       .addButton((button) => button
         .setButtonText("Show advanced")
         .onClick(() => {
@@ -343,13 +388,24 @@ export class AhaSettingTab extends PluginSettingTab {
         }));
     void toggle;
 
-    // textSetting always targets `this.containerEl`, but these two rows
-    // must render into the collapsible `body` div instead, so they are
-    // built directly with Setting(body, ...) rather than reusing that
-    // helper.
+    new Setting(body)
+      .setName("Query prompt override")
+      .setDesc("自定义 query-plan prompt，留空使用默认。")
+      .addTextArea((text) => {
+        text.inputEl.rows = 4;
+        text.inputEl.cols = 48;
+        text
+          .setPlaceholder("留空使用内置 prompt")
+          .setValue(this.plugin.settings.queryPromptOverride)
+          .onChange(async (value) => {
+            this.plugin.settings.queryPromptOverride = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
     new Setting(body)
       .setName("QMD path override")
-      .setDesc("Path to the qmd binary (also used for QMD SDK module inference). Leave default to use \"qmd\" from PATH.")
+      .setDesc("qmd 可执行文件路径，留空使用 PATH 中的 qmd。")
       .addText((text) => text
         .setPlaceholder(DEFAULT_SETTINGS.qmdCommand)
         .setValue(this.plugin.settings.qmdCommand)
@@ -361,7 +417,7 @@ export class AhaSettingTab extends PluginSettingTab {
 
     new Setting(body)
       .setName("QMD environment")
-      .setDesc("Multi-line KEY=VALUE lines injected verbatim into the qmd subprocess environment (e.g. QMD_REMOTE_EMBED_URL=...). One entry per line; blank lines and lines without \"=\" are ignored.")
+      .setDesc("每行 KEY=VALUE，注入 qmd 子进程环境。")
       .addTextArea((text) => {
         text.inputEl.rows = 6;
         text.inputEl.cols = 48;
@@ -391,7 +447,7 @@ export class AhaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Recheck health")
-      .setDesc("Re-run all four health checks against the current settings.")
+      .setDesc("重新检测所有状态。")
       .addButton((button) => button
         .setButtonText("Recheck")
         .onClick(() => {
@@ -402,7 +458,7 @@ export class AhaSettingTab extends PluginSettingTab {
     const embedStatus = containerEl.createDiv({ cls: "aha-embed-status" });
     new Setting(containerEl)
       .setName("Embed vault into QMD index")
-      .setDesc("Runs \"qmd update --index " + this.plugin.settings.qmdIndex + "\" then \"qmd embed --index " + this.plugin.settings.qmdIndex + "\" as two separate bounded subprocess calls. This is the only way embedding ever runs -- it is never triggered automatically by a health check, a search round, or plugin load.")
+      .setDesc("执行 qmd update + embed，更新索引并嵌入向量。")
       .addButton((button) => {
         button
           .setButtonText("Embed now")

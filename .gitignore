@@ -33,3 +33,5 @@ bench/reports/
 
 *.bak
 *.backup
+backup/
+traces/

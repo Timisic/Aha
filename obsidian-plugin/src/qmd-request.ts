@@ -148,8 +148,37 @@ export function parseQmdEnvironment(raw: string): Record<string, string> {
  * wrapperChildEnv/qmdRemoteEnvironment for the legacy wrapper's own
  * unrelated copy of that old convention).
  */
+// macOS GUI apps (Obsidian included) inherit a minimal PATH that typically
+// excludes Homebrew, npm-global, and nvm/fnm-managed Node. Augment PATH
+// so that both the qmd binary and its #!/usr/bin/env node shebang resolve.
+function augmentedPath(): string {
+  const base = process.env.PATH ?? "/usr/bin:/bin";
+  const home = process.env.HOME ?? "";
+  const extras = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    home ? `${home}/.npm-global/bin` : "",
+    home ? `${home}/.nvm/versions/node` : "",
+  ].filter(Boolean);
+  // nvm: pick the highest installed version's bin directory
+  if (home) {
+    try {
+      const fs = getNodeRequire()("fs") as typeof import("fs");
+      const nvmBase = `${home}/.nvm/versions/node`;
+      if (fs.existsSync(nvmBase)) {
+        const versions = fs.readdirSync(nvmBase).filter((d: string) => d.startsWith("v")).sort();
+        const latest = versions.at(-1);
+        if (latest) extras.push(`${nvmBase}/${latest}/bin`);
+      }
+    } catch { /* nvm not installed — fine */ }
+  }
+  const seen = new Set(base.split(":"));
+  const additions = extras.filter((p) => !seen.has(p));
+  return additions.length > 0 ? `${additions.join(":")}:${base}` : base;
+}
+
 function qmdChildEnv(settings: AhaPluginSettings): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: augmentedPath() };
   for (const [name, value] of Object.entries(parseQmdEnvironment(settings.qmdEnvironment))) {
     if (value) env[name] = value;
   }

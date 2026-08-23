@@ -59,6 +59,21 @@ export function lineCount(content: string): number {
   return content.split(/\r?\n/).length;
 }
 
+/** Returns true when the excerpt has substantive text beyond headings, transclusion links, and metadata. */
+export function isSubstantiveExcerpt(excerpt: string, minChars = 30): boolean {
+  const stripped = excerpt
+    .split(/\r?\n/)
+    .map((line) => line
+      .replace(/!\[\[[^\]]*\]\]/g, "")
+      .replace(/\[\[[^\]]*\]\]/g, "")
+      .trim())
+    .filter((line) => line && !line.startsWith("#") && !/^[-*]\s*$/.test(line) && !/^\d+\.\s*$/.test(line))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return stripped.length >= minChars;
+}
+
 /** Verbatim port of excerptNoteMarkdown: strips frontmatter, qmd get header,
  * line-number prefixes, and metadata lines, then bounds to 60 lines / 1800 chars. */
 export function excerptNoteMarkdown(markdown: unknown): string {
@@ -68,7 +83,7 @@ export function excerptNoteMarkdown(markdown: unknown): string {
     .split(/\r?\n/)
     .map((line) => line.replace(/^\d+:\s?/, "").trimEnd())
     .filter((line) => line.trim() && !/^(create|cssclasses|tags|categories|emotion):\s*/.test(line.trim()))
-    .slice(0, 60)
+    .slice(0, 120)
     .join("\n")
-    .slice(0, 1800);
+    .slice(0, 3600);
 }

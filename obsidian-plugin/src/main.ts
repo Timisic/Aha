@@ -11,8 +11,11 @@ import {
 import { appendReviewBenchmarkSeed, appendSuccessfulSearchRound, makeReviewFileName, makeReviewNoteContent, reviewFolderPath, reviewNoteMatchesSource, reviewSourcePathFromContent, setReviewNoteStatus } from "./review-note";
 import { firstWikiLinkTarget, linkTargetBase } from "./wikilink";
 import { AHA_REVIEW_PANEL_VIEW_TYPE, AhaReviewPanelView, type AhaReviewPanelContext } from "./review-panel";
-import { canRunExternalProcesses, runAhaWrapper, runReadinessCheck } from "./process";
+import { canRunExternalProcesses, runAhaWrapper } from "./process";
 import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
+import { testProviderConnection } from "./llm-request";
+import { probeQmdAvailable, runQmdStatus, parseQmdEnvironment } from "./qmd-request";
+import { decideQmdBinaryLight, decideIndexCoverageLight, decideQmdEndpointsLight, decideLlmConnectivityLight } from "./health-checks";
 import { validateAhaWrapperResult, type AhaWrapperResult } from "./schema";
 import { legacySourceIdentity, sourceIdentityForFile, sourceReviewIndexKey } from "./source-identity";
 import { AHA_COMMANDS } from "./commands";
@@ -178,11 +181,23 @@ export default class AhaPlugin extends Plugin {
     if (!this.assertDesktop()) return;
 
     try {
-      const result = await runReadinessCheck(this.settings);
-      const failed = result.checks.filter((check) => !check.ok);
+      const settings = this.settings;
+      const vaultFileCount = this.app.vault.getMarkdownFiles().length;
+      const [qmdAvailable, statusProbe, llmProbe] = await Promise.all([
+        probeQmdAvailable(settings),
+        runQmdStatus(settings),
+        testProviderConnection(settings, settings.llmProvider === "deepseek" ? "deepseek" : "openai"),
+      ]);
+      const lights = [
+        decideQmdBinaryLight(qmdAvailable),
+        decideIndexCoverageLight(statusProbe, vaultFileCount, settings.qmdIndex),
+        decideQmdEndpointsLight(parseQmdEnvironment(settings.qmdEnvironment), statusProbe, settings.qmdIndex),
+        decideLlmConnectivityLight(llmProbe),
+      ];
+      const failed = lights.filter((l) => !l.ok);
       const message = failed.length === 0
         ? "Aha readiness passed."
-        : `Aha readiness failed: ${failed.map((check) => `${check.name}: ${check.message}`).join("; ")}`;
+        : `Aha readiness failed: ${failed.map((l) => `${l.label}: ${l.message}`).join("; ")}`;
       new Notice(message, failed.length === 0 ? 5000 : 10000);
       this.statusBar?.setText(failed.length === 0 ? "Aha ready" : "Aha readiness failed");
     } catch (error) {
