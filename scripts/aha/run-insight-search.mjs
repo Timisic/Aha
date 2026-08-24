@@ -741,7 +741,7 @@ async function judgePipelineCandidates(args, sourceText, candidates) {
       noteTitle: candidate.noteTitle,
       retrievalHit: candidate.hit,
       retrievalWhy: candidate.why,
-      excerpt: compactLine(excerpt, 1400),
+      excerpt,
     });
   }
 

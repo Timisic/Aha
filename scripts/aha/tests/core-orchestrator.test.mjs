@@ -161,7 +161,7 @@ test("returns a structured failure (never a fake success) when Relation Judge fa
 
   assert.equal(result.ok, false);
   assert.equal(result.error.tool, "llm");
-  assert.match(result.error.details, /relation judge network failure/);
+  assert.match(result.error.details, /failed relation judging/);
   // Candidates are still attached (weak, pre-judge) for diagnostics, exactly
   // like the legacy wrapper's failure shape -- but ok stays false.
   assert.equal(result.candidates.length, 1);
@@ -196,7 +196,7 @@ test("without queryPromptOverride, the result records the built-in query-plan pr
 
   assert.equal(result.queryPlanGeneratedBy, "llm");
   assert.equal(result.queryPlanFallback, false);
-  assert.equal(result.queryPlanPromptVersion, "aha-query-plan-v6");
+  assert.equal(result.queryPlanPromptVersion, "aha-query-plan-v7");
 });
 
 test("args.queryPromptOverride threads through to the query-plan LLM call and is recorded on the result", async () => {

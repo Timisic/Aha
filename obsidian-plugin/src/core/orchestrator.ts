@@ -199,7 +199,7 @@ export async function runFullPipeline(
       noteTitle: candidate.noteTitle as string | undefined,
       retrievalHit: candidate.hit as string | undefined,
       retrievalWhy: candidate.why as string | undefined,
-      excerpt: compactLine(excerpt, 2800),
+      excerpt,
     });
   }
 

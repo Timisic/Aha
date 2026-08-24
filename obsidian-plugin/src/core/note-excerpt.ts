@@ -74,8 +74,7 @@ export function isSubstantiveExcerpt(excerpt: string, minChars = 30): boolean {
   return stripped.length >= minChars;
 }
 
-/** Verbatim port of excerptNoteMarkdown: strips frontmatter, qmd get header,
- * line-number prefixes, and metadata lines, then bounds to 60 lines / 1800 chars. */
+/** Strips frontmatter, qmd get header, line-number prefixes, and metadata lines. */
 export function excerptNoteMarkdown(markdown: unknown): string {
   return String(markdown ?? "")
     .replace(/^qmd:\/\/[^\n]+\n(?:Folder Context:[^\n]*\n)?---\n?/m, "")
@@ -83,7 +82,5 @@ export function excerptNoteMarkdown(markdown: unknown): string {
     .split(/\r?\n/)
     .map((line) => line.replace(/^\d+:\s?/, "").trimEnd())
     .filter((line) => line.trim() && !/^(create|cssclasses|tags|categories|emotion):\s*/.test(line.trim()))
-    .slice(0, 120)
-    .join("\n")
-    .slice(0, 3600);
+    .join("\n");
 }

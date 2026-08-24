@@ -23,11 +23,11 @@ test("excerptNoteMarkdown strips frontmatter, line numbers, and metadata lines",
   assert.match(excerpt, /第三行没有行号/);
 });
 
-test("excerptNoteMarkdown caps output at 60 lines and 1800 chars", () => {
+test("excerptNoteMarkdown passes through full content without truncation", () => {
   const longNote = Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 行内容`).join("\n");
   const excerpt = excerptNoteMarkdown(longNote);
-  assert.equal(excerpt.split("\n").length <= 60, true);
-  assert.equal(excerpt.length <= 1800, true);
+  assert.equal(excerpt.split("\n").length, 200);
+  assert.match(excerpt, /第 200 行内容/);
 });
 
 test("excerptNoteMarkdown handles qmd get header prefix", () => {
