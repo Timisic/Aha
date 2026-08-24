@@ -22,7 +22,7 @@ import {
 import { compactLine } from "./query-plan-deterministic";
 import { AHA_RESULT_SCHEMA, validateAhaResult } from "./result-validator";
 
-export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v4";
+export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v5";
 export const RELATION_JUDGE_SCHEMA_NAME = "aha_relation_judge";
 export const DEFAULT_RELATION_JUDGE_CHUNK_SIZE = 20;
 export const DEFAULT_RELATION_JUDGE_CONCURRENCY = 3;
@@ -53,54 +53,33 @@ export interface BuildRelationJudgePromptArgs {
   candidateInputs: RelationJudgeCandidateInput[];
 }
 
-/** Verbatim port of buildRelationJudgePrompt from scripts/aha/relation-judge.mjs. */
 export function buildRelationJudgePrompt({ sourcePath, sourceText, candidateInputs }: BuildRelationJudgePromptArgs): string {
   return [
-    "You are the bounded Aha Relation Judge. Judge only from the source summary and candidate excerpts below.",
+    "Aha Relation Judge—根据 source 全文和候选 excerpt 判定一条旧笔记与当前 insight 的论证关系。",
     "",
-    "Each relation label requires a verbatim quote from the candidate excerpt that acts on the source insight's judgment:",
-    "- supports: the old evidence reinforces the current judgment.",
-    "- challenges: the old evidence undercuts or contradicts it.",
-    "- bounds: the old evidence marks where the judgment stops holding or needs qualification.",
-    "- resembles: a structurally parallel pattern from a different domain.",
-    "- weak: topically close, but no excerpt evidence acts on the judgment.",
+    "关系标签（每个强标签必须附带候选 excerpt 中的原文引句）：",
+    "- supports：旧证据强化当前判断。",
+    "- challenges：旧证据反驳、冲突或施加压力。",
+    "- bounds：旧证据标注判断的边界、限定条件或适用范围。",
+    "- resembles：来自不同领域的结构同构模式。",
+    "- weak：候选 excerpt 中没有任何引句直接作用于 source 的判断——只在引句缺失时使用，与话题距离无关。",
     "",
-    "Counter-material is first-class: old failures, conflicts, and opposite experiences that act on the source judgment earn challenges or bounds.",
-    "Ranking: durable judgments, lessons, and boundaries outrank event logs on the same topic.",
+    "反方向材料优先级高：旧的失败、冲突、对立经验只要作用于 source 的判断就应得到 challenges 或 bounds。",
+    "跨领域连接高价值：候选话题与 source 完全不同，但论证结构存在 challenges/bounds/resembles 关系时，话题距离是特征而非降级理由。",
+    "持久判断和教训优先于同话题的事件流水。",
     "",
-    "Output fields:",
-    "- hit: verbatim short quote from the candidate excerpt.",
-    "- why: \u7528\u81ea\u7136\u4e2d\u6587\u5199\uff0c\u4ee5\u5177\u4f53\u89c2\u70b9\u6216\u5f20\u529b\u5f00\u5934\uff0c\u70b9\u51fa\u65e7\u5224\u65ad\u548c\u5f53\u524d insight \u4e4b\u95f4\u7684\u5177\u4f53\u8fde\u63a5\u3002\u6bcf\u6761\u5019\u9009\u7528\u4e0d\u540c\u53e5\u5f0f\u3002",
-    "- quotes: exact excerpt quotes backing the label.",
-    "- Preserve notePath values exactly.",
+    "输出字段：",
+    "- hit：候选 excerpt 中的原文短引句。",
+    "- why：用自然中文写，以具体观点或张力开头，点出旧判断和当前 insight 之间的具体连接。",
+    "- quotes：支撑标签的 excerpt 原文引句。",
+    "- 保持 notePath 值不变。",
     "",
     `sourcePath: ${sourcePath}`,
-    "sourceSummary:",
-    sourceSummaryForRelationJudge(sourcePath, sourceText).slice(0, 3500),
+    "source 全文：",
+    sourceSummaryForRelationJudge(sourcePath, sourceText),
     "",
     "candidates:",
     JSON.stringify(candidateInputs, null, 2),
-    "",
-    "Return this JSON shape:",
-    JSON.stringify({
-      ok: true,
-      sourcePath,
-      generatedAt: null,
-      summary: "简短说明这一轮关系判断的结果",
-      warnings: [],
-      error: null,
-      candidates: [
-        {
-          notePath: "same candidate notePath",
-          noteTitle: "candidate title",
-          relation: "weak",
-          hit: "short quote/snippet from excerpt",
-          why: "用自然中文点出旧判断和当前 insight 的具体连接，或说明为什么只能算 weak。",
-          quotes: ["optional exact quote from excerpt"],
-          selected: true,
-        },
-      ],
-    }, null, 2),
   ].join("\n");
 }
 
@@ -424,6 +403,8 @@ export interface JudgeCandidateRelationsViaLlmInput {
   preserveOrder?: boolean;
   /** Label recorded as relation_judge_generated_by / the failure tool name. */
   generatedBy?: string;
+  /** Max parallel LLM calls for per-candidate judging. Default 5. */
+  concurrency?: number;
 }
 
 export interface RelationJudgeLlmSuccess {
@@ -448,14 +429,16 @@ export interface RelationJudgeLlmFailure {
 }
 export type RelationJudgeLlmResult = RelationJudgeLlmSuccess | RelationJudgeLlmFailure;
 
+export const DEFAULT_PER_CANDIDATE_CONCURRENCY = 5;
+
 /**
- * One-shot (non-chunked) Relation Judge orchestration: LLM round-trip +
- * validate + repair-retry + merge, returning the same ok:true/ok:false shape
- * as the legacy adapter-based judgeCandidateRelations in
- * scripts/aha/relation-judge.mjs. This is the structured failed-search
- * record the issue's acceptance criteria requires on LLM failure: it is never
- * shaped like a success (`ok:true`) when the LLM call, validation, or repair
- * retry all fail.
+ * Per-candidate Relation Judge: each candidate gets its own LLM call so
+ * the full source text and full candidate excerpt travel together without
+ * competing for token budget. Runs with bounded concurrency (default 5).
+ *
+ * Return shape is the same ok:true/ok:false contract as before: a partial
+ * failure (some candidates judged, some failed) still returns ok:true with
+ * the failed candidates left as weak.
  */
 export async function judgeCandidateRelationsViaLlm(
   input: JudgeCandidateRelationsViaLlmInput,
@@ -477,36 +460,69 @@ export async function judgeCandidateRelationsViaLlm(
     };
   }
 
-  const raw = await judgeRelationsRawViaLlm(
-    { sourcePath: input.sourcePath, sourceText: input.sourceText, candidateInputs: inputs },
-    transportRequest,
-    deps,
-  );
-  if (!raw.ok) {
+  const concurrency = input.concurrency ?? DEFAULT_PER_CANDIDATE_CONCURRENCY;
+  const allJudged: RelationJudgeCandidate[] = [];
+  const allWarnings: string[] = [];
+  let failedCount = 0;
+
+  const results = await mapConcurrent(inputs, concurrency, async (candidateInput) => {
+    return judgeRelationsRawViaLlm(
+      { sourcePath: input.sourcePath, sourceText: input.sourceText, candidateInputs: [candidateInput] },
+      transportRequest,
+      deps,
+    );
+  });
+
+  for (const raw of results) {
+    if (raw.ok) {
+      allJudged.push(...raw.candidates);
+      if (raw.repaired) allWarnings.push("Relation Judge retried once after schema validation failed.");
+      for (const w of raw.warnings) allWarnings.push(`Relation Judge: ${w}`);
+    } else {
+      failedCount += 1;
+    }
+  }
+
+  if (allJudged.length === 0 && failedCount > 0) {
     return {
       ok: false,
       reviewedCount: inputs.length,
-      warnings: [],
+      warnings: allWarnings,
       tool: generatedBy,
-      error: raw.error,
+      error: `All ${inputs.length} candidate(s) failed relation judging.`,
       candidates: input.candidates,
       relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
       relation_judge_generated_by: generatedBy,
     };
   }
 
+  if (failedCount > 0) {
+    allWarnings.push(`${failedCount} of ${inputs.length} candidate(s) failed relation judging; labels remain weak.`);
+  }
+
   const preserveOrder = input.preserveOrder !== false;
-  const judged = mergeJudgedCandidates(input.candidates, raw.candidates, inputs, { preserveOrder });
+  const judged = mergeJudgedCandidates(input.candidates, allJudged, inputs, { preserveOrder });
   return {
     ok: true,
     reviewedCount: inputs.length,
-    warnings: [
-      ...(raw.repaired ? ["Relation Judge retried once after schema validation failed."] : []),
-      ...raw.warnings.map((warning) => `Relation Judge: ${warning}`),
-    ],
+    warnings: allWarnings,
     candidates: judged,
-    summary: raw.summary,
     relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
     relation_judge_generated_by: generatedBy,
   };
+}
+
+async function mapConcurrent<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const lanes = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]);
+    }
+  });
+  await Promise.all(lanes);
+  return results;
 }

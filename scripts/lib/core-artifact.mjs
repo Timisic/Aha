@@ -176,6 +176,7 @@ export const RELATION_JUDGE_SCHEMA_NAME = core.RELATION_JUDGE_SCHEMA_NAME;
 export const DEFAULT_RELATION_JUDGE_CHUNK_SIZE = core.DEFAULT_RELATION_JUDGE_CHUNK_SIZE;
 export const DEFAULT_RELATION_JUDGE_CONCURRENCY = core.DEFAULT_RELATION_JUDGE_CONCURRENCY;
 export const RELATION_STRENGTH = core.RELATION_STRENGTH;
+export const DEFAULT_PER_CANDIDATE_CONCURRENCY = core.DEFAULT_PER_CANDIDATE_CONCURRENCY;
 export const buildRelationJudgePrompt = core.buildRelationJudgePrompt;
 export const buildRelationJudgeRepairPrompt = core.buildRelationJudgeRepairPrompt;
 export const normalizeStructuredResult = core.normalizeStructuredResult;

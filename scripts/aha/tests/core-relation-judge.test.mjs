@@ -128,8 +128,8 @@ function judgeResultPayload(candidatePatch) {
 
 // --- basic prompt/version sanity ---
 
-test("RELATION_JUDGE_PROMPT_VERSION is aha-relation-judge-v4", () => {
-  assert.equal(RELATION_JUDGE_PROMPT_VERSION, "aha-relation-judge-v4");
+test("RELATION_JUDGE_PROMPT_VERSION is aha-relation-judge-v5", () => {
+  assert.equal(RELATION_JUDGE_PROMPT_VERSION, "aha-relation-judge-v5");
 });
 
 test("buildRelationJudgePrompt embeds sourcePath and candidateInputs JSON", () => {
@@ -191,7 +191,7 @@ test("LLM transport failure produces a structured failed record, never a fake su
 
   assert.equal(result.ok, false);
   assert.equal(result.tool, "openai");
-  assert.match(result.error, /connection refused/);
+  assert.match(result.error, /failed relation judging/);
   assert.deepEqual(result.candidates, retrievalCandidates);
   assert.equal(result.relation_judge_prompt_version, RELATION_JUDGE_PROMPT_VERSION);
 });
@@ -257,7 +257,7 @@ test("a repair retry that still fails validation is a structured failure, not a 
 
   assert.equal(result.ok, false);
   assert.equal(result.tool, "fake-agent");
-  assert.match(result.error, /why/i);
+  assert.match(result.error, /failed relation judging/i);
 });
 
 // --- judgeRelationsRawViaLlm: the chunk-friendly primitive ---
