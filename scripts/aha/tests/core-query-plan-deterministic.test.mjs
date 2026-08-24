@@ -148,11 +148,16 @@ test("normalizeQueryPlan de-duplicates, caps at 5 model queries, and appends the
   assert.equal(plan.queries.at(-1).kind, "source_fallback");
 });
 
-test("normalizeQueryPlan throws when fewer than 3 usable queries survive de-duplication", () => {
-  assert.throws(
-    () => normalizeQueryPlan({ queries: [{ kind: "raw", command: "qmd query", text: "a", qmd: {} }] }, { displayName: "test-agent" }, ""),
-    /test-agent query plan returned fewer than 3 usable queries\./,
+test("normalizeQueryPlan supplements with rules when fewer than 3 usable queries survive de-duplication", () => {
+  const plan = normalizeQueryPlan(
+    { queries: [{ kind: "raw", command: "qmd query", text: "a", qmd: {} }] },
+    { displayName: "test-agent", _resolved_insight_input: "补充测试" },
+    "",
   );
+  assert.equal(plan.model_query_count, 1);
+  assert.ok(plan.queries.length >= 3, "supplemented plan should have at least 3 queries");
+  assert.equal(plan.queries[0].kind, "raw");
+  assert.equal(plan.queries.at(-1).kind, "source_fallback");
 });
 
 test("normalizeQueryPlanItem falls back kind by index and derives query text from qmd when text is absent", () => {

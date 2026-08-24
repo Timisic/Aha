@@ -36,7 +36,7 @@ import {
   queryPlanFromFallbackRules,
 } from "./query-plan-deterministic";
 
-export const QUERY_PLAN_PROMPT_VERSION = "aha-query-plan-v6";
+export const QUERY_PLAN_PROMPT_VERSION = "aha-query-plan-v7";
 export const QUERY_PLAN_SCHEMA_NAME = "aha_qmd_query_plan_agent";
 
 export const QUERY_PLAN_SCHEMA = {
@@ -99,37 +99,32 @@ export function buildQueryPlanPrompt(args: DeterministicPlanArgs, sourceText: st
   if (override) return override;
   const sourceSummary = queryPlanSourceSummary(args, sourceText);
   return [
-    "你是 Aha/Pi /insight 的检索查询生成子 agent。",
-    "只根据下面 source summary 生成 3-5 条 QMD 检索查询计划；不要读取文件、不要运行命令、不要搜索外部资料、不要检查仓库。系统会在你的计划之后另加一条保留原笔记表达的确定性兜底查询，你不需要替代它。",
+    "Aha 检索查询生成器。根据 source summary 生成 3-5 条 QMD 结构化查询。系统自动追加一条保留原文的确定性兜底查询。",
     "",
-    "目标：让 Aha 后续用 QMD 混合召回旧笔记中的旧判断、反例、边界条件、相似结构和明确线索。",
+    "目标：召回旧笔记中的旧判断、反例、边界条件、相似结构和明确线索。",
     "",
     "查询形态：",
-    "- raw: 贴近原文的语义检索。",
-    "- abstracted_judgment: 抽象出判断结构、关系模式、反例或边界。剥掉 source 的领域名词，用领域中性的词描述机制本身（例如把「杀球动作不稳定」抽象成「表层表现由更深层机制决定」），这样才能召回其他领域里结构相同的旧笔记。",
-    "- contextual: 保留具体语境，但不引入 source note 之外的新事实。",
-    "- explicit_cue: source note 里有明确实体、概念、短语时可用。",
-    "- bounds: 主动找不成立、限制条件、相反经验。",
+    "- raw：贴近原文的语义检索。",
+    "- abstracted_judgment：剥掉 source 的领域名词，用领域中性的词描述机制本身，召回其他领域里结构相同的旧笔记。两条结构抽象取不同侧面——一条抽象现象层（表层行为如何变化），一条抽象机制层（背后的过程如何运作）。至少一条跳出 source 的表层机制，搜索共享同一隐含前提但讨论完全不同现象的旧笔记。",
+    "- contextual：保留具体语境的检索。",
+    "- explicit_cue：source 中有明确实体、概念、短语时可用。text 与 lex 只使用 source summary 中实际出现的词。",
+    "- bounds：主动搜索不成立条件、限制条件、相反经验。",
     "",
     "覆盖要求：",
-    "- 旧笔记往往用与 source 不同的词记录同一件事。lex 和 vec 要主动展开同义与口语变体，尤其是情绪和行为词（例如 赌气→生气/吵架/冷战/不平衡，恐惧→害怕/焦虑/不敢，拖延→懒/摆烂/刷视频）。",
-    "- hyde 写成「被找的那篇旧笔记」的口吻：第一人称、过去的复盘语气、含当时可能用到的情绪词和场景词；不要写成对 source 的转述。",
+    "- 旧笔记往往用与 source 不同的词记录同一件事。lex 和 vec 主动展开同义与口语变体，尤其是情绪和行为词。",
+    "- hyde 写成「被找的那篇旧笔记」的口吻，按 kind 区分语气：raw/contextual 用第一人称复盘语气含情绪词和场景词；abstracted_judgment 用冷静结构化分析语气；bounds 用自我质疑或反思语气，模拟「我以为 X 是对的，但在 Y 情况下发现行不通」的经验记录。",
     "- 至少一条查询专门服务 bounds/反例方向。",
-    "- 结构抽象生成两条、取不同侧面：一条抽象现象层（表层行为/表现如何变化），一条抽象机制层（背后的过程如何运作，例如「认知更新后重新诠释过去的经验」）。同一 insight 的旧笔记可能只在其中一个侧面留下语义痕迹。",
-    "- source 里指向具体旧笔记、旧事件、书名或自造概念的名词（例如某次经历的代号、专有词），很可能就是旧笔记的标题词：为最重要的 1-2 个各生成一条 qmd search，text 保持 1-3 个词的短查询，不要混入其他概念。explicit_cue 的 text 与 lex 只能使用 source summary 中实际出现的词，禁止引入外部词汇。",
-    "- 笔记库里存在英文 Clippings。当 insight 的核心概念有惯用英文表达时（例如 外包理解→delegate understanding / outsource understanding，第二大脑→second brain），为它生成一条独立的 qmd search，text 就是那个英文短语（1-3 个英文词），不要把英文词埋进 qmd query 的 lex 里——混合检索会稀释短语命中。",
+    "- source 里指向具体旧笔记、旧事件、书名或自造概念的名词，为最重要的 1-2 个各生成一条 qmd search，text 保持 1-3 个词的短查询。",
+    "- 笔记库里存在英文 Clippings。当 insight 的核心概念有惯用英文表达时，为它生成一条独立的 qmd search，text 就是英文短语（1-3 个英文词）。",
     "",
     "command 选择：",
-    "- 默认使用 qmd query，并填写 qmd.intent / qmd.lex / qmd.vec / qmd.hyde。",
-    "- raw、abstracted_judgment、contextual、bounds 都使用 qmd query。",
-    "- qmd search 只用于非常明确的短实体、概念、原句线索；text 必须是实际搜索短语。",
+    "- 默认使用 qmd query，填写 qmd.intent / qmd.lex / qmd.vec / qmd.hyde。",
+    "- raw、abstracted_judgment、contextual、bounds 使用 qmd query。",
+    "- qmd search 用于明确的短实体、概念、原句线索。",
     "",
-    "QMD 字段长度约束：",
-    "- lex 最多 4 条，每条是短词或短短语，不要写整句。",
-    "- intent 不超过 180 字；vec 不超过 360 字；hyde 不超过 320 字。",
-    "- 字段里不要包含换行、项目符号、Markdown 引号或额外的 intent:/lex:/vec:/hyde: 前缀。",
+    "QMD 字段长度约束：lex 最多 4 条短词或短短语；intent ≤ 180 字；vec ≤ 360 字；hyde ≤ 320 字。字段内容为纯文本。",
     "",
-    "输出必须是 JSON，只包含 queries 字段，并匹配 output schema。",
+    "输出 JSON 只包含 queries 字段，匹配 output schema。",
     `source path: ${args.sourcePath}`,
     "",
     "<source_summary>",

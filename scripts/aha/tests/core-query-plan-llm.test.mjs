@@ -75,8 +75,8 @@ const validPlan = {
   })),
 };
 
-test("QUERY_PLAN_PROMPT_VERSION is aha-query-plan-v6", () => {
-  assert.equal(QUERY_PLAN_PROMPT_VERSION, "aha-query-plan-v6");
+test("QUERY_PLAN_PROMPT_VERSION is aha-query-plan-v7", () => {
+  assert.equal(QUERY_PLAN_PROMPT_VERSION, "aha-query-plan-v7");
 });
 
 test("buildQueryPlanPrompt embeds the source path and a source summary block", () => {
@@ -119,14 +119,17 @@ test("transport failure falls back to the deterministic rules plan", async () =>
   assert.ok(outcome.queries.every((query) => ["qmd query", "qmd search"].includes(query.command)));
 });
 
-test("malformed/short model output (fewer than 3 usable queries) falls back to rules", async () => {
+test("short model output (fewer than 3 usable queries) supplements with deterministic rules", async () => {
   const { deps } = fakeDeps([responsesEnvelope({ queries: [validPlan.queries[0]] })]);
   const args = { sourcePath: "Source.md", id: "case-2", _resolved_insight_input: "太短的输入也需要兜底规则查询计划。" };
   const outcome = await generateQueryPlanViaLlm(args, args._resolved_insight_input, transportRequest(), deps);
 
-  assert.equal(outcome.generatedBy, "rules");
-  assert.equal(outcome.fallback, true);
-  assert.match(outcome.error, /fewer than 3 usable queries/);
+  assert.equal(outcome.generatedBy, "llm");
+  assert.equal(outcome.fallback, false);
+  assert.equal(outcome.error, null);
+  assert.equal(outcome.model_query_count, 1);
+  assert.ok(outcome.queries.length >= 3, "supplemented plan should have at least 3 queries");
+  assert.equal(outcome.queries[0].kind, validPlan.queries[0].kind);
 });
 
 test("non-JSON model output falls back to rules with a parse-kind error", async () => {
