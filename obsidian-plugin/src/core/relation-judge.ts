@@ -22,7 +22,7 @@ import {
 import { compactLine } from "./query-plan-deterministic";
 import { AHA_RESULT_SCHEMA, RELATIONS as VALID_RELATIONS, validateAhaResult } from "./result-validator";
 
-export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v5";
+export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v6";
 export const RELATION_JUDGE_SCHEMA_NAME = "aha_relation_judge";
 export const DEFAULT_RELATION_JUDGE_CHUNK_SIZE = 20;
 export const DEFAULT_RELATION_JUDGE_CONCURRENCY = 3;
@@ -69,10 +69,11 @@ export function buildRelationJudgePrompt({ sourcePath, sourceText, candidateInpu
     "持久判断和教训优先于同话题的事件流水。",
     "",
     "以 JSON 格式输出，每条候选包含以下字段：",
+    "- relation：必填，上面五个关系标签之一（supports/challenges/bounds/resembles/weak），不要省略这个字段。",
     "- hit：候选 excerpt 中的原文短引句。",
     "- why：用自然中文写，以具体观点或张力开头，点出旧判断和当前 insight 之间的具体连接。",
-    "- quotes：支撑标签的 excerpt 原文引句。",
-    "- 保持 notePath 值不变。",
+    "- quotes：字符串数组（即使只有一条引句，也要写成 [\"引句\"] 而不是裸字符串）。支撑标签的 excerpt 原文引句。",
+    "- notePath：保持传入的 notePath 值不变，必须原样返回。",
     "",
     `sourcePath: ${sourcePath}`,
     "source 全文：",
@@ -122,11 +123,24 @@ export function normalizeStructuredResult(value: unknown): unknown {
       for (const key of ["noteTitle", "quotes", "selected"]) {
         if (next[key] === null) delete next[key];
       }
+      // DeepSeek (chat-completions, no structured-output schema enforcement)
+      // frequently returns quotes as a bare string instead of a one-element
+      // array, even when the prompt asks for an array -- coerce it rather
+      // than fail validation and lose an otherwise well-judged candidate.
+      if (typeof next.quotes === "string" && next.quotes.trim()) {
+        next.quotes = [next.quotes];
+      }
       if (typeof next.hit !== "string" || !next.hit.trim()) {
         const quotes = Array.isArray(next.quotes) ? next.quotes.filter((q): q is string => typeof q === "string" && q.trim().length > 0) : [];
         next.hit = quotes[0] || String(next.notePath || "unknown");
       }
-      if (typeof next.relation === "string" && !VALID_RELATIONS.has(next.relation)) {
+      // A missing relation (not just an invalid one) defaults to "weak", the
+      // same safe default the schema and enforceQuoteBackedRelation already
+      // use for "no clear evidence-backed relation" -- needed because
+      // chat-completions providers (DeepSeek) have no structured-output
+      // schema enforcement and can omit the field entirely even when the
+      // prompt asks for it.
+      if (typeof next.relation !== "string" || !VALID_RELATIONS.has(next.relation)) {
         next.relation = "weak";
       }
       return next;
@@ -358,8 +372,26 @@ interface NormalizedRelationJudgeOutput {
 
 function validatedRelationJudgeOutput(
   output: unknown,
+  expectedNotePath?: string,
 ): { ok: true; value: NormalizedRelationJudgeOutput } | { ok: false; errors: string[] } {
-  const parsed = normalizeStructuredResult(output) as NormalizedRelationJudgeOutput;
+  // When exactly one candidate was asked about (the per-candidate judging
+  // path), the caller already knows which notePath the response is for.
+  // DeepSeek (chat-completions, no structured-output schema enforcement)
+  // sometimes omits notePath entirely, which otherwise defeats
+  // normalizeStructuredResult's bare-candidate-object detection (it keys off
+  // notePath being a string) and the response fails validation with the
+  // unhelpful "Result must include boolean ok." -- backfill the known value
+  // onto a bare, unwrapped object before normalizing.
+  let patched = output;
+  if (
+    expectedNotePath
+    && output && typeof output === "object" && !Array.isArray(output)
+    && !Array.isArray((output as Record<string, unknown>).candidates)
+    && typeof (output as Record<string, unknown>).notePath !== "string"
+  ) {
+    patched = { ...(output as Record<string, unknown>), notePath: expectedNotePath };
+  }
+  const parsed = normalizeStructuredResult(patched) as NormalizedRelationJudgeOutput;
   const validation = validateAhaResult(parsed);
   if (!validation.ok) return { ok: false, errors: validation.errors };
   return { ok: true, value: parsed };
@@ -389,13 +421,14 @@ export async function judgeRelationsRawViaLlm(
   const attempt = await callLlm(prompt);
   if (!attempt.ok) return { ok: false, error: attempt.error };
 
+  const expectedNotePath = input.candidateInputs.length === 1 ? String(input.candidateInputs[0].notePath ?? "") || undefined : undefined;
   let repaired = false;
-  let validated = validatedRelationJudgeOutput(attempt.json);
+  let validated = validatedRelationJudgeOutput(attempt.json, expectedNotePath);
   if (!validated.ok) {
     const repairAttempt = await callLlm(buildRelationJudgeRepairPrompt(prompt, validated.errors.join("; ")));
     if (!repairAttempt.ok) return { ok: false, error: repairAttempt.error };
     repaired = true;
-    validated = validatedRelationJudgeOutput(repairAttempt.json);
+    validated = validatedRelationJudgeOutput(repairAttempt.json, expectedNotePath);
     if (!validated.ok) return { ok: false, error: validated.errors.join("; ") };
   }
 

@@ -128,8 +128,8 @@ function judgeResultPayload(candidatePatch) {
 
 // --- basic prompt/version sanity ---
 
-test("RELATION_JUDGE_PROMPT_VERSION is aha-relation-judge-v5", () => {
-  assert.equal(RELATION_JUDGE_PROMPT_VERSION, "aha-relation-judge-v5");
+test("RELATION_JUDGE_PROMPT_VERSION is aha-relation-judge-v6", () => {
+  assert.equal(RELATION_JUDGE_PROMPT_VERSION, "aha-relation-judge-v6");
 });
 
 test("buildRelationJudgePrompt embeds sourcePath and candidateInputs JSON", () => {
@@ -274,6 +274,86 @@ test("judgeRelationsRawViaLlm returns raw (unmerged) candidates on success", asy
   assert.equal(raw.repaired, false);
   assert.equal(raw.candidates[0].relation, "resembles");
   // Unmerged: no retrieval-side fields like `selected` defaults or rerankId spliced in beyond what the model returned.
+  assert.equal(raw.candidates[0].notePath, "Memory/Feedback.md");
+});
+
+// Regression: DeepSeek (chat-completions protocol, no structured-output
+// schema enforcement -- unlike OpenAI's "responses" protocol, which is no
+// longer a supported provider) reliably returns a bare single-candidate
+// object -- {hit, why, quotes, notePath} -- omitting `relation` entirely,
+// because buildRelationJudgePrompt's field list never named it as a
+// required output key. normalizeStructuredResult already wrapped the bare
+// object into {ok:true, candidates:[...]}, but only coerced an *invalid*
+// relation *string* to "weak" -- a *missing* relation (undefined) fell
+// through unchanged and failed validateAhaResult with "relation is
+// invalid", so ~14/15 real candidates failed relation judging on a real
+// plugin round (2026-08-26, deepseek-v4-flash). Captured verbatim from a
+// live DeepSeek response.
+test("a bare candidate object with no relation field at all still judges successfully (real DeepSeek output shape)", async () => {
+  const { deps } = fakeDeps([responsesEnvelope({
+    hit: "我想着要在心理学领域做出点成果来，想着给石头出个心理传记，想着运动心理。",
+    why: "旧笔记中11月的理想主义激情与当前insight的迷茫低效形成对比。",
+    quotes: ["我想着要在心理学领域做出点成果来"],
+    notePath: "Memory/Feedback.md",
+  })]);
+  const raw = await judgeRelationsRawViaLlm({
+    sourcePath: "Source.md",
+    sourceText: "text",
+    candidateInputs,
+  }, transportRequest(), deps);
+
+  assert.equal(raw.ok, true, raw.error);
+  assert.equal(raw.candidates[0].relation, "weak");
+  assert.equal(raw.candidates[0].notePath, "Memory/Feedback.md");
+});
+
+// Regression: DeepSeek very frequently returns `quotes` as a bare string
+// instead of a one-element array (observed in 5 of 6 real responses during
+// the 2026-08-26 live-plugin debugging session), which used to fail
+// validateAhaResult's "quotes must be an array of strings" check and, for
+// strong relations, the quote-backed-hit check too (hasQuoteEvidence reads
+// candidate.quotes as an array). Captured verbatim from a live response.
+test("quotes returned as a bare string (not an array) is coerced and still judges successfully", async () => {
+  const { deps } = fakeDeps([responsesEnvelope({
+    relation: "supports",
+    hit: "总是在设定任务之后就不会无所事事",
+    why: "旧笔记中曾记录设定细致任务能摆脱无所事事与未来焦虑，与当前迷茫期的低效且混乱的秩序状态感受相呼应。",
+    quotes: "除非某项工作能占据较长时间，否则没有为自己设定任务就会变得无所事事",
+    notePath: "Memory/Feedback.md",
+  })]);
+  const raw = await judgeRelationsRawViaLlm({
+    sourcePath: "Source.md",
+    sourceText: "text",
+    candidateInputs,
+  }, transportRequest(), deps);
+
+  assert.equal(raw.ok, true, raw.error);
+  assert.equal(raw.candidates[0].relation, "supports");
+  assert.deepEqual(raw.candidates[0].quotes, ["除非某项工作能占据较长时间，否则没有为自己设定任务就会变得无所事事"]);
+});
+
+// Regression: DeepSeek sometimes omits notePath entirely from a bare
+// candidate object. normalizeStructuredResult's bare-candidate-object
+// detection keys off notePath being a string, so a missing notePath used to
+// leave the response completely unwrapped and fail with the unhelpful
+// "Result must include boolean ok." judgeRelationsRawViaLlm is only ever
+// called with exactly one candidateInput from the per-candidate judging path
+// (judgeCandidateRelationsViaLlm), so the caller already knows which
+// notePath the response must be for. Captured verbatim from a live response.
+test("a bare candidate object missing notePath backfills it from the single candidateInput", async () => {
+  const { deps } = fakeDeps([responsesEnvelope({
+    relation: "supports",
+    hit: "自考完最后一门试，状态便一落千丈。",
+    why: "旧笔记中放假后状态一落千丈的体验，与当前洞察中假期迷茫、无动力的状态形成呼应。",
+    quotes: "自考完最后一门试，状态便一落千丈。",
+  })]);
+  const raw = await judgeRelationsRawViaLlm({
+    sourcePath: "Source.md",
+    sourceText: "text",
+    candidateInputs,
+  }, transportRequest(), deps);
+
+  assert.equal(raw.ok, true, raw.error);
   assert.equal(raw.candidates[0].notePath, "Memory/Feedback.md");
 });
 
