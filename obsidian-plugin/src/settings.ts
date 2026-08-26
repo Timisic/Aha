@@ -14,25 +14,31 @@ import { parseQmdEnvironment, probeQmdAvailable, runQmdEmbed, runQmdStatus, runQ
 // Settings convergence (issue #59). Field categories, recapped here so
 // display() and settings-migration.ts stay consistent with each other:
 //
-//   - Visible (exactly five `new Setting(...)`-groups, at most six per the
-//     issue): LLM service group (provider dropdown + OpenAI/DeepSeek
-//     sub-fields, counted as ONE conceptual item), query-plan prompt
-//     override, review folder, target candidates, excluded folders.
-//   - Advanced (collapsed, exactly two items): qmd path override
+//   - Visible (four `new Setting(...)`-groups in display(), outside
+//     Advanced): DeepSeek LLM group (base URL/model/key/key-env + test
+//     button, counted as ONE conceptual item -- the OpenAI provider option
+//     and its generic llm* fields were removed; DeepSeek is now the only
+//     supported API provider), review folder, target candidates, excluded
+//     folders.
+//   - Advanced (collapsed, three items -- query-plan prompt override lives
+//     here too, not in the visible section above; this note previously
+//     claimed otherwise): query-plan prompt override, qmd path override
 //     (qmdCommand -- confirmed by reading qmd-request.ts: this is the one
 //     field controlling both the CLI fallback command and SDK-module
-//     inference path, so it is the "qmd path override" the issue means) and
+//     inference path, so it is the "qmd path override" the issue means), and
 //     the single multi-line qmd environment field (qmdEnvironment, replacing
 //     the six discrete qmdRemote* fields in the UI).
 //   - Hidden developer settings (no UI row at all, data.json-only):
 //     traceDirectory, useFixtureResult, useLegacyWrapper.
 //   - Truly invisible / dead-but-still-functional (no UI row, data.json-only,
-//     NOT carried forward by migration): ahaWorkspace, wrapperRelativePath,
-//     nodeCommand, codexCommand, codexModel, codexReasoningEffort,
-//     codexSandbox, obsidianCommand, qmdRunner, qmdSdkModule. These stay in
-//     the TS interface/DEFAULT_SETTINGS only because process.ts's frozen
-//     runAhaWrapper/runReadinessCheck (the #58 legacy-wrapper rollback path)
-//     hard-require them.
+//     NOT carried forward by migration): llmProvider (fixed to "deepseek";
+//     the only other value process.ts's wrapper accepts is "codex-cli",
+//     which was never reachable from this settings UI either), ahaWorkspace,
+//     wrapperRelativePath, nodeCommand, codexCommand, codexModel,
+//     codexReasoningEffort, codexSandbox, obsidianCommand, qmdRunner,
+//     qmdSdkModule. These stay in the TS interface/DEFAULT_SETTINGS only
+//     because process.ts's frozen runAhaWrapper/runReadinessCheck (the #58
+//     legacy-wrapper rollback path) hard-require them.
 //   - Invisible but still alive for BOTH the legacy and internalized paths
 //     (no UI row, but carried forward by migration): qmdIndex, qmdRerank,
 //     and the six qmdRemote* fields (process.ts's frozen wrapperChildEnv
@@ -48,11 +54,12 @@ import { parseQmdEnvironment, probeQmdAvailable, runQmdEmbed, runQmdStatus, runQ
 //     drop its UI row rather than invent a place for it.
 export interface AhaPluginSettings {
   ahaWorkspace: string;
+  /**
+   * Fixed to "deepseek" (DeepSeek is the only supported API provider; the
+   * only other value process.ts's frozen wrapper accepts is "codex-cli",
+   * never reachable from this settings UI). No settings-page row.
+   */
   llmProvider: string;
-  llmBaseUrl: string;
-  llmModel: string;
-  llmApiKey: string;
-  llmApiKeyEnv: string;
   deepseekBaseUrl: string;
   deepseekModel: string;
   deepseekApiKey: string;
@@ -123,11 +130,7 @@ export interface AhaPluginSettings {
 
 export const DEFAULT_SETTINGS: AhaPluginSettings = {
   ahaWorkspace: "",
-  llmProvider: "openai",
-  llmBaseUrl: "https://api.openai.com/v1",
-  llmModel: "gpt-5.5",
-  llmApiKey: "",
-  llmApiKeyEnv: "OPENAI_API_KEY",
+  llmProvider: "deepseek",
   deepseekBaseUrl: "https://api.deepseek.com",
   deepseekModel: "deepseek-v4-pro",
   deepseekApiKey: "",
@@ -187,22 +190,6 @@ export class AhaSettingTab extends PluginSettingTab {
         }));
   }
 
-  private apiKeySetting(key: "llmApiKey" | "deepseekApiKey", name: string, desc: string): void {
-    new Setting(this.containerEl)
-      .setName(name)
-      .setDesc(desc)
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text
-          .setPlaceholder("sk-...")
-          .setValue(this.plugin.settings[key] ?? "")
-          .onChange(async (value) => {
-            this.plugin.settings[key] = value.trim();
-            await this.plugin.saveSettings();
-          });
-      });
-  }
-
   // Trimmed multi-line text setting (issue #59): used for the prompt
   // override and the qmd environment fields. Unlike textSetting, empty
   // input is always kept as empty (these fields' whole point is that empty
@@ -225,47 +212,11 @@ export class AhaSettingTab extends PluginSettingTab {
       });
   }
 
-  // Runs through the in-plugin requestUrl transport adapter (issue #55), not
-  // the legacy external-process wrapper, so the Test buttons exercise the same
-  // network path (and proxy behavior) the internalized pipeline will use.
-  private providerTestSetting(provider: LlmApiProvider, label: string): void {
-    new Setting(this.containerEl)
-      .setName(`Test ${label}`)
-      .setDesc(`Send a minimal JSON request to verify the configured ${label} key, endpoint, and model.`)
-      .addButton((button) => button
-        .setButtonText(`Test ${label}`)
-        .onClick(async () => {
-          button.setDisabled(true).setButtonText("Testing...");
-          try {
-            const result = await testProviderConnection(this.plugin.settings, provider);
-            new Notice(result.ok ? result.message : `${label} test failed: ${result.message}`, result.ok ? 6000 : 12000);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            new Notice(`${label} test failed: ${message}`, 12000);
-          } finally {
-            button.setDisabled(false).setButtonText(`Test ${label}`);
-          }
-        }));
-  }
-
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
 
     containerEl.createEl("h2", { text: "Aha" });
-
-    new Setting(containerEl)
-      .setName("LLM provider")
-      .setDesc("Query planning 和 Relation Judge 使用的服务商。")
-      .addDropdown((dropdown) => dropdown
-        .addOption("openai", "OpenAI")
-        .addOption("deepseek", "DeepSeek")
-        .setValue(this.plugin.settings.llmProvider === "deepseek" ? "deepseek" : "openai")
-        .onChange(async (value) => {
-          this.plugin.settings.llmProvider = value || DEFAULT_SETTINGS.llmProvider;
-          await this.plugin.saveSettings();
-          this.renderProviderFields(providerContainer);
-        }));
 
     const providerContainer = containerEl.createDiv();
     this.renderProviderFields(providerContainer);
@@ -297,21 +248,11 @@ export class AhaSettingTab extends PluginSettingTab {
 
   private renderProviderFields(container: HTMLElement): void {
     container.empty();
-    const isDeepSeek = this.plugin.settings.llmProvider === "deepseek";
-
-    if (isDeepSeek) {
-      this.textSettingInto(container, "deepseekBaseUrl", "Base URL", "DeepSeek API 地址。");
-      this.textSettingInto(container, "deepseekModel", "Model", "DeepSeek 模型。");
-      this.apiKeySettingInto(container, "deepseekApiKey", "API key", "留空则读取下方环境变量。");
-      this.textSettingInto(container, "deepseekApiKeyEnv", "Key env var", "API key 环境变量名。");
-      this.providerTestSettingInto(container, "deepseek", "DeepSeek");
-    } else {
-      this.textSettingInto(container, "llmBaseUrl", "Base URL", "OpenAI API 地址。");
-      this.textSettingInto(container, "llmModel", "Model", "OpenAI 模型。");
-      this.apiKeySettingInto(container, "llmApiKey", "API key", "留空则读取下方环境变量。");
-      this.textSettingInto(container, "llmApiKeyEnv", "Key env var", "API key 环境变量名。");
-      this.providerTestSettingInto(container, "openai", "OpenAI");
-    }
+    this.textSettingInto(container, "deepseekBaseUrl", "Base URL", "DeepSeek API 地址。");
+    this.textSettingInto(container, "deepseekModel", "Model", "DeepSeek 模型。");
+    this.apiKeySettingInto(container, "deepseekApiKey", "API key", "留空则读取下方环境变量。");
+    this.textSettingInto(container, "deepseekApiKeyEnv", "Key env var", "API key 环境变量名。");
+    this.providerTestSettingInto(container, "deepseek", "DeepSeek");
   }
 
   private textSettingInto(container: HTMLElement, key: StringSettingKey, name: string, desc: string): void {
@@ -328,7 +269,7 @@ export class AhaSettingTab extends PluginSettingTab {
         }));
   }
 
-  private apiKeySettingInto(container: HTMLElement, key: "llmApiKey" | "deepseekApiKey", name: string, desc: string): void {
+  private apiKeySettingInto(container: HTMLElement, key: "deepseekApiKey", name: string, desc: string): void {
     new Setting(container)
       .setName(name)
       .setDesc(desc)
@@ -367,8 +308,9 @@ export class AhaSettingTab extends PluginSettingTab {
   // Obsidian's Setting API has no built-in collapsible section, so this
   // implements one directly: a toggle button that shows/hides a dedicated
   // sub-container. Collapsed by default (these are advanced, rarely-touched
-  // settings). Exactly two items live inside: qmd path override
-  // (qmdCommand) and the qmd environment field (qmdEnvironment).
+  // settings). Three items live inside: query-plan prompt override, qmd
+  // path override (qmdCommand), and the qmd environment field
+  // (qmdEnvironment).
   private renderAdvancedSection(containerEl: HTMLElement): void {
     const advancedContainer = containerEl.createDiv({ cls: "aha-advanced-section" });
     let expanded = false;
@@ -500,7 +442,7 @@ export class AhaSettingTab extends PluginSettingTab {
     const [qmdAvailable, statusProbe, llmProbe] = await Promise.all([
       probeQmdAvailable(settings),
       runQmdStatus(settings),
-      testProviderConnection(settings, settings.llmProvider === "deepseek" ? "deepseek" : "openai"),
+      testProviderConnection(settings, "deepseek"),
     ]);
 
     const lights: HealthLight[] = [

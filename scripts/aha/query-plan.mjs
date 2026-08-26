@@ -4,9 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
-  DEFAULT_OPENAI_API_KEY_ENV,
-  DEFAULT_OPENAI_BASE_URL,
-  DEFAULT_OPENAI_MODEL,
+  DEFAULT_DEEPSEEK_API_KEY_ENV,
+  DEFAULT_DEEPSEEK_BASE_URL,
+  DEFAULT_DEEPSEEK_MODEL,
 } from "../lib/openai-json-agent.mjs";
 // The deterministic portion of query planning (fallback qmd object
 // construction, sanitization/length limits, the deterministic source
@@ -64,11 +64,11 @@ export function defaultQueryGenerationOptions(overrides = {}) {
   );
   return {
     queryGenerator: process.env.AHA_BENCH_QUERY_GENERATOR || "agent",
-    llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "openai",
-    llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_OPENAI_BASE_URL,
-    llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_OPENAI_MODEL,
-    llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_OPENAI_API_KEY_ENV,
-    queryAgentProvider: process.env.AHA_BENCH_QUERY_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
+    llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "deepseek",
+    llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_DEEPSEEK_BASE_URL,
+    llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_DEEPSEEK_MODEL,
+    llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_DEEPSEEK_API_KEY_ENV,
+    queryAgentProvider: process.env.AHA_BENCH_QUERY_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "deepseek",
     queryAgentBin: process.env.AHA_BENCH_QUERY_AGENT_BIN || "codex",
     queryAgentModel: process.env.AHA_BENCH_QUERY_AGENT_MODEL || "",
     queryAgentCache: process.env.AHA_BENCH_QUERY_AGENT_CACHE || "bench/generated/qmd-query-agent-cache.json",
@@ -144,10 +144,10 @@ export async function resolveQmdQueryForCase(caseItem, options = {}) {
 
 // Resolves the query plan for one benchmark case: rules generator short
 // circuits to the deterministic fallback rules (#56); agent generator tries
-// the cache, then the configured LLM provider (issue #57: openai routes
-// through the core llmJsonCall path; codex/codex-cli use the legacy CLI
-// adapter kept below), falling back to the deterministic rules on failure
-// when queryAgentFallback is enabled (the default).
+// the cache, then the configured LLM provider (deepseek routes through the
+// core llmJsonCall path; codex/codex-cli use the legacy CLI adapter kept
+// below), falling back to the deterministic rules on failure when
+// queryAgentFallback is enabled (the default).
 export async function resolveQmdQueriesForCase(caseItem, options = {}) {
   const queryOptions = defaultQueryGenerationOptions(options);
   const generator = String(queryOptions.queryGenerator || "agent").toLowerCase();
@@ -179,7 +179,7 @@ export async function resolveQmdQueriesForCase(caseItem, options = {}) {
     const plan = await generateQueryPlanWithAgent(caseItem, queryOptions);
     cache.entries[cacheKey] = {
       generated_at: new Date().toISOString(),
-      generator: queryAgentProvider(queryOptions) === "openai" ? "openai-responses" : "codex-exec",
+      generator: queryAgentProvider(queryOptions) === "deepseek" ? "deepseek-chat-completions" : "codex-exec",
       prompt_version: QUERY_PLAN_PROMPT_VERSION,
       agent_provider: queryAgentProvider(queryOptions),
       agent_bin: queryOptions.queryAgentBin,
@@ -206,26 +206,27 @@ export async function qmdQueryForCase(caseItem, options = {}) {
   return (await resolveQmdQueryForCase(caseItem, options)).query;
 }
 
-// Dispatches to the core HTTP-only LLM path for "openai" (issue #57), or the
-// legacy codex CLI subprocess adapter for "codex"/"codex-cli" (kept as a
+// Dispatches to the core HTTP-only LLM path for "deepseek" (issue #57), or
+// the legacy codex CLI subprocess adapter for "codex"/"codex-cli" (kept as a
 // legacy-only path; see the module comment above
 // generateQueryPlanWithCodexCliLegacy for why it was not carried into core).
 // Throws on any failure; the caller (resolveQmdQueriesForCase) decides
 // whether to fall back to the deterministic rules plan.
 async function generateQueryPlanWithAgent(caseItem, options) {
-  if (queryAgentProvider(options) === "openai") {
-    const apiKeyEnv = String(options.llmApiKeyEnv || DEFAULT_OPENAI_API_KEY_ENV).trim() || DEFAULT_OPENAI_API_KEY_ENV;
+  if (queryAgentProvider(options) === "deepseek") {
+    const apiKeyEnv = String(options.llmApiKeyEnv || DEFAULT_DEEPSEEK_API_KEY_ENV).trim() || DEFAULT_DEEPSEEK_API_KEY_ENV;
     const apiKey = process.env[apiKeyEnv];
     if (!apiKey) throw new Error(`${apiKeyEnv} is not set.`);
     const outcome = await generateQueryPlanViaLlm(caseItem, caseItem._resolved_insight_input, {
       baseUrl: options.llmBaseUrl,
       apiKey,
       model: queryAgentModel(options),
-      protocol: "responses",
+      protocol: "chat-completions",
+      thinking: "disabled",
       timeoutMs: options.queryAgentTimeoutMs,
     });
     if (outcome.fallback) {
-      throw new Error(`OpenAI query plan failed: ${outcome.error}`);
+      throw new Error(`DeepSeek query plan failed: ${outcome.error}`);
     }
     return { queries: outcome.queries, model_query_count: outcome.model_query_count };
   }
@@ -241,7 +242,7 @@ async function generateQueryPlanWithAgent(caseItem, options) {
 // (core is HTTP-only via llmJsonCall); this function is that pre-existing
 // behavior, kept reachable rather than deleted so a bench config that still
 // sets AHA_BENCH_QUERY_AGENT_PROVIDER=codex does not silently break. It is
-// legacy/deprecated: new work should use the "openai" provider (core path)
+// legacy/deprecated: new work should use the "deepseek" provider (core path)
 // or the "rules" generator.
 function generateQueryPlanWithCodexCliLegacy(caseItem, options) {
   const prompt = buildQueryPlanPrompt({ sourcePath: caseItem.source_note_path || caseItem.id }, caseItem._resolved_insight_input);
@@ -337,19 +338,19 @@ function queryPlanCacheKey(caseItem, options) {
 }
 
 function queryAgentProvider(options) {
-  return String(options.queryAgentProvider || options.llmProvider || "openai").toLowerCase();
+  return String(options.queryAgentProvider || options.llmProvider || "deepseek").toLowerCase();
 }
 
 function queryAgentModel(options) {
-  return String(options.queryAgentModel || options.llmModel || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL;
+  return String(options.queryAgentModel || options.llmModel || DEFAULT_DEEPSEEK_MODEL).trim() || DEFAULT_DEEPSEEK_MODEL;
 }
 
 function queryProviderCacheShape(options) {
   const provider = queryAgentProvider(options);
-  if (provider === "openai") {
+  if (provider === "deepseek") {
     return JSON.stringify({
       provider,
-      baseUrl: options.llmBaseUrl || DEFAULT_OPENAI_BASE_URL,
+      baseUrl: options.llmBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
       model: queryAgentModel(options),
     });
   }

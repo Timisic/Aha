@@ -20,7 +20,7 @@ export interface ReadinessResult {
   checks: ReadinessCheck[];
 }
 
-export type ApiProvider = "deepseek" | "openai";
+export type ApiProvider = "deepseek";
 
 export interface ProviderConnectionResult {
   ok: boolean;
@@ -120,19 +120,11 @@ export async function runProviderConnectionCheck(settings: AhaPluginSettings, pr
 }
 
 function providerConfig(settings: AhaPluginSettings): { apiKey: string; apiKeyEnv: string; baseUrl: string; model: string } {
-  if (settings.llmProvider === "deepseek") {
-    return {
-      apiKey: settings.deepseekApiKey,
-      apiKeyEnv: settings.deepseekApiKeyEnv,
-      baseUrl: settings.deepseekBaseUrl,
-      model: settings.deepseekModel,
-    };
-  }
   return {
-    apiKey: settings.llmApiKey,
-    apiKeyEnv: settings.llmApiKeyEnv,
-    baseUrl: settings.llmBaseUrl,
-    model: settings.llmModel,
+    apiKey: settings.deepseekApiKey,
+    apiKeyEnv: settings.deepseekApiKeyEnv,
+    baseUrl: settings.deepseekBaseUrl,
+    model: settings.deepseekModel,
   };
 }
 

@@ -7,13 +7,13 @@ import test from "node:test";
 
 import { mapWithBoundedConcurrency, relationJudgeCandidatesForCase } from "../relation-judge.mjs";
 
-const previousKey = process.env.AHA_TEST_OPENAI_KEY;
+const previousKey = process.env.AHA_TEST_DEEPSEEK_KEY;
 const previousChunk = process.env.AHA_RELATION_JUDGE_CHUNK_SIZE;
 const previousConcurrency = process.env.AHA_RELATION_JUDGE_CONCURRENCY;
 
 test.after(() => {
   for (const [name, value] of [
-    ["AHA_TEST_OPENAI_KEY", previousKey],
+    ["AHA_TEST_DEEPSEEK_KEY", previousKey],
     ["AHA_RELATION_JUDGE_CHUNK_SIZE", previousChunk],
     ["AHA_RELATION_JUDGE_CONCURRENCY", previousConcurrency],
   ]) {
@@ -50,7 +50,7 @@ test("mapWithBoundedConcurrency keeps order, bounds lanes, and settles before re
 });
 
 test("chunked relation judging fans out concurrently and reassembles all candidates", async () => {
-  process.env.AHA_TEST_OPENAI_KEY = "test-key";
+  process.env.AHA_TEST_DEEPSEEK_KEY = "test-key";
   process.env.AHA_RELATION_JUDGE_CHUNK_SIZE = "4";
   process.env.AHA_RELATION_JUDGE_CONCURRENCY = "3";
   const server = await startEchoJudgeServer();
@@ -67,11 +67,11 @@ test("chunked relation judging fans out concurrently and reassembles all candida
       must_recall: [],
     }, candidates, {
       relationJudgeMode: "agent",
-      llmProvider: "openai",
-      relationJudgeAgentProvider: "openai",
+      llmProvider: "deepseek",
+      relationJudgeAgentProvider: "deepseek",
       llmBaseUrl: server.baseUrl,
-      llmModel: "gpt-test",
-      llmApiKeyEnv: "AHA_TEST_OPENAI_KEY",
+      llmModel: "deepseek-test",
+      llmApiKeyEnv: "AHA_TEST_DEEPSEEK_KEY",
       relationJudgeAgentCache: "",
       relationJudgeAgentFallback: false,
     });
@@ -111,11 +111,10 @@ const server = createServer((req, res) => {
   req.on("end", () => {
     const startedAt = Date.now();
     const parsed = JSON.parse(body || "{}");
-    const input = String(parsed.input ?? "");
+    const input = String(parsed.messages?.[0]?.content ?? "");
     const marker = "candidates:";
-    const begin = input.indexOf(marker);
-    const end = input.indexOf("Return this JSON shape:");
-    const candidates = JSON.parse(input.slice(begin + marker.length, end).trim());
+    const begin = input.lastIndexOf(marker);
+    const candidates = JSON.parse(input.slice(begin + marker.length).trim());
     const output = {
       ok: true,
       sourcePath: "concurrency-case",
@@ -136,7 +135,7 @@ const server = createServer((req, res) => {
     setTimeout(() => {
       appendFileSync(requestsPath, JSON.stringify({ startedAt, finishedAt: Date.now(), count: candidates.length }) + "\\n");
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ output_text: JSON.stringify(output) }));
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify(output) } }] }));
     }, 120);
   });
 });

@@ -16,7 +16,7 @@ import {
 } from "./core";
 import type { AhaPluginSettings } from "./settings";
 
-export type LlmApiProvider = "openai" | "deepseek";
+export type LlmApiProvider = "deepseek";
 
 export interface ProviderConnectionResult {
   ok: boolean;
@@ -74,41 +74,31 @@ export const requestUrlHttpPost: HttpJsonPost = async (url, headers, body, _time
 };
 
 /**
- * Derives the request profile for a provider from the plugin settings,
- * matching the wrapper conventions: openai uses the responses protocol,
- * deepseek uses chat-completions with thinking disabled. The API key comes
- * from the provider's key field when set, otherwise from the environment
- * variable named in the provider's key-env field (same precedence the legacy
- * process path applied by injecting the direct key into the child env).
+ * Derives the request profile for a provider from the plugin settings:
+ * DeepSeek, the sole supported provider, uses chat-completions with thinking
+ * disabled. The API key comes from the provider's key field when set,
+ * otherwise from the environment variable named in the provider's key-env
+ * field (same precedence the legacy process path applied by injecting the
+ * direct key into the child env).
  */
 export function resolveLlmRequestProfile(settings: AhaPluginSettings, provider: string): LlmProviderProfile | LlmProviderProfileError {
-  if (provider !== "openai" && provider !== "deepseek") {
+  if (provider !== "deepseek") {
     return {
       ok: false,
       label: provider || "LLM",
-      model: settings.llmModel,
-      error: "Direct API calls are available for OpenAI and DeepSeek providers.",
+      model: settings.deepseekModel,
+      error: "Direct API calls are available for the DeepSeek provider.",
     };
   }
-  const config = provider === "deepseek"
-    ? {
-        label: "DeepSeek",
-        baseUrl: settings.deepseekBaseUrl,
-        model: settings.deepseekModel,
-        directKey: settings.deepseekApiKey,
-        keyEnv: settings.deepseekApiKeyEnv,
-        protocol: "chat-completions" as LlmProtocol,
-        thinking: undefined,
-      }
-    : {
-        label: "OpenAI",
-        baseUrl: settings.llmBaseUrl,
-        model: settings.llmModel,
-        directKey: settings.llmApiKey,
-        keyEnv: settings.llmApiKeyEnv,
-        protocol: "responses" as LlmProtocol,
-        thinking: undefined,
-      };
+  const config = {
+    label: "DeepSeek",
+    baseUrl: settings.deepseekBaseUrl,
+    model: settings.deepseekModel,
+    directKey: settings.deepseekApiKey,
+    keyEnv: settings.deepseekApiKeyEnv,
+    protocol: "chat-completions" as LlmProtocol,
+    thinking: "disabled" as LlmThinking,
+  };
   const key = resolveApiKey(config.directKey, config.keyEnv);
   if (!key.ok) {
     return { ok: false, label: config.label, model: config.model, error: key.error };

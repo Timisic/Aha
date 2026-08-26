@@ -3,12 +3,10 @@
 // rebuilds obsidian-plugin/dist/core.mjs from src/core before importing, so
 // this test also exercises the rebuild path every run.
 //
-// excerptNoteMarkdown already had coverage in
-// scripts/aha/tests/note-excerpt.test.mjs (kept as-is: it still exercises
-// the bench-facing shim scripts/lib/note-excerpt.mjs, which now delegates to
-// core). This file adds coverage that previously did not exist anywhere for
-// parseLineRange / normalizeLineRange / sliceLineRange / lineCount, since
-// only excerptNoteMarkdown had a dedicated test before.
+// Covers excerptNoteMarkdown / parseLineRange / normalizeLineRange /
+// sliceLineRange / lineCount. scripts/lib/note-excerpt.mjs (the old
+// bench-facing shim that re-exported these) was removed once every consumer
+// switched to importing them from core-artifact.mjs directly.
 
 import assert from "node:assert/strict";
 import test from "node:test";

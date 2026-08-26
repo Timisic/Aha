@@ -11,6 +11,14 @@ export const DEFAULT_OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
 export const DEFAULT_OPENAI_MAX_ATTEMPTS = 3;
 export const DEFAULT_OPENAI_MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
 
+// DeepSeek is the only API provider bench/query-plan/relation-judge default
+// to now (OpenAI removed as a supported provider); this module's transport
+// itself stays provider-agnostic (chat-completions vs responses protocol,
+// selected by the caller's options.protocol).
+export const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
+export const DEFAULT_DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY";
+
 const RETRY_BACKOFF_MS = [500, 1500];
 
 export function runOpenAiJsonSync(options) {

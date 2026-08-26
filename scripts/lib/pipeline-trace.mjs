@@ -7,7 +7,7 @@ import {
   candidatePath,
   candidateSourceLabel,
   candidateSourceList,
-} from "./candidate-fields.mjs";
+} from "./core-artifact.mjs";
 
 // Exported (not just module-private) so obsidian-plugin/src/pipeline-trace.ts
 // (issue #59's plugin-side, lighter trace writer) can assert its own

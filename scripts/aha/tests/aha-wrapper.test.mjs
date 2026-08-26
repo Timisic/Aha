@@ -125,25 +125,25 @@ test("readiness reports missing tools clearly", async () => {
   assert.ok(output.checks.some((check) => check.name === "Obsidian CLI" && !check.ok));
 });
 
-test("readiness reports missing OpenAI key without requiring Codex CLI", async () => {
-  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-openai-readiness-"));
+test("readiness reports missing DeepSeek key without requiring Codex CLI", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-deepseek-readiness-"));
   const helper = path.join(temp, "ok-command.mjs");
   await writeOkCommand(helper);
 
   try {
     const env = { ...process.env };
-    delete env.AHA_TEST_OPENAI_KEY;
+    delete env.AHA_TEST_DEEPSEEK_KEY;
     const result = spawnSync(process.execPath, [
       wrapper,
       "--check-readiness",
       "--workspace",
       repoRoot,
       "--llm-provider",
-      "openai",
+      "deepseek",
       "--qmd-runner",
       "cli",
       "--llm-api-key-env",
-      "AHA_TEST_OPENAI_KEY",
+      "AHA_TEST_DEEPSEEK_KEY",
       "--codex-command",
       "/definitely/missing/codex",
       "--qmd-command",
@@ -155,7 +155,7 @@ test("readiness reports missing OpenAI key without requiring Codex CLI", async (
     assert.equal(result.status, 2);
     const output = JSON.parse(result.stdout);
     assert.equal(output.ok, false);
-    assert.ok(output.checks.some((check) => check.name === "OpenAI API key" && !check.ok && check.message.includes("AHA_TEST_OPENAI_KEY")));
+    assert.ok(output.checks.some((check) => check.name === "DeepSeek API key" && !check.ok && check.message.includes("AHA_TEST_DEEPSEEK_KEY")));
     assert.equal(output.checks.some((check) => check.name === "Codex CLI"), false);
   } finally {
     await rm(temp, { recursive: true, force: true });
@@ -167,7 +167,7 @@ test("wrapper does not expose the active API key to tool subprocesses", async ()
   const helper = path.join(temp, "env-check.mjs");
   await writeFile(helper, [
     "#!/usr/bin/env node",
-    "if (process.env.AHA_TEST_OPENAI_KEY) { console.error('API key leaked'); process.exit(9); }",
+    "if (process.env.AHA_TEST_DEEPSEEK_KEY) { console.error('API key leaked'); process.exit(9); }",
     "console.log('ok');",
     "",
   ].join("\n"));
@@ -178,14 +178,14 @@ test("wrapper does not expose the active API key to tool subprocesses", async ()
       wrapper,
       "--check-readiness",
       "--workspace", repoRoot,
-      "--llm-provider", "openai",
-      "--llm-api-key-env", "AHA_TEST_OPENAI_KEY",
+      "--llm-provider", "deepseek",
+      "--llm-api-key-env", "AHA_TEST_DEEPSEEK_KEY",
       "--qmd-runner", "cli",
       "--qmd-command", helper,
       "--obsidian-command", helper,
     ], {
       encoding: "utf8",
-      env: { ...process.env, AHA_TEST_OPENAI_KEY: "top-secret" },
+      env: { ...process.env, AHA_TEST_DEEPSEEK_KEY: "top-secret" },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const output = JSON.parse(result.stdout);
@@ -197,7 +197,7 @@ test("wrapper does not expose the active API key to tool subprocesses", async ()
   }
 });
 
-test("wrapper defaults to OpenAI key and QMD SDK readiness", async () => {
+test("wrapper defaults to DeepSeek key and QMD SDK readiness", async () => {
   const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-default-readiness-"));
   const helper = path.join(temp, "ok-command.mjs");
   const sdkModule = path.join(temp, "fake-qmd-sdk.mjs");
@@ -211,7 +211,7 @@ test("wrapper defaults to OpenAI key and QMD SDK readiness", async () => {
       "--workspace",
       repoRoot,
       "--llm-api-key-env",
-      "AHA_TEST_OPENAI_KEY",
+      "AHA_TEST_DEEPSEEK_KEY",
       "--codex-command",
       "/definitely/missing/codex",
       "--qmd-sdk-module",
@@ -220,76 +220,16 @@ test("wrapper defaults to OpenAI key and QMD SDK readiness", async () => {
       "/definitely/missing/qmd",
       "--obsidian-command",
       helper,
-    ], { encoding: "utf8", env: { ...process.env, AHA_TEST_OPENAI_KEY: "test-key" }, timeout: 10000 });
+    ], { encoding: "utf8", env: { ...process.env, AHA_TEST_DEEPSEEK_KEY: "test-key" }, timeout: 10000 });
 
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.equal(output.ok, true);
-    assert.ok(output.checks.some((check) => check.name === "OpenAI API key" && check.ok));
+    assert.ok(output.checks.some((check) => check.name === "DeepSeek API key" && check.ok));
     assert.ok(output.checks.some((check) => check.name === "QMD SDK" && check.ok));
     assert.equal(output.checks.some((check) => check.name === "Codex CLI"), false);
     assert.equal(output.checks.some((check) => check.name === "QMD CLI"), false);
   } finally {
-    await rm(temp, { recursive: true, force: true });
-  }
-});
-
-test("pipeline can use OpenAI structured output provider", async () => {
-  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-openai-"));
-  const vault = path.join(temp, "vault");
-  const source = path.join(vault, "source.md");
-  const codex = path.join(temp, "codex-helper.mjs");
-  const qmd = path.join(temp, "qmd-helper.mjs");
-  const obsidian = path.join(temp, "obsidian-helper.mjs");
-  await mkdir(vault, { recursive: true });
-  await writeFile(source, "# Source\n\nA current insight with enough text for OpenAI query planning.");
-  await writeSafeCandidate(vault);
-  await writePipelineHelpers({ codex, qmd, obsidian, relationJudge: "success" });
-  const requests = [];
-  const server = await startOpenAiFixtureServer(requests);
-
-  try {
-    const result = await spawnNode([
-      wrapper,
-      "--workspace",
-      repoRoot,
-      "--llm-provider",
-      "openai",
-      "--qmd-runner",
-      "cli",
-      "--source-path",
-      "source.md",
-      "--source-absolute-path",
-      source,
-      "--vault-root",
-      vault,
-      "--llm-base-url",
-      server.baseUrl,
-      "--llm-model",
-      "gpt-test",
-      "--llm-api-key-env",
-      "AHA_TEST_OPENAI_KEY",
-      "--codex-command",
-      "/definitely/missing/codex",
-      "--qmd-command",
-      qmd,
-      "--obsidian-command",
-      obsidian,
-    ], { env: withoutProxyEnv({ ...process.env, AHA_TEST_OPENAI_KEY: "test-key" }), timeout: 10000 });
-
-    assert.equal(result.status, 0, result.stderr);
-    const output = JSON.parse(result.stdout);
-    assert.equal(output.ok, true);
-    assert.equal(output.candidates[0].notePath, "Memory/Candidate.md");
-    assert.equal(requests.length, 2);
-    assert.ok(requests.every((request) => request.headers.authorization === "Bearer test-key"));
-    assert.ok(requests.every((request) => request.body.model === "gpt-test"));
-    assert.ok(requests.every((request) => request.body.text?.format?.type === "json_schema"));
-    const relationJudgePrompt = String(requests[1].body.input ?? "");
-    assert.match(relationJudgePrompt, /Avoid formulaic openings/);
-    assert.match(relationJudgePrompt, /Do not reuse the same sentence frame/);
-  } finally {
-    await server.close();
     await rm(temp, { recursive: true, force: true });
   }
 });
@@ -389,8 +329,16 @@ test("pipeline can use DeepSeek chat completions for query planning and relation
   }
 });
 
-test("pipeline uses Codex CLI fallback when OpenAI query planning fails", async () => {
-  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-openai-plan-fallback-"));
+// DeepSeek+pipeline delegates to core's runFullPipeline (ADR 0005;
+// pipelineRecallViaCore in run-insight-search.mjs), which only falls back to
+// deterministic rules on a query-plan LLM failure -- never to Codex CLI. The
+// codex-fallback-on-API-failure behavior the pre-delegation legacy
+// pipelineRecall had is intentionally not preserved for this path (the user
+// confirmed it is unnecessary once OpenAI/codex-fallback was dropped); this
+// replaces the old "falls back to Codex CLI" test with coverage of the
+// actual current behavior.
+test("pipeline falls back to deterministic rules when DeepSeek query planning fails", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-wrapper-deepseek-plan-fallback-"));
   const vault = path.join(temp, "vault");
   const source = path.join(vault, "source.md");
   const codex = path.join(temp, "codex-helper.mjs");
@@ -401,7 +349,7 @@ test("pipeline uses Codex CLI fallback when OpenAI query planning fails", async 
   await writeSafeCandidate(vault);
   await writePipelineHelpers({ codex, qmd, obsidian, relationJudge: "success" });
   const requests = [];
-  const server = await startOpenAiFixtureServer(requests, { failAllQueryPlans: true });
+  const server = await startDeepSeekFixtureServer(requests, { failAllQueryPlans: true });
 
   try {
     const result = await spawnNode([
@@ -409,7 +357,7 @@ test("pipeline uses Codex CLI fallback when OpenAI query planning fails", async 
       "--workspace",
       repoRoot,
       "--llm-provider",
-      "openai",
+      "deepseek",
       "--qmd-runner",
       "cli",
       "--source-path",
@@ -421,22 +369,19 @@ test("pipeline uses Codex CLI fallback when OpenAI query planning fails", async 
       "--llm-base-url",
       server.baseUrl,
       "--llm-model",
-      "gpt-test",
+      "deepseek-test",
       "--llm-api-key-env",
-      "AHA_TEST_OPENAI_KEY",
+      "AHA_TEST_DEEPSEEK_KEY",
       "--codex-command",
       codex,
       "--qmd-command",
       qmd,
       "--obsidian-command",
       obsidian,
-    ], { env: withoutProxyEnv({ ...process.env, AHA_TEST_OPENAI_KEY: "test-key" }), timeout: 10000 });
+    ], { env: withoutProxyEnv({ ...process.env, AHA_TEST_DEEPSEEK_KEY: "test-key" }), timeout: 10000 });
 
-    assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
-    assert.equal(output.ok, true);
-    assert.ok(output.warnings.some((warning) => warning.includes("Query plan generated by codex after fallback")));
-    assert.equal(requests.length, 4);
+    assert.ok(output.warnings.some((warning) => warning.includes("Query plan generated by rules after fallback")));
   } finally {
     await server.close();
     await rm(temp, { recursive: true, force: true });
@@ -1392,58 +1337,9 @@ function spawnNode(args, { env, timeout }) {
   });
 }
 
-async function startOpenAiFixtureServer(requests, options = {}) {
-  let failedQueryPlan = false;
-  const server = createServer((request, response) => {
-    let body = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => { body += chunk; });
-    request.on("end", () => {
-      const parsed = JSON.parse(body);
-      requests.push({
-        url: request.url,
-        headers: request.headers,
-        body: parsed,
-      });
-      const isQueryPlan = String(parsed.input || "").includes("检索查询生成");
-      if (isQueryPlan && (options.failAllQueryPlans || (options.failFirstQueryPlan && !failedQueryPlan))) {
-        failedQueryPlan = true;
-        response.writeHead(500, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ error: { message: "planned fixture query-plan failure" } }));
-        return;
-      }
-      const output = isQueryPlan
-        ? {
-            queries: [
-              { kind: "raw", command: "qmd query", text: "raw", qmd: { intent: "raw", lex: ["source"], vec: "source insight", hyde: "old note about source insight" } },
-              { kind: "abstracted_judgment", command: "qmd query", text: "abstracted", qmd: { intent: "abstracted", lex: ["judgment"], vec: "judgment boundary", hyde: "old note about judgment boundary" } },
-              { kind: "contextual", command: "qmd query", text: "context", qmd: { intent: "context", lex: ["context"], vec: "context relation", hyde: "old note about context relation" } },
-            ],
-          }
-        : {
-            ok: true,
-            sourcePath: "source.md",
-            generatedAt: null,
-            summary: "judge ok",
-            warnings: [],
-            error: null,
-            candidates: [
-              { notePath: "Memory/Candidate.md", noteTitle: "Candidate", relation: "supports", hit: "\"Safe vault evidence.\"", why: "The candidate includes quote-backed evidence for the source insight.", quotes: ["Safe vault evidence."], selected: true },
-            ],
-          };
-      response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ output_text: JSON.stringify(output) }));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}/v1`,
-    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
-  };
-}
 
-async function startDeepSeekFixtureServer(requests) {
+async function startDeepSeekFixtureServer(requests, options = {}) {
+  let failedQueryPlan = false;
   const server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -1454,6 +1350,12 @@ async function startDeepSeekFixtureServer(requests) {
       const prompt = String(parsed.messages?.[0]?.content ?? "");
       const isConnectionCheck = /connection check/i.test(prompt);
       const isQueryPlan = prompt.includes("检索查询生成");
+      if (isQueryPlan && (options.failAllQueryPlans || (options.failFirstQueryPlan && !failedQueryPlan))) {
+        failedQueryPlan = true;
+        response.writeHead(500, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "planned fixture query-plan failure" } }));
+        return;
+      }
       const output = isConnectionCheck
         ? { ok: true }
         : isQueryPlan
@@ -1510,7 +1412,11 @@ async function writeFakeQmdSdkModule(modulePath, logPath, { rows }) {
 async function writeSafeCandidate(vault) {
   const candidate = path.join(vault, "Memory/Candidate.md");
   await mkdir(path.dirname(candidate), { recursive: true });
-  await writeFile(candidate, "# Candidate\n\nSafe vault evidence.");
+  // At least 30 substantive chars after heading/whitespace stripping: core's
+  // isSubstantiveExcerpt (note-excerpt.ts) filters out template/near-empty
+  // notes before Relation Judge, unlike the legacy wrapper's judge, which
+  // never filtered by length.
+  await writeFile(candidate, "# Candidate\n\nSafe vault evidence. This candidate note has enough real content.");
 }
 
 async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsidePath = "", outsideSnippet = "outside snippet", noCandidates = false, graphPaths = [], qmdHang = false, qmdHangQueryOnly = false, qmdHangRawQueryOnce = false }) {

@@ -186,11 +186,11 @@ test("LLM transport failure produces a structured failed record, never a fake su
     sourceText: "I need old notes about feedback loops.",
     candidates: retrievalCandidates,
     candidateInputs,
-    generatedBy: "openai",
+    generatedBy: "deepseek",
   }, transportRequest(), deps);
 
   assert.equal(result.ok, false);
-  assert.equal(result.tool, "openai");
+  assert.equal(result.tool, "deepseek");
   assert.match(result.error, /failed relation judging/);
   assert.deepEqual(result.candidates, retrievalCandidates);
   assert.equal(result.relation_judge_prompt_version, RELATION_JUDGE_PROMPT_VERSION);

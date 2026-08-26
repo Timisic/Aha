@@ -4,17 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { validateAhaResult } from "./lib/result-validator.mjs";
-import {
-  annotateCandidateRerankIds as annotateCandidates,
-  candidatePath,
-  candidateSourceLabel,
-  candidateSourceList,
-} from "../lib/candidate-fields.mjs";
 import { compactLine } from "./query-plan.mjs";
 import {
-  DEFAULT_OPENAI_API_KEY_ENV,
-  DEFAULT_OPENAI_BASE_URL,
-  DEFAULT_OPENAI_MODEL,
+  DEFAULT_DEEPSEEK_API_KEY_ENV,
+  DEFAULT_DEEPSEEK_BASE_URL,
+  DEFAULT_DEEPSEEK_MODEL,
 } from "../lib/openai-json-agent.mjs";
 // The LLM round-trip (prompt construction, the llmJsonCall call, the
 // validation-repair retry, quote-backed relation enforcement, merge, and
@@ -29,8 +23,12 @@ import {
 import {
   AHA_RESULT_SCHEMA,
   RELATION_JUDGE_PROMPT_VERSION,
+  annotateCandidateRerankIds as annotateCandidates,
   buildRelationJudgePrompt,
   buildRelationJudgeRepairPrompt,
+  candidatePath,
+  candidateSourceLabel,
+  candidateSourceList,
   composeFinalSlate,
   enforceQuoteBackedRelation,
   hasQuoteEvidence,
@@ -63,11 +61,11 @@ export function defaultRelationJudgeOptions(overrides = {}) {
   const env = (name, legacy) => process.env[name] ?? process.env[legacy];
   return {
     relationJudgeMode: env("AHA_BENCH_RELATION_JUDGE_MODE", "AHA_BENCH_RERANKER") || "agent",
-    llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "openai",
-    llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_OPENAI_BASE_URL,
-    llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_OPENAI_MODEL,
-    llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_OPENAI_API_KEY_ENV,
-    relationJudgeAgentProvider: env("AHA_BENCH_RELATION_JUDGE_AGENT_PROVIDER", "AHA_BENCH_RERANK_AGENT_PROVIDER") || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
+    llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "deepseek",
+    llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_DEEPSEEK_BASE_URL,
+    llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_DEEPSEEK_MODEL,
+    llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_DEEPSEEK_API_KEY_ENV,
+    relationJudgeAgentProvider: env("AHA_BENCH_RELATION_JUDGE_AGENT_PROVIDER", "AHA_BENCH_RERANK_AGENT_PROVIDER") || process.env.AHA_BENCH_LLM_PROVIDER || "deepseek",
     relationJudgeAgentBin: env("AHA_BENCH_RELATION_JUDGE_AGENT_BIN", "AHA_BENCH_RERANK_AGENT_BIN") || "codex",
     relationJudgeAgentModel: env("AHA_BENCH_RELATION_JUDGE_AGENT_MODEL", "AHA_BENCH_RERANK_AGENT_MODEL") || "",
     relationJudgeAgentCache: env("AHA_BENCH_RELATION_JUDGE_AGENT_CACHE", "AHA_BENCH_RERANK_AGENT_CACHE") || "bench/generated/relation-judge-cache.json",
@@ -80,8 +78,8 @@ export function defaultRelationJudgeOptions(overrides = {}) {
 // Generic-adapter Relation Judge orchestration (bench/legacy entry point used
 // directly by scripts/aha/run-insight-search.mjs, the frozen legacy wrapper,
 // and covered by scripts/aha/tests/relation-judge.test.mjs). The adapter
-// callback stays provider-agnostic here (it can wrap OpenAI, DeepSeek, or the
-// legacy codex CLI); prompt construction, validation, quote-enforcement, and
+// callback stays provider-agnostic here (it can wrap DeepSeek or the legacy
+// codex CLI); prompt construction, validation, quote-enforcement, and
 // merging all come from core.
 export async function judgeCandidateRelations({
   sourcePath,
@@ -234,7 +232,7 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
     judgedCandidates = composeFinalSlate(judgedCandidates, annotated);
     cache.entries[cacheKey] = {
       generated_at: new Date().toISOString(),
-      generator: relationJudgeProvider(judgeOptions) === "openai" ? "openai-responses" : "codex-exec",
+      generator: relationJudgeProvider(judgeOptions) === "deepseek" ? "deepseek-chat-completions" : "codex-exec",
       prompt_version: RELATION_JUDGE_PROMPT_VERSION,
       agent_provider: relationJudgeProvider(judgeOptions),
       agent_bin: judgeOptions.relationJudgeAgentBin,
@@ -309,7 +307,7 @@ function relationJudgeResult({ candidates, generatedBy, fallback, error }) {
 function relationJudgeConcurrency(options) {
   // Concurrency only helps the async LLM transport; the legacy Codex CLI path
   // shells out synchronously, so keep it at one lane.
-  if (relationJudgeProvider(options) !== "openai") return 1;
+  if (relationJudgeProvider(options) !== "deepseek") return 1;
   return Math.max(1, Number(process.env.AHA_RELATION_JUDGE_CONCURRENCY || DEFAULT_RELATION_JUDGE_CONCURRENCY));
 }
 
@@ -341,13 +339,13 @@ export async function mapWithBoundedConcurrency(items, limit, worker) {
   return results;
 }
 
-// Dispatches to the core HTTP-only LLM path for "openai" (issue #57), or the
-// legacy codex CLI subprocess adapter for "codex"/"codex-cli" (kept as a
+// Dispatches to the core HTTP-only LLM path for "deepseek" (issue #57), or
+// the legacy codex CLI subprocess adapter for "codex"/"codex-cli" (kept as a
 // legacy-only path). Throws on any failure; relationJudgeCandidatesForCase
 // decides whether to fall back (relationJudgeAgentFallback).
 async function generateRelationJudgeWithAgentAsync(caseItem, candidateInputs, options) {
-  if (relationJudgeProvider(options) === "openai") {
-    const apiKeyEnv = String(options.llmApiKeyEnv || DEFAULT_OPENAI_API_KEY_ENV).trim() || DEFAULT_OPENAI_API_KEY_ENV;
+  if (relationJudgeProvider(options) === "deepseek") {
+    const apiKeyEnv = String(options.llmApiKeyEnv || DEFAULT_DEEPSEEK_API_KEY_ENV).trim() || DEFAULT_DEEPSEEK_API_KEY_ENV;
     const apiKey = process.env[apiKeyEnv];
     if (!apiKey) throw new Error(`${apiKeyEnv} is not set.`);
     const raw = await judgeRelationsRawViaLlm({
@@ -358,7 +356,8 @@ async function generateRelationJudgeWithAgentAsync(caseItem, candidateInputs, op
       baseUrl: options.llmBaseUrl,
       apiKey,
       model: relationJudgeModel(options),
-      protocol: "responses",
+      protocol: "chat-completions",
+      thinking: "disabled",
       timeoutMs: options.relationJudgeAgentTimeoutMs,
     });
     if (!raw.ok) throw new Error(raw.error);
@@ -372,7 +371,7 @@ async function generateRelationJudgeWithAgentAsync(caseItem, candidateInputs, op
 // (core is HTTP-only via llmJsonCall); this function is that pre-existing
 // behavior, kept reachable rather than deleted so a bench config that still
 // sets AHA_BENCH_RELATION_JUDGE_AGENT_PROVIDER=codex does not silently break.
-// It is legacy/deprecated: new work should use the "openai" provider (core
+// It is legacy/deprecated: new work should use the "deepseek" provider (core
 // path).
 function generateRelationJudgeWithCodexCliLegacy(caseItem, candidateInputs, options) {
   const prompt = buildRelationJudgePrompt({
@@ -492,19 +491,19 @@ function candidateCacheShape(candidate) {
 }
 
 function relationJudgeProvider(options) {
-  return String(options.relationJudgeAgentProvider || options.llmProvider || "openai").toLowerCase();
+  return String(options.relationJudgeAgentProvider || options.llmProvider || "deepseek").toLowerCase();
 }
 
 function relationJudgeModel(options) {
-  return String(options.relationJudgeAgentModel || options.llmModel || DEFAULT_OPENAI_MODEL).trim() || DEFAULT_OPENAI_MODEL;
+  return String(options.relationJudgeAgentModel || options.llmModel || DEFAULT_DEEPSEEK_MODEL).trim() || DEFAULT_DEEPSEEK_MODEL;
 }
 
 function relationJudgeProviderCacheShape(options) {
   const provider = relationJudgeProvider(options);
-  if (provider === "openai") {
+  if (provider === "deepseek") {
     return JSON.stringify({
       provider,
-      baseUrl: options.llmBaseUrl || DEFAULT_OPENAI_BASE_URL,
+      baseUrl: options.llmBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
       model: relationJudgeModel(options),
     });
   }

@@ -1,8 +1,14 @@
-import ahaResultSchema from "../../scripts/aha/aha-result.schema.json";
-import { validateAhaResult } from "../../scripts/aha/lib/result-validator.mjs";
+import { AHA_RESULT_SCHEMA, validateAhaResult } from "./core";
 
-const FALLBACK_RELATIONS = ["supports", "challenges", "resembles", "bounds", "weak"] as const;
-export const RELATIONS = relationValuesFromSchema(ahaResultSchema);
+// Sourced from core's AHA_RESULT_SCHEMA (ADR 0005) rather than importing
+// scripts/aha/aha-result.schema.json directly: that JSON file lives outside
+// obsidian-plugin/, and importing it here would give the plugin bundle a
+// cross-package dependency back into scripts/, the one direction ADR 0005's
+// dependency graph forbids (core compiles -> core-artifact re-export ->
+// bench/test, never the reverse). scripts/aha/aha-result.schema.json remains
+// bench's source-of-truth JSON file; core/result-validator.ts's guard test
+// keeps the two in sync.
+export const RELATIONS = AHA_RESULT_SCHEMA.properties.candidates.items.properties.relation.enum;
 
 export type AhaRelation = (typeof RELATIONS)[number];
 
@@ -43,23 +49,4 @@ export function validateAhaWrapperResult(value: unknown): ValidationResult {
   return validation.ok
     ? { ok: true, errors: [], result: value as unknown as AhaWrapperResult }
     : validation;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function relationValuesFromSchema(schema: unknown): typeof FALLBACK_RELATIONS {
-  const relation = candidateProperty(schema, "relation");
-  const values = isRecord(relation) && Array.isArray(relation.enum)
-    ? relation.enum.filter((item): item is string => typeof item === "string")
-    : [];
-  return values.length > 0 ? values as unknown as typeof FALLBACK_RELATIONS : FALLBACK_RELATIONS;
-}
-
-function candidateProperty(schema: unknown, propertyName: string): unknown {
-  if (!isRecord(schema) || !isRecord(schema.properties)) return undefined;
-  const candidates = schema.properties.candidates;
-  if (!isRecord(candidates) || !isRecord(candidates.items) || !isRecord(candidates.items.properties)) return undefined;
-  return candidates.items.properties[propertyName];
 }

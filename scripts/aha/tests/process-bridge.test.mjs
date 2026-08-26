@@ -81,7 +81,7 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
     "import { writeFileSync } from 'node:fs';",
     `writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)));`,
     `writeFileSync(${JSON.stringify(envLog)}, JSON.stringify({`,
-    "  apiKey: process.env.AHA_TEST_OPENAI_KEY || '',",
+    "  apiKey: process.env.AHA_TEST_DEEPSEEK_KEY || '',",
     "  embedUrl: process.env.QMD_REMOTE_EMBED_URL || '',",
     "  embedModel: process.env.QMD_REMOTE_EMBED_MODEL || '',",
     "  generateUrl: process.env.QMD_REMOTE_GENERATE_URL || '',",
@@ -98,11 +98,11 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
   const settings = {
     ahaWorkspace: repoRoot,
     nodeCommand: process.execPath,
-    llmProvider: "openai",
-    llmBaseUrl: "https://api.openai.test/v1",
-    llmModel: "gpt-5.5",
-    llmApiKey: "direct-openai-key",
-    llmApiKeyEnv: "AHA_TEST_OPENAI_KEY",
+    llmProvider: "deepseek",
+    deepseekBaseUrl: "https://api.deepseek.test",
+    deepseekModel: "deepseek-v4-pro",
+    deepseekApiKey: "direct-deepseek-key",
+    deepseekApiKeyEnv: "AHA_TEST_DEEPSEEK_KEY",
     codexModel: "gpt-5.3-codex-spark",
     codexReasoningEffort: "low",
     codexSandbox: "danger-full-access",
@@ -134,17 +134,17 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
     });
     const argv = JSON.parse(await readFile(argvLog, "utf8"));
     const envValue = JSON.parse(await readFile(envLog, "utf8"));
-    assertIncludesPair(argv, "--llm-provider", "openai");
-    assertIncludesPair(argv, "--llm-base-url", "https://api.openai.test/v1");
-    assertIncludesPair(argv, "--llm-model", "gpt-5.5");
-    assertIncludesPair(argv, "--llm-api-key-env", "AHA_TEST_OPENAI_KEY");
+    assertIncludesPair(argv, "--llm-provider", "deepseek");
+    assertIncludesPair(argv, "--llm-base-url", "https://api.deepseek.test");
+    assertIncludesPair(argv, "--llm-model", "deepseek-v4-pro");
+    assertIncludesPair(argv, "--llm-api-key-env", "AHA_TEST_DEEPSEEK_KEY");
     assertIncludesPair(argv, "--qmd-runner", "sdk");
     assertIncludesPair(argv, "--qmd-command", "/tmp/qmd");
     assertIncludesPair(argv, "--qmd-index", "obsidian");
     assertIncludesPair(argv, "--qmd-sdk-module", "/tmp/qmd-sdk.mjs");
     assert.ok(argv.includes("--qmd-rerank"));
     assert.deepEqual(envValue, {
-      apiKey: "direct-openai-key",
+      apiKey: "direct-deepseek-key",
       embedUrl: "http://127.0.0.1:28081/v1/embeddings",
       embedModel: "test-embed-model",
       generateUrl: "http://127.0.0.1:28082/completion",
@@ -152,7 +152,7 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
       rerankUrl: "http://127.0.0.1:28083/v1/rerank",
       rerankModel: "test-rerank-model",
     });
-    assert.ok(!argv.includes("direct-openai-key"));
+    assert.ok(!argv.includes("direct-deepseek-key"));
   } finally {
     if (previousRequire === undefined) {
       delete globalThis.require;
@@ -163,7 +163,7 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
   }
 });
 
-test("process bridge keeps OpenAI and DeepSeek profiles separate", async () => {
+test("process bridge forwards the DeepSeek connection-check profile", async () => {
   const processBridge = await loadProcessModule();
   const temp = await mkdtemp(path.join(tmpdir(), "aha-process-deepseek-"));
   const wrapper = path.join(temp, "wrapper.mjs");
@@ -176,7 +176,7 @@ test("process bridge keeps OpenAI and DeepSeek profiles separate", async () => {
     "#!/usr/bin/env node",
     "import { writeFileSync } from 'node:fs';",
     `writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)));`,
-    `writeFileSync(${JSON.stringify(envLog)}, JSON.stringify({ openai: process.env.AHA_TEST_OPENAI_KEY || '', deepseek: process.env.AHA_TEST_DEEPSEEK_KEY || '' }));`,
+    `writeFileSync(${JSON.stringify(envLog)}, JSON.stringify({ deepseek: process.env.AHA_TEST_DEEPSEEK_KEY || '' }));`,
     "console.log(JSON.stringify({ ok: true, provider: 'deepseek', model: 'deepseek-v4-pro', message: 'connected' }));",
     "",
   ].join("\n"));
@@ -185,11 +185,7 @@ test("process bridge keeps OpenAI and DeepSeek profiles separate", async () => {
   const settings = {
     ahaWorkspace: repoRoot,
     nodeCommand: process.execPath,
-    llmProvider: "openai",
-    llmBaseUrl: "https://api.openai.test/v1",
-    llmModel: "gpt-test",
-    llmApiKey: "openai-direct-key",
-    llmApiKeyEnv: "AHA_TEST_OPENAI_KEY",
+    llmProvider: "deepseek",
     deepseekBaseUrl: "https://api.deepseek.test",
     deepseekModel: "deepseek-v4-pro",
     deepseekApiKey: "deepseek-direct-key",
@@ -226,7 +222,7 @@ test("process bridge keeps OpenAI and DeepSeek profiles separate", async () => {
     assertIncludesPair(argv, "--llm-base-url", "https://api.deepseek.test");
     assertIncludesPair(argv, "--llm-model", "deepseek-v4-pro");
     assertIncludesPair(argv, "--llm-api-key-env", "AHA_TEST_DEEPSEEK_KEY");
-    assert.deepEqual(envValue, { openai: "", deepseek: "deepseek-direct-key" });
+    assert.deepEqual(envValue, { deepseek: "deepseek-direct-key" });
     assert.ok(!argv.includes("deepseek-direct-key"));
   } finally {
     if (previousRequire === undefined) delete globalThis.require;
@@ -244,7 +240,7 @@ test("process bridge skips leading ANSI-only stderr lines when reporting wrapper
 
   await writeFile(wrapper, [
     "#!/usr/bin/env node",
-    "process.stderr.write('\\u001b[?25l\\nOpenAI relation judge timed out.\\n');",
+    "process.stderr.write('\\u001b[?25l\\nDeepSeek relation judge timed out.\\n');",
     "process.exitCode = 2;",
     "",
   ].join("\n"));
@@ -255,11 +251,11 @@ test("process bridge skips leading ANSI-only stderr lines when reporting wrapper
       processBridge.runAhaWrapper({
         ahaWorkspace: repoRoot,
         nodeCommand: process.execPath,
-        llmProvider: "openai",
-        llmBaseUrl: "https://api.openai.test/v1",
-        llmModel: "gpt-5.5",
-        llmApiKey: "test-key",
-        llmApiKeyEnv: "AHA_TEST_OPENAI_KEY",
+        llmProvider: "deepseek",
+        deepseekBaseUrl: "https://api.deepseek.test",
+        deepseekModel: "deepseek-v4-pro",
+        deepseekApiKey: "test-key",
+        deepseekApiKeyEnv: "AHA_TEST_DEEPSEEK_KEY",
         codexModel: "gpt-5.3-codex-spark",
         codexReasoningEffort: "low",
         codexSandbox: "danger-full-access",
@@ -280,7 +276,7 @@ test("process bridge skips leading ANSI-only stderr lines when reporting wrapper
         sourcePath: "Idea/Source.md",
         vaultRoot: "/vault",
       }),
-      /OpenAI relation judge timed out\./,
+      /DeepSeek relation judge timed out\./,
     );
   } finally {
     if (previousRequire === undefined) {

@@ -8,8 +8,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { validateAhaResult } from "./lib/result-validator.mjs";
 import { notePathForObsidian, normalizeNoteIdentity, sameNotePath } from "./lib/note-identity.mjs";
-import { isExcludedCandidatePath } from "../lib/candidate-fields.mjs";
-import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
+import { excerptNoteMarkdown, isExcludedCandidatePath } from "../lib/core-artifact.mjs";
 import {
   compactLine,
   fallbackQmdObject as sharedFallbackQmdObject,
@@ -27,13 +26,13 @@ const MAX_TARGET_CANDIDATES = 20;
 const DEFAULT_MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
 const DEFAULT_QMD_QUERY_TIMEOUT_MS = 30_000;
 const DEFAULT_QMD_CANDIDATE_LIMIT = 20;
-const DEFAULT_LLM_PROVIDER = "openai";
-const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1";
-const DEFAULT_LLM_MODEL = "gpt-5.5";
-const DEFAULT_LLM_API_KEY_ENV = "OPENAI_API_KEY";
+const DEFAULT_LLM_PROVIDER = "deepseek";
+const DEFAULT_LLM_BASE_URL = "https://api.deepseek.com";
+const DEFAULT_LLM_MODEL = "deepseek-v4-pro";
+const DEFAULT_LLM_API_KEY_ENV = "DEEPSEEK_API_KEY";
 const DEFAULT_QMD_RUNNER = "sdk";
 const DEFAULT_QMD_INDEX = "obsidian";
-const VALID_LLM_PROVIDERS = new Set(["codex-cli", "deepseek", "openai"]);
+const VALID_LLM_PROVIDERS = new Set(["codex-cli", "deepseek"]);
 const VALID_QMD_RUNNERS = new Set(["cli", "sdk"]);
 const COMMON_COMMAND_DIRS = [
   "/opt/homebrew/bin",
@@ -120,7 +119,19 @@ async function main() {
   const sourceText = await readFile(sourceFilePath, "utf8");
 
   if (args.strategy === "pipeline") {
-    const result = await pipelineRecall(args, sourceText);
+    // DeepSeek pipeline runs delegate to core's runFullPipeline (ADR 0005)
+    // instead of this file's own query-plan/retrieval/relation-judge
+    // implementation, so a core fix or prompt change no longer needs a second,
+    // easy-to-forget edit here -- this is also the only combination
+    // process.ts's #58 legacy-wrapper rollback path actually invokes in
+    // production (its llmProvider is always "deepseek"; never "codex-cli").
+    // The codex-cli provider has no equivalent in core (it hands the entire
+    // retrieval+judging task to an agentic `codex exec` subprocess, not a
+    // query-plan/retrieval/judge pipeline core could run), so it keeps using
+    // this file's own pipelineRecall below, unchanged.
+    const result = isApiProvider(args.llmProvider)
+      ? await pipelineRecallViaCore(args, sourceText)
+      : await pipelineRecall(args, sourceText);
     emitJson(result, result.ok ? 0 : 2);
     return;
   }
@@ -285,7 +296,7 @@ async function checkLlmConnection(args) {
       ok: false,
       provider: args.llmProvider,
       model: args.llmModel,
-      message: "Connection checks are available for OpenAI and DeepSeek API providers.",
+      message: "Connection checks are available for the DeepSeek API provider.",
     };
   }
   const keyCheck = checkLlmApiKey(args);
@@ -447,12 +458,12 @@ async function runCodex(args, prompt, options = {}) {
 
 async function runLlm(args, prompt, options = {}) {
   if (isApiProvider(args.llmProvider)) {
-    return runOpenAi(args, prompt, options);
+    return runDeepSeek(args, prompt, options);
   }
   return runCodex(args, prompt, options);
 }
 
-async function runOpenAi(args, prompt, options = {}) {
+async function runDeepSeek(args, prompt, options = {}) {
   const schemaPath = options.schemaPath ?? path.join(args.workspace, "scripts/aha/aha-result.schema.json");
   const schema = options.schema ?? await readJsonIfExists(schemaPath);
   const stdout = await runOpenAiJsonAsync({
@@ -460,9 +471,9 @@ async function runOpenAi(args, prompt, options = {}) {
     baseUrl: args.llmBaseUrl,
     model: args.llmModel,
     prompt,
-    protocol: args.llmProvider === "deepseek" ? "chat-completions" : "responses",
+    protocol: "chat-completions",
     providerName: llmDisplayName(args),
-    thinking: args.llmProvider === "deepseek" ? "disabled" : undefined,
+    thinking: "disabled",
     schema,
     schemaName: options.schemaName ?? schemaNameForPath(schemaPath),
     timeoutMs: Number(options.timeoutMs ?? args.timeoutMs),
@@ -489,9 +500,7 @@ async function readJsonIfExists(filePath) {
 }
 
 function llmDisplayName(args) {
-  if (args.llmProvider === "openai") return "OpenAI";
-  if (args.llmProvider === "deepseek") return "DeepSeek";
-  return "Codex";
+  return args.llmProvider === "deepseek" ? "DeepSeek" : "Codex";
 }
 
 function llmToolName(args) {
@@ -499,11 +508,10 @@ function llmToolName(args) {
 }
 
 function isApiProvider(provider) {
-  return provider === "openai" || provider === "deepseek";
+  return provider === "deepseek";
 }
 
 function queryPlannerDisplayName(value) {
-  if (value === "openai") return "OpenAI";
   if (value === "deepseek") return "DeepSeek";
   if (value === "codex") return "Codex";
   return value || "Unknown";
@@ -554,6 +562,58 @@ async function qmdRecall(args, sourceText) {
     qmd,
   });
   return { query, rows: result.rows };
+}
+
+// Delegates to core-artifact.mjs's runFullPipeline (ADR 0005), which
+// rebuilds and imports the shared TypeScript core -- the same code
+// tier-pipeline.ts calls for the live plugin's Full Tier. A dynamic import
+// keeps the esbuild core rebuild off every other strategy/provider
+// combination this file supports (codex, qmd-only, readiness checks, ...).
+async function pipelineRecallViaCore(args, sourceText) {
+  const { runFullPipeline } = await import("../lib/core-artifact.mjs");
+  const llm = {
+    baseUrl: args.llmBaseUrl,
+    apiKey: process.env[args.llmApiKeyEnv] || "",
+    model: args.llmModel,
+    protocol: "chat-completions",
+    timeoutMs: args.timeoutMs,
+    thinking: "disabled",
+  };
+  const coreArgs = {
+    ...args,
+    sourceText,
+    id: args.sourcePath,
+    displayName: "Aha",
+    _resolved_insight_input: sourceText,
+  };
+  const result = await runFullPipeline(coreArgs, llm, {});
+  return shapeCoreFullResult(result);
+}
+
+// Strips core's diagnostic-only fields (queryPlanGeneratedBy, qmdQueryResults,
+// pooledCandidates, etc. -- added for the plugin's Pipeline Trace, issue #59)
+// down to exactly this wrapper's existing AhaResult JSON shape, matching
+// failedAhaResult/pipelineRecall's own return shape byte-for-byte.
+function shapeCoreFullResult(result) {
+  if (result.ok) {
+    return {
+      ok: true,
+      sourcePath: result.sourcePath,
+      generatedAt: result.generatedAt,
+      summary: result.summary,
+      warnings: result.warnings,
+      candidates: result.candidates,
+    };
+  }
+  return {
+    ok: false,
+    sourcePath: result.sourcePath,
+    generatedAt: result.generatedAt,
+    summary: result.summary,
+    warnings: result.warnings,
+    error: result.error,
+    candidates: result.candidates,
+  };
 }
 
 async function pipelineRecall(args, sourceText) {

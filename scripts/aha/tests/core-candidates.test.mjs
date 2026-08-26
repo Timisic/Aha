@@ -3,13 +3,10 @@
 // loader rebuilds obsidian-plugin/dist/core.mjs from src/core before
 // importing, so this test also exercises the rebuild path every run.
 //
-// isExcludedCandidatePath is also covered end to end (through the bench
-// shim scripts/lib/candidate-fields.mjs) by
-// scripts/aha/tests/candidate-fields.test.mjs; this file adds direct
-// coverage for the vault-containment, source self-hit, and generated-review
-// filters ported from the frozen legacy wrapper
-// scripts/aha/run-insight-search.mjs, which previously had no standalone
-// test coverage (they were private helpers inline in that file).
+// This file adds direct coverage for the vault-containment, source
+// self-hit, and generated-review filters ported from the frozen legacy
+// wrapper scripts/aha/run-insight-search.mjs, which previously had no
+// standalone test coverage (they were private helpers inline in that file).
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

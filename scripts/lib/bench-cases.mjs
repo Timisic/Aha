@@ -2,10 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { expandHome, normalizeFailureAttribution, qmdExpectedPath } from "./bench-scoring.mjs";
 import { benchVaultRoot } from "./vault-paths.mjs";
-import { normalizeLineRange, parseLineRange, sliceLineRange } from "./note-excerpt.mjs";
 import {
   buildVaultPathResolver,
+  normalizeLineRange,
+  parseLineRange,
   resolveVaultPath,
+  sliceLineRange,
 } from "./core-artifact.mjs";
 
 export {

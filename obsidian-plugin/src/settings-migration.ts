@@ -9,14 +9,19 @@
 // settings.ts's module comment):
 //   - Carried: still-migratable fields keep their old value when present and
 //     of the right type, falling back to DEFAULT_SETTINGS otherwise.
-//   - Dead-field group (ahaWorkspace, wrapperRelativePath, nodeCommand,
-//     codexCommand, codexModel, codexReasoningEffort, codexSandbox,
-//     obsidianCommand, qmdRunner, qmdSdkModule): always reset to
-//     DEFAULT_SETTINGS regardless of the old object's stored value. These
+//   - Dead-field group (llmProvider, ahaWorkspace, wrapperRelativePath,
+//     nodeCommand, codexCommand, codexModel, codexReasoningEffort,
+//     codexSandbox, obsidianCommand, qmdRunner, qmdSdkModule): always reset
+//     to DEFAULT_SETTINGS regardless of the old object's stored value. These
 //     fields stay in the AhaPluginSettings *interface* (process.ts's frozen
 //     legacy-wrapper rollback path still reads them), but migration does not
 //     carry old values forward into them -- that is what "dropped" means for
-//     this migration function specifically.
+//     this migration function specifically. llmProvider joined this group
+//     when the OpenAI provider option was removed: an old stored value of
+//     "openai" is no longer valid, so it is always reset to "deepseek"
+//     rather than carried forward. llmBaseUrl/llmModel/llmApiKey/
+//     llmApiKeyEnv (the old generic/OpenAI-shaped fields) were dropped from
+//     the interface entirely, not just this migration.
 //   - qmdRemote* (six per-endpoint fields): carried verbatim into their own
 //     (now UI-invisible) fields -- process.ts's frozen wrapperChildEnv /
 //     qmdRemoteEnvironment still reads them directly for the legacy
@@ -102,11 +107,6 @@ export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSetting
 
   return {
     // --- carried fields (still-migratable) ---
-    llmProvider: stringField(old.llmProvider, DEFAULT_SETTINGS.llmProvider),
-    llmBaseUrl: stringField(old.llmBaseUrl, DEFAULT_SETTINGS.llmBaseUrl),
-    llmModel: stringField(old.llmModel, DEFAULT_SETTINGS.llmModel),
-    llmApiKey: stringField(old.llmApiKey, DEFAULT_SETTINGS.llmApiKey),
-    llmApiKeyEnv: stringField(old.llmApiKeyEnv, DEFAULT_SETTINGS.llmApiKeyEnv),
     deepseekBaseUrl: stringField(old.deepseekBaseUrl, DEFAULT_SETTINGS.deepseekBaseUrl),
     deepseekModel: stringField(old.deepseekModel, DEFAULT_SETTINGS.deepseekModel),
     deepseekApiKey: stringField(old.deepseekApiKey, DEFAULT_SETTINGS.deepseekApiKey),
@@ -120,6 +120,7 @@ export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSetting
     useLegacyWrapper: boolField(old.useLegacyWrapper, DEFAULT_SETTINGS.useLegacyWrapper),
 
     // --- dead-field group: reset to DEFAULT_SETTINGS regardless of old value ---
+    llmProvider: DEFAULT_SETTINGS.llmProvider,
     ahaWorkspace: DEFAULT_SETTINGS.ahaWorkspace,
     wrapperRelativePath: DEFAULT_SETTINGS.wrapperRelativePath,
     nodeCommand: DEFAULT_SETTINGS.nodeCommand,
@@ -147,7 +148,16 @@ export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSetting
   };
 }
 
-export const CURRENT_SETTINGS_SCHEMA_VERSION = 2;
+// Bumped to 3 (from 2) when the OpenAI provider was removed: a user who
+// upgraded through the #59 release already has schemaVersion 2 with
+// llmProvider possibly still "openai" (the old DEFAULT_SETTINGS value).
+// Without this bump, shouldShowSimplificationNotice(2, 2) would return
+// false, the migration below (which resets llmProvider to "deepseek" via
+// the dead-field-reset group) would never run, and the stored "openai"
+// would win the plain {...DEFAULT_SETTINGS, ...data.settings} merge in
+// main.ts's loadSettings -- silently downgrading every such user to Recall
+// Tier with no in-app way to fix it (the provider dropdown is gone too).
+export const CURRENT_SETTINGS_SCHEMA_VERSION = 3;
 
 /**
  * Pure trigger logic for the one-time "settings simplified" notice (issue

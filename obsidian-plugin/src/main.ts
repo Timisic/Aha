@@ -186,7 +186,7 @@ export default class AhaPlugin extends Plugin {
       const [qmdAvailable, statusProbe, llmProbe] = await Promise.all([
         probeQmdAvailable(settings),
         runQmdStatus(settings),
-        testProviderConnection(settings, settings.llmProvider === "deepseek" ? "deepseek" : "openai"),
+        testProviderConnection(settings, "deepseek"),
       ]);
       const lights = [
         decideQmdBinaryLight(qmdAvailable),

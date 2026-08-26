@@ -64,11 +64,6 @@ async function loadModule() {
 test("carried fields keep their old values when present and well-typed", async () => {
   const { migrateAhaPluginSettings } = await loadModule();
   const old = {
-    llmProvider: "deepseek",
-    llmBaseUrl: "https://custom.openai.example/v1",
-    llmModel: "gpt-custom",
-    llmApiKey: "sk-custom",
-    llmApiKeyEnv: "CUSTOM_OPENAI_KEY",
     deepseekBaseUrl: "https://custom.deepseek.example",
     deepseekModel: "deepseek-custom",
     deepseekApiKey: "ds-custom",
@@ -92,6 +87,7 @@ test("carried fields keep their old values when present and well-typed", async (
 test("dead-field group resets to DEFAULT_SETTINGS regardless of old stored value", async () => {
   const { migrateAhaPluginSettings, DEFAULT_SETTINGS } = await loadModule();
   const old = {
+    llmProvider: "openai",
     ahaWorkspace: "/old/workspace",
     wrapperRelativePath: "old/wrapper/path.mjs",
     nodeCommand: "/old/node",
@@ -216,8 +212,6 @@ test("a copy of the real production settings object's key set migrates losslessl
   assert.deepEqual(Object.keys(migrated).sort(), Object.keys(DEFAULT_SETTINGS).sort());
 
   // Carried fields keep the production fixture's values.
-  assert.equal(migrated.llmProvider, "openai");
-  assert.equal(migrated.llmApiKey, "sk-prod-key");
   assert.equal(migrated.deepseekModel, "deepseek-v4-pro");
   assert.equal(migrated.reviewFolder, "Aha/Reviews");
   assert.equal(migrated.targetCandidates, 18);
@@ -227,6 +221,17 @@ test("a copy of the real production settings object's key set migrates losslessl
   assert.equal(migrated.useFixtureResult, false);
 
   // Dead-field group dropped (reset to defaults, not the fixture's values).
+  // llmProvider: an old stored "openai" value is no longer valid (OpenAI
+  // removed as a provider), so it resets to DEFAULT_SETTINGS ("deepseek")
+  // like the rest of the dead-field group, rather than carrying forward.
+  assert.equal(migrated.llmProvider, DEFAULT_SETTINGS.llmProvider);
+  assert.notEqual(migrated.llmProvider, PRODUCTION_KEY_SET_FIXTURE.llmProvider);
+  // llmApiKey/llmBaseUrl/llmModel/llmApiKeyEnv (old OpenAI-shaped fields)
+  // were dropped from the interface entirely, not just reset.
+  assert.equal(migrated.llmApiKey, undefined);
+  assert.equal(migrated.llmBaseUrl, undefined);
+  assert.equal(migrated.llmModel, undefined);
+  assert.equal(migrated.llmApiKeyEnv, undefined);
   assert.equal(migrated.ahaWorkspace, DEFAULT_SETTINGS.ahaWorkspace);
   assert.notEqual(DEFAULT_SETTINGS.ahaWorkspace, PRODUCTION_KEY_SET_FIXTURE.ahaWorkspace);
   assert.equal(migrated.nodeCommand, DEFAULT_SETTINGS.nodeCommand);
@@ -259,6 +264,32 @@ test("migrating an already-migrated object is a no-op (idempotency)", async () =
   const defaultsOnce = migrateAhaPluginSettings({});
   const defaultsTwice = migrateAhaPluginSettings(defaultsOnce);
   assert.deepEqual(defaultsTwice, defaultsOnce);
+});
+
+test("a user upgrading from the pre-OpenAI-removal schemaVersion 2 release gets re-migrated off a stale llmProvider: openai value", async () => {
+  // Regression test: the #59 release shipped schemaVersion 2 with
+  // DEFAULT_SETTINGS.llmProvider === "openai". A user who ran that release
+  // has data.json = { schemaVersion: 2, settings: { llmProvider: "openai", ... } }.
+  // CURRENT_SETTINGS_SCHEMA_VERSION must be strictly greater than 2 so
+  // shouldShowSimplificationNotice(2, CURRENT) is true and this old,
+  // now-invalid llmProvider value gets migrated (reset to "deepseek") on
+  // next load, instead of winning main.ts's plain
+  // {...DEFAULT_SETTINGS, ...data.settings} merge and silently downgrading
+  // the user to Recall Tier forever (resolveLlmRequestProfile only accepts
+  // "deepseek" now, and the provider dropdown that could fix it by hand was
+  // removed from the settings UI).
+  const { migrateAhaPluginSettings, shouldShowSimplificationNotice, CURRENT_SETTINGS_SCHEMA_VERSION, DEFAULT_SETTINGS } = await loadModule();
+
+  const storedSchemaVersion2Data = { schemaVersion: 2, llmProvider: "openai" };
+  assert.equal(
+    shouldShowSimplificationNotice(storedSchemaVersion2Data.schemaVersion, CURRENT_SETTINGS_SCHEMA_VERSION),
+    true,
+    "CURRENT_SETTINGS_SCHEMA_VERSION must have been bumped past 2 so this upgrade path re-migrates",
+  );
+
+  const migrated = migrateAhaPluginSettings(storedSchemaVersion2Data);
+  assert.equal(migrated.llmProvider, DEFAULT_SETTINGS.llmProvider);
+  assert.equal(migrated.llmProvider, "deepseek");
 });
 
 test("shouldShowSimplificationNotice fires exactly once per upgrade", async () => {

@@ -2,28 +2,13 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { sliceLineRange } from "./core-artifact.mjs";
 
-// parseLineRange / normalizeLineRange / sliceLineRange / lineCount /
-// excerptNoteMarkdown are pure and now live in
-// obsidian-plugin/src/core/note-excerpt.ts (ADR 0005, issue #56); re-exported
-// here so every existing consumer (scripts/lib/bench-cases.mjs,
-// scripts/bench/run-pipeline-bench.mjs, the test suite) keeps working
-// unchanged.
-//
-// resolveNotePath/readNoteExcerpt stay local: they do real file-system search
-// across casesDir/vaultRoot candidates and a real read, and are consumed only
-// by the standalone bench debug CLI scripts/bench/extract-note-excerpt.mjs,
-// not by the deterministic retrieval path this issue re-points. Porting them
-// to core would mean inventing an injected-vault-read seam with no real
-// caller yet, so they were left as-is; they call the (now core-backed)
-// sliceLineRange synchronously, same as before.
-export {
-  excerptNoteMarkdown,
-  lineCount,
-  normalizeLineRange,
-  parseLineRange,
-  sliceLineRange,
-} from "./core-artifact.mjs";
-
+// resolveNotePath/readNoteExcerpt do real file-system search across
+// casesDir/vaultRoot candidates and a real read; consumed only by the
+// standalone bench debug CLI scripts/bench/extract-note-excerpt.mjs, not by
+// the deterministic retrieval path (ADR 0005, issue #56). Porting them to
+// core would mean inventing an injected-vault-read seam with no real caller
+// yet, so they stay local, calling the core-backed sliceLineRange directly
+// from core-artifact.mjs.
 export function resolveNotePath(notePath, options = {}) {
   const rawPath = expandHome(String(notePath ?? "").trim());
   if (!rawPath) {

@@ -8,32 +8,32 @@ import test from "node:test";
 import { resolveQmdQueriesForCase } from "../../lib/bench-cases.mjs";
 import { relationJudgeCandidatesForCase } from "../../aha/relation-judge.mjs";
 
-const previousKey = process.env.AHA_TEST_OPENAI_KEY;
+const previousKey = process.env.AHA_TEST_DEEPSEEK_KEY;
 
 test.after(() => {
   if (previousKey === undefined) {
-    delete process.env.AHA_TEST_OPENAI_KEY;
+    delete process.env.AHA_TEST_DEEPSEEK_KEY;
   } else {
-    process.env.AHA_TEST_OPENAI_KEY = previousKey;
+    process.env.AHA_TEST_DEEPSEEK_KEY = previousKey;
   }
 });
 
-test("benchmark query and rerank agents can use OpenAI Responses API without Codex", async () => {
-  process.env.AHA_TEST_OPENAI_KEY = "test-key";
+test("benchmark query and rerank agents can use DeepSeek chat completions without Codex", async () => {
+  process.env.AHA_TEST_DEEPSEEK_KEY = "test-key";
   const requests = [];
-  const server = await startOpenAiFixtureServer(requests);
+  const server = await startDeepSeekFixtureServer(requests);
 
   try {
     const caseItem = {
-      id: "openai-case",
+      id: "deepseek-case",
       _resolved_insight_input: "我想从旧笔记里找到关于反馈闭环和学习改进的判断。",
       must_recall: ["Memory/Feedback.md"],
     };
     const commonOptions = {
-      llmProvider: "openai",
+      llmProvider: "deepseek",
       llmBaseUrl: server.baseUrl,
-      llmModel: "gpt-test",
-      llmApiKeyEnv: "AHA_TEST_OPENAI_KEY",
+      llmModel: "deepseek-test",
+      llmApiKeyEnv: "AHA_TEST_DEEPSEEK_KEY",
       queryAgentBin: "/definitely/missing/codex",
       relationJudgeAgentBin: "/definitely/missing/codex",
     };
@@ -41,7 +41,7 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
     const queryPlan = await resolveQmdQueriesForCase(caseItem, {
       ...commonOptions,
       queryGenerator: "agent",
-      queryAgentProvider: "openai",
+      queryAgentProvider: "deepseek",
       queryAgentCache: "",
     });
 
@@ -62,7 +62,7 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
     ], {
       ...commonOptions,
       relationJudgeMode: "agent",
-      relationJudgeAgentProvider: "openai",
+      relationJudgeAgentProvider: "deepseek",
       relationJudgeAgentCache: "",
       limit: 2,
     });
@@ -79,12 +79,11 @@ test("benchmark query and rerank agents can use OpenAI Responses API without Cod
     const recordedRequests = await server.requests();
     assert.equal(recordedRequests.length, 2);
     assert.ok(recordedRequests.every((request) => request.headers.authorization === "Bearer test-key"));
-    assert.ok(recordedRequests.every((request) => request.body.model === "gpt-test"));
-    assert.ok(recordedRequests.every((request) => request.body.text?.format?.type === "json_schema"));
-    assert.deepEqual(recordedRequests.map((request) => request.body.text.format.name), [
-      "aha_qmd_query_plan_agent",
-      "aha_relation_judge",
-    ]);
+    assert.ok(recordedRequests.every((request) => request.body.model === "deepseek-test"));
+    assert.ok(recordedRequests.every((request) => request.body.response_format?.type === "json_object"));
+    assert.ok(recordedRequests.every((request) => request.body.thinking?.type === "disabled"));
+    assert.match(recordedRequests[0].body.messages[0].content, /检索查询生成/);
+    assert.match(recordedRequests[1].body.messages[0].content, /sourcePath/);
   } finally {
     await server.close();
   }
@@ -100,8 +99,8 @@ function candidate(file, title) {
   };
 }
 
-async function startOpenAiFixtureServer() {
-  const temp = await mkdtemp(path.join(tmpdir(), "aha-openai-bench-fixture-"));
+async function startDeepSeekFixtureServer() {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-deepseek-bench-fixture-"));
   const requestsPath = path.join(temp, "requests.jsonl");
   const serverPath = path.join(temp, "server.mjs");
   await writeFile(serverPath, `
@@ -115,9 +114,10 @@ const server = createServer((req, res) => {
   req.on("end", () => {
     const parsed = JSON.parse(body || "{}");
     appendFileSync(requestsPath, JSON.stringify({ method: req.method, url: req.url, headers: req.headers, body: parsed }) + "\\n");
-    const schemaName = parsed?.text?.format?.name;
+    const prompt = parsed?.messages?.[0]?.content || "";
+    const isQueryPlan = prompt.includes("检索查询生成");
     let output;
-    if (schemaName === "aha_qmd_query_plan_agent") {
+    if (isQueryPlan) {
       output = {
         queries: ["raw", "abstracted_judgment", "contextual"].map((kind) => ({
           kind,
@@ -131,10 +131,10 @@ const server = createServer((req, res) => {
           }
         }))
       };
-    } else if (schemaName === "aha_relation_judge") {
+    } else if (prompt.includes("sourcePath")) {
       output = {
         ok: true,
-        sourcePath: "openai-case",
+        sourcePath: "deepseek-case",
         generatedAt: null,
         summary: "Relation judge fixture result.",
         warnings: [],
@@ -162,16 +162,16 @@ const server = createServer((req, res) => {
       };
     } else {
       res.writeHead(400, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "unexpected schema " + schemaName }));
+      res.end(JSON.stringify({ error: "unexpected prompt shape" }));
       return;
     }
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ output_text: JSON.stringify(output) }));
+    res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify(output) } }] }));
   });
 });
 server.listen(0, "127.0.0.1", () => {
   const address = server.address();
-  process.stdout.write(JSON.stringify({ baseUrl: "http://127.0.0.1:" + address.port + "/v1" }) + "\\n");
+  process.stdout.write(JSON.stringify({ baseUrl: "http://127.0.0.1:" + address.port }) + "\\n");
 });
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 `);
@@ -181,7 +181,7 @@ process.on("SIGTERM", () => server.close(() => process.exit(0)));
   });
   const baseUrl = await new Promise((resolve, reject) => {
     let stdout = "";
-    const timer = setTimeout(() => reject(new Error("OpenAI fixture server did not start.")), 5000);
+    const timer = setTimeout(() => reject(new Error("DeepSeek fixture server did not start.")), 5000);
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
       const line = stdout.split(/\r?\n/).find(Boolean);
@@ -195,7 +195,7 @@ process.on("SIGTERM", () => server.close(() => process.exit(0)));
     });
     child.on("error", reject);
     child.on("exit", (code) => {
-      if (code !== 0) reject(new Error(`OpenAI fixture server exited early with ${code}`));
+      if (code !== 0) reject(new Error(`DeepSeek fixture server exited early with ${code}`));
     });
   });
 

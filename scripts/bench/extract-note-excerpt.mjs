@@ -3,7 +3,8 @@ import { dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { parseLineRange, readNoteExcerpt } from "../lib/note-excerpt.mjs";
+import { readNoteExcerpt } from "../lib/note-excerpt.mjs";
+import { parseLineRange } from "../lib/core-artifact.mjs";
 import { benchVaultRoot } from "../lib/vault-paths.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");

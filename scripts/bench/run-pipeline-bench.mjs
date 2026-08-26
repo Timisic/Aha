@@ -25,27 +25,25 @@ import {
   relationJudgeCandidatesForCase,
 } from "../aha/relation-judge.mjs";
 import { QUERY_PLAN_PROMPT_VERSION } from "../aha/query-plan.mjs";
-import { excerptNoteMarkdown } from "../lib/note-excerpt.mjs";
 import {
   buildPipelineTrace,
   summarizeTraceDiagnoses,
   writePipelineTraceForReport,
 } from "../lib/pipeline-trace.mjs";
 import {
+  buildVaultPathResolver as sharedBuildVaultPathResolver,
   candidatePath,
   candidateSourceLabel as sourceLabel,
   candidateSourceList as sourceList,
+  excerptNoteMarkdown,
   isExcludedCandidatePath,
-} from "../lib/candidate-fields.mjs";
-import {
-  buildVaultPathResolver as sharedBuildVaultPathResolver,
   resolveVaultPath as sharedResolveVaultPath,
 } from "../lib/core-artifact.mjs";
 import { benchVaultRoot } from "../lib/vault-paths.mjs";
 import {
-  DEFAULT_OPENAI_API_KEY_ENV,
-  DEFAULT_OPENAI_BASE_URL,
-  DEFAULT_OPENAI_MODEL,
+  DEFAULT_DEEPSEEK_API_KEY_ENV,
+  DEFAULT_DEEPSEEK_BASE_URL,
+  DEFAULT_DEEPSEEK_MODEL,
 } from "../lib/openai-json-agent.mjs";
 
 const DEFAULTS = {
@@ -62,11 +60,11 @@ const DEFAULTS = {
   qmdTimeoutMs: 90_000,
   obsidianTimeoutMs: 8_000,
   queryGenerator: "agent",
-  llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "openai",
-  llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_OPENAI_BASE_URL,
-  llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_OPENAI_MODEL,
-  llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_OPENAI_API_KEY_ENV,
-  queryAgentProvider: process.env.AHA_BENCH_QUERY_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "openai",
+  llmProvider: process.env.AHA_BENCH_LLM_PROVIDER || "deepseek",
+  llmBaseUrl: process.env.AHA_BENCH_LLM_BASE_URL || DEFAULT_DEEPSEEK_BASE_URL,
+  llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_DEEPSEEK_MODEL,
+  llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_DEEPSEEK_API_KEY_ENV,
+  queryAgentProvider: process.env.AHA_BENCH_QUERY_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "deepseek",
   queryAgentBin: "codex",
   queryAgentModel: "",
   queryAgentCache: "bench/generated/qmd-query-agent-cache.json",
@@ -76,7 +74,7 @@ const DEFAULTS = {
   relationJudgeAgentProvider: process.env.AHA_BENCH_RELATION_JUDGE_AGENT_PROVIDER
     || process.env.AHA_BENCH_RERANK_AGENT_PROVIDER
     || process.env.AHA_BENCH_LLM_PROVIDER
-    || "openai",
+    || "deepseek",
   relationJudgeAgentBin: "codex",
   relationJudgeAgentModel: "",
   relationJudgeAgentCache: "bench/generated/relation-judge-cache.json",
@@ -108,12 +106,12 @@ function usage() {
     "  --backlink-limit <n>           Default 20",
     "  --qmd-timeout-ms <n>           Default: 90000",
     "  --obsidian-timeout-ms <n>      Default: 8000",
-    "  --llm-provider <openai|codex-cli> Default: openai",
-    "  --llm-base-url <url>           Default: https://api.openai.com/v1",
-    "  --llm-model <model>            Default: gpt-5.5",
-    "  --llm-api-key-env <name>       Default: OPENAI_API_KEY",
+    "  --llm-provider <deepseek|codex-cli> Default: deepseek",
+    "  --llm-base-url <url>           Default: https://api.deepseek.com",
+    "  --llm-model <model>            Default: deepseek-v4-pro",
+    "  --llm-api-key-env <name>       Default: DEEPSEEK_API_KEY",
     "  --query-generator <agent|rules> Default: agent",
-    "  --query-agent-provider <openai|codex-cli> Default: --llm-provider",
+    "  --query-agent-provider <deepseek|codex-cli> Default: --llm-provider",
     "  --query-agent-bin <bin>         Default: codex",
     "  --query-agent-model <model>     Overrides --llm-model for query generation",
     "  --query-agent-cache <path>      Default: bench/generated/qmd-query-agent-cache.json",
@@ -121,7 +119,7 @@ function usage() {
     "  --no-query-agent-cache",
     "  --no-query-agent-fallback",
     "  --relation-judge <agent|none>   Default: agent (--reranker kept as deprecated alias)",
-    "  --relation-judge-agent-provider <openai|codex-cli> Default: --llm-provider",
+    "  --relation-judge-agent-provider <deepseek|codex-cli> Default: --llm-provider",
     "  --relation-judge-agent-bin <bin>        Default: codex",
     "  --relation-judge-agent-model <model>    Overrides --llm-model for relation judging",
     "  --relation-judge-agent-cache <path>     Default: bench/generated/relation-judge-cache.json",
@@ -314,8 +312,8 @@ function parseArgs() {
     ["queryAgentProvider", options.queryAgentProvider],
     ["relationJudgeAgentProvider", options.relationJudgeAgentProvider],
   ]) {
-    if (!["openai", "codex", "codex-cli"].includes(String(value || "").toLowerCase())) {
-      throw new Error(`${key} must be openai or codex-cli.`);
+    if (!["deepseek", "codex", "codex-cli"].includes(String(value || "").toLowerCase())) {
+      throw new Error(`${key} must be deepseek or codex-cli.`);
     }
   }
   delete options.queryAgentProviderExplicit;
