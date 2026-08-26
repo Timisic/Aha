@@ -20,7 +20,7 @@ import {
   llmJsonCall,
 } from "./llm-transport";
 import { compactLine } from "./query-plan-deterministic";
-import { AHA_RESULT_SCHEMA, validateAhaResult } from "./result-validator";
+import { AHA_RESULT_SCHEMA, RELATIONS as VALID_RELATIONS, validateAhaResult } from "./result-validator";
 
 export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v5";
 export const RELATION_JUDGE_SCHEMA_NAME = "aha_relation_judge";
@@ -68,7 +68,7 @@ export function buildRelationJudgePrompt({ sourcePath, sourceText, candidateInpu
     "跨领域连接高价值：候选话题与 source 完全不同，但论证结构存在 challenges/bounds/resembles 关系时，话题距离是特征而非降级理由。",
     "持久判断和教训优先于同话题的事件流水。",
     "",
-    "输出字段：",
+    "以 JSON 格式输出，每条候选包含以下字段：",
     "- hit：候选 excerpt 中的原文短引句。",
     "- why：用自然中文写，以具体观点或张力开头，点出旧判断和当前 insight 之间的具体连接。",
     "- quotes：支撑标签的 excerpt 原文引句。",
@@ -109,12 +109,25 @@ export function normalizeStructuredResult(value: unknown): unknown {
   for (const key of ["sourcePath", "generatedAt", "summary", "warnings", "error", "candidates"]) {
     if (normalized[key] === null) delete normalized[key];
   }
+  if (!Array.isArray(normalized.candidates) && typeof normalized.notePath === "string") {
+    const candidate = { ...normalized };
+    for (const key of Object.keys(normalized)) delete normalized[key];
+    normalized.ok = true;
+    normalized.candidates = [candidate];
+  }
   if (Array.isArray(normalized.candidates)) {
     normalized.candidates = normalized.candidates.map((candidate) => {
       if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
       const next: Record<string, unknown> = { ...(candidate as Record<string, unknown>) };
       for (const key of ["noteTitle", "quotes", "selected"]) {
         if (next[key] === null) delete next[key];
+      }
+      if (typeof next.hit !== "string" || !next.hit.trim()) {
+        const quotes = Array.isArray(next.quotes) ? next.quotes.filter((q): q is string => typeof q === "string" && q.trim().length > 0) : [];
+        next.hit = quotes[0] || String(next.notePath || "unknown");
+      }
+      if (typeof next.relation === "string" && !VALID_RELATIONS.has(next.relation)) {
+        next.relation = "weak";
       }
       return next;
     });

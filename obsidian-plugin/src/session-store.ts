@@ -416,7 +416,7 @@ function sourceSnapshot(source: AhaSessionSourceInput): AhaSessionSourceSnapshot
 
 function candidatesForPanel(candidates: AhaCandidate[], previousCandidates: ReviewPanelCandidate[]): ReviewPanelCandidate[] {
   const previousByPath = new Map(previousCandidates.map((candidate) => [candidate.notePath, candidate]));
-  return candidates.map((candidate, index) => {
+  const mapped = candidates.map((candidate, index) => {
     const previous = previousByPath.get(candidate.notePath);
     const selected = previous?.selected ?? candidate.selected ?? candidate.relation !== "weak";
     return {
@@ -430,6 +430,13 @@ function candidatesForPanel(candidates: AhaCandidate[], previousCandidates: Revi
       selected,
     };
   });
+  mapped.sort((a, b) => {
+    const aWeak = a.relation === "weak" ? 1 : 0;
+    const bWeak = b.relation === "weak" ? 1 : 0;
+    return aWeak - bWeak;
+  });
+  for (let i = 0; i < mapped.length; i++) mapped[i].index = i + 1;
+  return mapped;
 }
 
 function clearLatestCandidateSelection(record: AhaSessionRecord, notePath: string): void {

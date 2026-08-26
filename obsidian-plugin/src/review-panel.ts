@@ -37,6 +37,7 @@ export class AhaReviewPanelView extends ItemView {
   private handoff = "";
   private status = "";
   private stale = false;
+  private fallbackWarning = "";
   private pinned = false;
   private countEl?: HTMLElement;
   private copyButton?: HTMLButtonElement;
@@ -94,6 +95,7 @@ export class AhaReviewPanelView extends ItemView {
     this.candidates = latest.candidates;
     this.handoff = handoffForRound(record, latest);
     this.stale = staleStateForRound(latest, this.context.sourceSnapshot).stale;
+    this.fallbackWarning = latest.error ? "Relation Judge 未能运行，当前显示的是基础检索结果" : "";
     this.renderCandidates();
   }
 
@@ -149,6 +151,7 @@ export class AhaReviewPanelView extends ItemView {
     const root = this.contentEl.createDiv({ cls: "aha-review-panel" });
     this.renderHeader(root, { showRun: true, showMissingMemorySeed: true, showPin: true });
     this.renderStaleCue(root);
+    this.renderFallbackWarning(root);
 
     const table = root.createDiv({ cls: "aha-review-panel-table", attr: { role: "table" } });
     const headerRow = table.createDiv({ cls: "aha-review-panel-row aha-review-panel-head", attr: { role: "row" } });
@@ -180,6 +183,12 @@ export class AhaReviewPanelView extends ItemView {
     if (!this.context || !this.stale) return;
     const cue = root.createDiv({ cls: "aha-review-panel-stale" });
     cue.createSpan({ text: "源笔记已更新" });
+  }
+
+  private renderFallbackWarning(root: HTMLElement): void {
+    if (!this.fallbackWarning) return;
+    const warning = root.createDiv({ cls: "aha-review-panel-stale" });
+    warning.createSpan({ text: this.fallbackWarning });
   }
 
   private renderRunButton(parent: HTMLElement, text = "运行 Aha"): HTMLButtonElement {

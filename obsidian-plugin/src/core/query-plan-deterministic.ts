@@ -166,9 +166,13 @@ export function normalizeQmdObject(value: unknown, args: DeterministicPlanArgs =
   return {
     intent: sanitizeQmdLine(record.intent || fallback.intent, MAX_QMD_INTENT_CHARS),
     lex: lex.length > 0 ? lex : fallback.lex.slice(0, MAX_QMD_LEX_TERMS),
-    vec: sanitizeQmdLine(record.vec || fallback.vec, MAX_QMD_VEC_CHARS),
-    hyde: sanitizeQmdLine(record.hyde || fallback.hyde, MAX_QMD_HYDE_CHARS),
+    vec: sanitizeQmdLine(stripFrontmatter(record.vec || fallback.vec), MAX_QMD_VEC_CHARS),
+    hyde: sanitizeQmdLine(stripFrontmatter(record.hyde || fallback.hyde), MAX_QMD_HYDE_CHARS),
   };
+}
+
+function stripFrontmatter(value: unknown): string {
+  return String(value ?? "").replace(/^---[\s\S]*?---/m, " ").trim();
 }
 
 export function fallbackQmdObject(args: DeterministicPlanArgs = {}, sourceText = ""): QmdQueryObject {

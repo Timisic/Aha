@@ -169,6 +169,7 @@ test("writePluginPipelineTrace creates the directory and writes a schema-valid J
     const writtenPath = writePluginPipelineTrace(trace, traceDirectory);
     const files = await readdir(traceDirectory);
     assert.equal(files.length, 1);
+    assert.ok(files[0].endsWith(".json"));
     const contents = JSON.parse(await readFile(writtenPath, "utf-8"));
     assert.equal(contents.origin, "plugin");
     assert.equal(contents.case.id, "Idea/Source.md");

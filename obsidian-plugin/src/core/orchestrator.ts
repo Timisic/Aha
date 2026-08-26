@@ -26,6 +26,8 @@ import { mergeAndRankQueryResults, pipelineCandidate } from "./pool";
 import { type QmdDeps, runQmdPlanQueries } from "./qmd";
 import { type DeterministicPlanArgs, type PlanQuery, compactLine } from "./query-plan-deterministic";
 import { generateQueryPlanViaLlm, type QueryPlanPromptOverride } from "./query-plan-llm";
+import type { PooledCandidate } from "./pool";
+import type { QmdQueryOutcome } from "./qmd";
 import {
   type RelationJudgeCandidate,
   type RelationJudgeCandidateInput,
@@ -87,6 +89,10 @@ export interface AhaResultSuccess {
   queryPlanFallback: boolean;
   queryPlanPromptVersion: string;
   queryPlanQueries: PlanQuery[];
+  /** Per-query QMD retrieval results for trace diagnostics. */
+  qmdQueryResults: QmdQueryOutcome[];
+  /** Pool-merged candidates before Relation Judge, for trace diagnostics. */
+  pooledCandidates: PooledCandidate[];
 }
 
 export interface AhaResultFailure {
@@ -101,6 +107,10 @@ export interface AhaResultFailure {
   queryPlanFallback: boolean;
   queryPlanPromptVersion: string;
   queryPlanQueries: PlanQuery[];
+  /** Per-query QMD retrieval results for trace diagnostics. */
+  qmdQueryResults: QmdQueryOutcome[];
+  /** Pool-merged candidates before Relation Judge, for trace diagnostics. */
+  pooledCandidates: PooledCandidate[];
 }
 
 export type AhaResult = AhaResultSuccess | AhaResultFailure;
@@ -173,6 +183,8 @@ export async function runFullPipeline(
       queryPlanFallback: planOutcome.fallback,
       queryPlanPromptVersion: planOutcome.promptVersion,
       queryPlanQueries: planOutcome.queries,
+      qmdQueryResults: queryResults,
+      pooledCandidates: pooled,
     };
   }
 
@@ -249,6 +261,8 @@ export async function runFullPipeline(
       queryPlanFallback: planOutcome.fallback,
       queryPlanPromptVersion: planOutcome.promptVersion,
       queryPlanQueries: planOutcome.queries,
+      qmdQueryResults: queryResults,
+      pooledCandidates: pooled,
     };
   }
 
@@ -264,6 +278,8 @@ export async function runFullPipeline(
     queryPlanFallback: planOutcome.fallback,
     queryPlanPromptVersion: planOutcome.promptVersion,
     queryPlanQueries: planOutcome.queries,
+    qmdQueryResults: queryResults,
+    pooledCandidates: pooled,
   };
 }
 

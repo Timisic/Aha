@@ -211,6 +211,7 @@ test("with traceDirectory set, a search round writes a schema-valid trace with p
 
     const files = await readdir(traceDirectory);
     assert.equal(files.length, 1);
+    assert.ok(files[0].endsWith(".json"));
     const trace = JSON.parse(await readFile(path.join(traceDirectory, files[0]), "utf-8"));
     assert.equal(trace.schema, "PipelineTrace");
     assert.equal(trace.origin, "plugin");

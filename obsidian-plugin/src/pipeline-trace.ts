@@ -79,6 +79,32 @@ export interface PluginTraceFinalCandidate {
   content_hash: string;
 }
 
+export interface PluginTraceQmdRow {
+  file: string;
+  title: string;
+  score: number | null;
+  rank: number;
+}
+
+export interface PluginTraceQmdRun {
+  kind: string;
+  command: string;
+  query_text: string;
+  row_count: number;
+  rows: PluginTraceQmdRow[];
+}
+
+export interface PluginTracePooledCandidate {
+  rank: number;
+  file: string;
+  title: string;
+  best_score: number;
+  rank_score: number;
+  final_score: number;
+  query_kinds: string[];
+  sources: Array<{ kind: string; command: string; rank: number; score: number | null }>;
+}
+
 export interface PluginPipelineTrace {
   schema: typeof TRACE_SCHEMA;
   version: typeof TRACE_VERSION;
@@ -91,21 +117,10 @@ export interface PluginPipelineTrace {
   };
   steps: {
     query_generation: PluginTraceQueryGeneration;
-    /**
-     * The internalized one-shot tier pipelines (runFullPipeline /
-     * runRecallTier) don't expose their raw per-query qmd rows outward --
-     * only the final merged/pooled candidate list is visible to plugin
-     * code. Exposing raw per-query rows would require restructuring those
-     * frozen one-shot orchestrator calls beyond this ticket's authorized
-     * edit scope (core/orchestrator.ts edits are authorized only for the
-     * prompt-override threading). Left as an empty array rather than
-     * fabricated data; `final_candidates` below carries the real signal.
-     */
-    qmd_runs: [];
+    qmd_runs: PluginTraceQmdRun[];
     /** The plugin path never does backlink expansion (issue #58). */
     backlink_expansion: null;
-    /** Not exposed by the one-shot tier calls; see qmd_runs's comment. */
-    pre_rerank_candidates: null;
+    pre_rerank_candidates: PluginTracePooledCandidate[] | null;
     rerank: {
       generated_by: "llm" | "none";
       fallback: null;
@@ -133,6 +148,19 @@ export interface BuildPluginPipelineTraceInput {
     promptVersion: string;
     queries?: Array<{ kind: string; command: string; text: string }>;
   };
+  qmdQueryResults?: Array<{
+    query: { kind: string; command: string; query?: string; text?: string };
+    rows: Array<{ file?: unknown; path?: unknown; title?: unknown; score?: unknown }>;
+  }>;
+  pooledCandidates?: Array<{
+    notePath: string;
+    noteTitle: string;
+    bestScore: number;
+    rankScore: number;
+    finalScore: number;
+    queryKinds: Set<string> | string[];
+    sources: Array<{ kind: string; command: string; rank: number; score: number | null }>;
+  }>;
 }
 
 /**
@@ -160,6 +188,35 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
         queries: [],
       };
 
+  const qmdRuns: PluginTraceQmdRun[] = (input.qmdQueryResults ?? []).map((qr) => {
+    const rows: PluginTraceQmdRow[] = qr.rows.map((row, i) => ({
+      file: String(row.file ?? row.path ?? ""),
+      title: String(row.title ?? ""),
+      score: typeof row.score === "number" && Number.isFinite(row.score) ? row.score : null,
+      rank: i + 1,
+    }));
+    return {
+      kind: qr.query.kind,
+      command: qr.query.command,
+      query_text: boundedSnippet(String(qr.query.query ?? qr.query.text ?? ""), 500),
+      row_count: rows.length,
+      rows: rows.slice(0, 30),
+    };
+  });
+
+  const preRerankCandidates: PluginTracePooledCandidate[] | null = input.pooledCandidates
+    ? input.pooledCandidates.map((pc, i) => ({
+        rank: i + 1,
+        file: pc.notePath,
+        title: pc.noteTitle,
+        best_score: pc.bestScore,
+        rank_score: pc.rankScore,
+        final_score: pc.finalScore,
+        query_kinds: pc.queryKinds instanceof Set ? [...pc.queryKinds] : pc.queryKinds,
+        sources: pc.sources,
+      }))
+    : null;
+
   return {
     schema: TRACE_SCHEMA,
     version: TRACE_VERSION,
@@ -172,9 +229,9 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
     },
     steps: {
       query_generation: queryGeneration,
-      qmd_runs: [],
+      qmd_runs: qmdRuns,
       backlink_expansion: null,
-      pre_rerank_candidates: null,
+      pre_rerank_candidates: preRerankCandidates,
       // Relation Judge only ever runs from inside the Full Tier code path
       // (runFullPipeline) -- decided by whether queryPlan metadata is
       // present (it is only populated by that same code path), not by which
@@ -226,7 +283,9 @@ export function writePluginPipelineTrace(trace: PluginPipelineTrace, traceDirect
   const fs = getNodeRequire()("fs") as typeof import("fs");
   const path = getNodeRequire()("path") as typeof import("path");
   fs.mkdirSync(traceDirectory, { recursive: true });
-  const tracePath = path.join(traceDirectory, `${safeTraceName(trace.case.id)}.json`);
+  const baseName = safeTraceName(trace.case.id);
+  const tracePath = path.join(traceDirectory, `${baseName}.json`);
   fs.writeFileSync(tracePath, `${JSON.stringify(trace, null, 2)}\n`);
   return tracePath;
 }
+

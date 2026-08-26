@@ -87,7 +87,8 @@ export async function mergeAndRankQueryResults(
         noteTitle: typeof row.title === "string" && row.title.trim()
           ? row.title.trim()
           : deps.path.basename(notePath, ".md"),
-        hit: firstSnippetLine(row.snippet) || `QMD score ${row.score ?? "unknown"}`,
+        hit: firstSnippetLine(row.snippet)
+          || (typeof row.title === "string" && row.title.trim() ? row.title.trim() : `QMD score ${row.score ?? "unknown"}`),
         bestScore: 0,
         rankScore: 0,
         queryKinds: new Set<string>(),
@@ -147,7 +148,7 @@ export function pipelineCandidate(candidate: PooledCandidate): PipelineCandidate
   };
 }
 
-/** Verbatim port of firstSnippetLine: first non-frontmatter content line. */
+/** First substantive content line from a QMD snippet, skipping metadata and structural markup. */
 export function firstSnippetLine(snippet: unknown): string {
   if (typeof snippet !== "string") return "";
   return (
@@ -157,9 +158,13 @@ export function firstSnippetLine(snippet: unknown): string {
       .find(
         (line) =>
           line &&
+          line.length > 6 &&
           !line.startsWith("@@") &&
           line !== "---" &&
-          !/^(create|cssclasses|tags|categories|emotion):\s*/.test(line),
+          !/^#{1,6}\s/.test(line) &&
+          !/^>\s*\[!/.test(line) &&
+          !/^[-*]\s+(p-indent|cssclasses|tags|categories)/.test(line) &&
+          !/^(create|cssclasses|tags|categories|emotion|start|title|date|topic):\s*/.test(line),
       ) ?? ""
   );
 }

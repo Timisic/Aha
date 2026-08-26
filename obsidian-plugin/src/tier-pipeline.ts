@@ -146,7 +146,13 @@ interface QueryPlanTraceMetadata {
 }
 
 /** Writes a plugin-origin Pipeline Trace only when settings.traceDirectory is a non-empty string; otherwise does nothing (no filesystem access at all). */
-function writePluginTraceIfConfigured(input: TieredSearchInput, outcome: TieredOutcome, queryPlan: QueryPlanTraceMetadata | undefined): void {
+function writePluginTraceIfConfigured(
+  input: TieredSearchInput,
+  outcome: TieredOutcome,
+  queryPlan: QueryPlanTraceMetadata | undefined,
+  qmdQueryResults?: BuildPluginPipelineTraceInput["qmdQueryResults"],
+  pooledCandidates?: BuildPluginPipelineTraceInput["pooledCandidates"],
+): void {
   const traceDirectory = input.settings.traceDirectory?.trim();
   if (!traceDirectory) return;
   const traceInput: BuildPluginPipelineTraceInput = {
@@ -156,6 +162,8 @@ function writePluginTraceIfConfigured(input: TieredSearchInput, outcome: TieredO
     tier: outcome.tier,
     result: outcome.result,
     queryPlan,
+    qmdQueryResults,
+    pooledCandidates,
   };
   const trace = buildPluginPipelineTrace(traceInput);
   writePluginPipelineTrace(trace, traceDirectory);
@@ -237,6 +245,6 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
     error: null,
     promptVersion: fullResult.queryPlanPromptVersion,
     queries: fullResult.queryPlanQueries.map((q) => ({ kind: q.kind, command: q.command, text: q.text })),
-  });
+  }, fullResult.qmdQueryResults, fullResult.pooledCandidates);
   return outcome;
 }
