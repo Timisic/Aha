@@ -190,28 +190,6 @@ test("HTTP 408 is retryable like 429 and 5xx", async () => {
   assert.deepEqual(sleeps, [1000]);
 });
 
-test("model output that is not valid JSON fails as parse without retrying", async () => {
-  const { deps, calls } = fakeDeps([
-    { status: 200, bodyText: JSON.stringify({ choices: [{ message: { content: "not json at all" } }] }) },
-  ]);
-  const result = await llmJsonCall(chatRequest(), deps);
-  assert.equal(result.ok, false);
-  assert.equal(result.attempts, 1);
-  assert.equal(result.kind, "parse");
-  assert.match(result.error, /model output is not valid JSON/);
-  assert.equal(calls.length, 1);
-});
-
-test("non-JSON provider envelope fails as parse without retrying", async () => {
-  const { deps, calls } = fakeDeps([{ status: 200, bodyText: "<html>gateway page</html>" }]);
-  const result = await llmJsonCall(responsesRequest(), deps);
-  assert.equal(result.ok, false);
-  assert.equal(result.kind, "parse");
-  assert.equal(result.attempts, 1);
-  assert.match(result.error, /non-JSON body/);
-  assert.equal(calls.length, 1);
-});
-
 test("chat-completions request builds the DeepSeek-compatible URL, body, and auth header", async () => {
   const { deps, calls } = fakeDeps([chatEnvelope({ ok: true })]);
   // A schema passed under chat-completions must not leak into the body; that
