@@ -31,7 +31,7 @@ export interface NeighborhoodTierArgs {
 
 const DEFAULT_TARGET_CANDIDATES = 20;
 
-interface NeighborEntry {
+export interface NeighborEntry {
   notePath: string;
   isBacklink: boolean;
   isOutlink: boolean;
@@ -44,8 +44,13 @@ interface NeighborEntry {
  * path -- Obsidian's metadataCache does not expose a direct backlinks-by-file
  * API reliably across API surfaces, so scanning is the standard technique),
  * merging a note that is both a backlink and an outlink into one entry.
+ *
+ * Exported so tier-pipeline.ts's Full Tier can reuse it to build core's
+ * OrchestratorDeps.listGraphNeighbors from the same metadataCache, giving
+ * Full Tier the same Obsidian graph-expansion candidates Neighborhood Tier
+ * and bench already get (see core/graph-expansion.ts).
  */
-function collectNeighbors(sourcePath: string, resolvedLinks: Record<string, Record<string, number>>): NeighborEntry[] {
+export function collectNeighbors(sourcePath: string, resolvedLinks: Record<string, Record<string, number>>): NeighborEntry[] {
   const byPath = new Map<string, NeighborEntry>();
 
   const outlinks = resolvedLinks[sourcePath] ?? {};

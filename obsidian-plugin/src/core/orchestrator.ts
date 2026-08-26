@@ -20,7 +20,8 @@ import {
   qmdUriVaultPath,
   resolveVaultContainedPath,
 } from "./candidates";
-import { type LlmProtocol, type LlmTransportDeps } from "./llm-transport";
+import { type GraphExpansionDeps, graphExpansionRows } from "./graph-expansion";
+import { type LlmProtocol, type LlmThinking, type LlmTransportDeps } from "./llm-transport";
 import { excerptNoteMarkdown, isSubstantiveExcerpt } from "./note-excerpt";
 import { mergeAndRankQueryResults, pipelineCandidate } from "./pool";
 import { type QmdDeps, runQmdPlanQueries } from "./qmd";
@@ -56,9 +57,16 @@ export interface OrchestratorLlmConfig {
   model: string;
   protocol: LlmProtocol;
   timeoutMs?: number;
+  /**
+   * DeepSeek chat-completions thinking control (llm-transport.ts). Optional
+   * and omitted from the body when unset -- every existing caller (including
+   * the plugin's tier-pipeline.ts, which never set this) keeps behaving
+   * exactly as before this field was added.
+   */
+  thinking?: LlmThinking;
 }
 
-export interface OrchestratorDeps extends LlmTransportDeps, QmdDeps, VaultBoundaryDeps {
+export interface OrchestratorDeps extends LlmTransportDeps, QmdDeps, VaultBoundaryDeps, GraphExpansionDeps {
   /** Reads a note's raw markdown given a resolved absolute path. */
   readNote(absolutePath: string): Promise<string>;
 }
@@ -138,6 +146,7 @@ export async function runFullPipeline(
     model: llm.model,
     protocol: llm.protocol,
     timeoutMs: llm.timeoutMs,
+    thinking: llm.thinking,
   };
 
   const planOutcome = await generateQueryPlanViaLlm(args, args.sourceText, transportRequest, deps, args.queryPromptOverride);
@@ -149,6 +158,23 @@ export async function runFullPipeline(
     planOutcome.queries,
     deps,
   );
+
+  const graphWarnings: string[] = [];
+  if (deps.listGraphNeighbors) {
+    try {
+      const graphOutcome = await deps.listGraphNeighbors(args.sourcePath);
+      graphWarnings.push(...graphOutcome.warnings);
+      const rows = graphExpansionRows(args.sourcePath, graphOutcome.neighbors);
+      if (rows.length > 0) {
+        queryResults.push({
+          query: { kind: "obsidian_graph", command: "obsidian links/backlinks" },
+          rows,
+        });
+      }
+    } catch (error) {
+      graphWarnings.push(`Obsidian graph expansion failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   const pooled = await mergeAndRankQueryResults(
     args,
@@ -169,6 +195,7 @@ export async function runFullPipeline(
       summary: "Aha mixed retrieval returned no usable candidates.",
       warnings: [
         planWarning,
+        ...graphWarnings,
         ...queryErrors.map((error) => `Skipped failed query: ${error}`),
       ],
       error: {
@@ -241,6 +268,7 @@ export async function runFullPipeline(
     ...excerptWarnings,
     ...relationJudge.warnings,
     ...queryWarnings,
+    ...graphWarnings,
     ...queryErrors.map((error) => `Skipped failed query: ${error}`),
   ];
 

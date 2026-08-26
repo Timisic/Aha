@@ -93,11 +93,7 @@ test("queryPromptOverrideFromSettings trims the override text before hashing", a
 function baseSettings(overrides = {}) {
   return {
     ahaWorkspace: "",
-    llmProvider: "openai",
-    llmBaseUrl: "https://api.openai.com/v1",
-    llmModel: "gpt-5.5",
-    llmApiKey: "",
-    llmApiKeyEnv: "AHA_TEST_NONEXISTENT_OPENAI_KEY_ENV",
+    llmProvider: "deepseek",
     deepseekBaseUrl: "https://api.deepseek.com",
     deepseekModel: "deepseek-v4-pro",
     deepseekApiKey: "",
@@ -228,5 +224,86 @@ test("with traceDirectory unset, a search round writes nothing (no filesystem wr
     await runTieredSearch(tieredSearchInput({ vaultRoot, settings }));
 
     await assert.rejects(readdir(traceDirectory), /ENOENT/);
+  });
+});
+
+// Bundles a smarter obsidian stub whose fake requestUrl inspects the
+// DeepSeek chat-completions request body and returns a query-plan or
+// relation-judge response depending on prompt content -- unlike the always-
+// "{}" stub loadModule() above uses (sufficient for the Recall-Tier-only
+// tests above, which never actually call requestUrl). Needed to reach Full
+// Tier and exercise orchestratorDeps.listGraphNeighbors end to end (issue:
+// Full Tier previously never wired this dep, so graph-expansion candidates
+// silently never reached plugin users even though core supported it).
+async function loadModuleWithLlmStub() {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-tier-pipeline-llm-test-"));
+  const entry = path.join(temp, "entry.ts");
+  const out = path.join(temp, "bundle.mjs");
+  await writeFile(entry, `export * from ${JSON.stringify(path.join(repoRoot, "obsidian-plugin/src/tier-pipeline.ts"))};\n`);
+  await esbuild.build({
+    bundle: true,
+    entryPoints: [entry],
+    format: "esm",
+    outfile: out,
+    platform: "node",
+    plugins: [{
+      name: "obsidian-stub-llm",
+      setup(build) {
+        build.onResolve({ filter: /^obsidian$/ }, () => ({ path: "obsidian", namespace: "obsidian-stub-llm" }));
+        build.onLoad({ filter: /.*/, namespace: "obsidian-stub-llm" }, () => ({
+          contents: [
+            "export async function requestUrl(options) {",
+            "  const parsed = JSON.parse(options.body || '{}');",
+            "  const prompt = parsed.messages?.[0]?.content || '';",
+            "  const isQueryPlan = prompt.includes('检索查询生成');",
+            "  const output = isQueryPlan",
+            "    ? { queries: [",
+            "        { kind: 'raw', command: 'qmd query', text: 'raw', qmd: { intent: 'raw', lex: ['old'], vec: 'old memory', hyde: 'an old note' } },",
+            "        { kind: 'abstracted_judgment', command: 'qmd query', text: 'abstracted', qmd: { intent: 'abstracted', lex: ['judgment'], vec: 'judgment', hyde: 'an old note' } },",
+            "        { kind: 'contextual', command: 'qmd query', text: 'context', qmd: { intent: 'context', lex: ['context'], vec: 'context', hyde: 'an old note' } },",
+            "      ] }",
+            "    : { ok: true, sourcePath: 'Source.md', generatedAt: null, summary: 'judge ok', warnings: [], error: null,",
+            "        candidates: JSON.parse(prompt.slice(prompt.lastIndexOf('candidates:') + 'candidates:'.length).trim()).map((c) => ({",
+            "          notePath: c.notePath, noteTitle: c.noteTitle, relation: 'supports',",
+            "          hit: '\\\"' + String(c.excerpt || '').slice(0, 20) + '\\\"', why: 'Matches the source insight with concrete evidence.',",
+            "          quotes: [String(c.excerpt || '').slice(0, 20)], selected: true,",
+            "        })) };",
+            "  return { status: 200, text: JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(output) } }] }) };",
+            "}",
+          ].join('\n'),
+          loader: "js",
+        }));
+      },
+    }],
+    target: "es2022",
+  });
+  const loaded = await import(`${pathToFileURL(out).href}?cacheBust=${Date.now()}`);
+  await rm(temp, { recursive: true, force: true });
+  return loaded;
+}
+
+test("Full Tier surfaces Obsidian graph-expansion (backlink) candidates via orchestratorDeps.listGraphNeighbors", async () => {
+  await withTestVault(async ({ vaultRoot, fakeQmd }) => {
+    await writeFile(path.join(vaultRoot, "Memory/Linked.md"), "A backlinked old note with a durable judgment worth surfacing.\n");
+
+    const { runTieredSearch } = await loadModuleWithLlmStub();
+    const settings = baseSettings({
+      qmdCommand: fakeQmd,
+      deepseekApiKey: "test-key",
+      deepseekApiKeyEnv: "",
+    });
+    const input = tieredSearchInput({ vaultRoot, settings });
+    // Memory/Linked.md links to Source.md, i.e. it is a backlink of the source note.
+    input.metadataCache = { resolvedLinks: { "Memory/Linked.md": { "Source.md": 1 } } };
+    // The default tieredSearchInput's readNote always returns "", which would
+    // fail core's isSubstantiveExcerpt (30-char floor) for every candidate.
+    input.readNote = (absolutePath) => readFile(absolutePath, "utf-8");
+
+    const outcome = await runTieredSearch(input);
+
+    assert.equal(outcome.tier, "full");
+    assert.equal(outcome.result.ok, true);
+    const paths = outcome.result.candidates.map((candidate) => candidate.notePath);
+    assert.ok(paths.includes("Memory/Linked.md"), `expected backlink candidate Memory/Linked.md in ${JSON.stringify(paths)}`);
   });
 });

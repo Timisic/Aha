@@ -24,7 +24,7 @@ import {
   type OrchestratorDeps,
 } from "./core";
 import { resolveLlmRequestProfile, requestUrlHttpPost } from "./llm-request";
-import { buildNeighborhoodTierResult, type NeighborhoodMetadataCacheLike, type NeighborhoodSourceLike } from "./neighborhood-tier";
+import { buildNeighborhoodTierResult, collectNeighbors, type NeighborhoodMetadataCacheLike, type NeighborhoodSourceLike } from "./neighborhood-tier";
 import { buildPluginPipelineTrace, writePluginPipelineTrace, type BuildPluginPipelineTraceInput } from "./pipeline-trace";
 import { createQmdRequestDeps, probeQmdAvailable } from "./qmd-request";
 import { runRecallTier } from "./recall-tier";
@@ -49,6 +49,24 @@ export interface TieredSearchInput {
 
 function waitMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Builds core's OrchestratorDeps.listGraphNeighbors from the same
+ * metadataCache Neighborhood Tier already reads (neighborhood-tier.ts's
+ * collectNeighbors) -- no subprocess, no I/O, just an in-memory cache scan.
+ * Gives Full Tier the same Obsidian graph-expansion recall (1-hop outlinks +
+ * backlinks) that bench and the CLI wrapper already get via
+ * core-artifact.mjs's createObsidianGraphNeighborsRunner.
+ */
+function listGraphNeighborsFor(input: TieredSearchInput) {
+  return async (sourcePath: string) => ({
+    neighbors: collectNeighbors(sourcePath, input.metadataCache.resolvedLinks ?? {}).map((entry) => ({
+      notePath: entry.notePath,
+      kind: (entry.isBacklink ? "backlink" : "outlink") as "backlink" | "outlink",
+    })),
+    warnings: [] as string[],
+  });
 }
 
 function getNodeRequire(): NodeRequire {
@@ -218,6 +236,7 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
     httpPost: requestUrlHttpPost,
     sleep: waitMs,
     readNote: input.readNote,
+    listGraphNeighbors: listGraphNeighborsFor(input),
   };
   const fullResult = await runFullPipeline(
     {
@@ -235,6 +254,7 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
       model: llmProfile.request.model,
       protocol: llmProfile.request.protocol,
       timeoutMs: DEFAULT_LLM_TIMEOUT_MS,
+      thinking: llmProfile.request.thinking,
     },
     orchestratorDeps,
   );

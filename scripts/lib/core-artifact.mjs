@@ -13,7 +13,14 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { coreLlmTransportDeps, coreNodeDeps, coreVaultBoundaryDeps, createQmdCliRunner } from "./core-node-deps.mjs";
+import {
+  coreLlmTransportDeps,
+  coreNodeDeps,
+  coreVaultBoundaryDeps,
+  createObsidianGraphNeighborsRunner,
+  createQmdCliRunner,
+  createQmdSdkRunner,
+} from "./core-node-deps.mjs";
 import { DEFAULT_VAULT_ROOT } from "./vault-paths.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
@@ -202,10 +209,20 @@ export function judgeCandidateRelationsViaLlm(input, transportRequest) {
 // --- orchestrator (issue #57) ---
 
 export function runFullPipeline(args, llm, partialDeps) {
+  const qmdRunnerConfig = { ...args, sensitiveEnvName: args.llmApiKeyEnv };
+  const qmdRunner = args.qmdRunner === "cli" ? createQmdCliRunner(qmdRunnerConfig) : createQmdSdkRunner(qmdRunnerConfig);
   return core.runFullPipeline(args, llm, {
     ...coreLlmTransportDeps,
     ...coreVaultBoundaryDeps,
+    ...qmdRunner,
     readNote: (absolutePath) => readFile(absolutePath, "utf-8"),
+    listGraphNeighbors: createObsidianGraphNeighborsRunner({
+      obsidianCommand: args.obsidianCommand,
+      workspace: args.workspace,
+      vaultRoot: args.vaultRoot,
+      sourceAbsolutePath: args.sourceAbsolutePath,
+      sensitiveEnvName: args.llmApiKeyEnv,
+    }),
     ...partialDeps,
   });
 }

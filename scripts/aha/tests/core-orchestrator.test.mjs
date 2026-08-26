@@ -199,6 +199,76 @@ test("without queryPromptOverride, the result records the built-in query-plan pr
   assert.equal(result.queryPlanPromptVersion, "aha-query-plan-v7");
 });
 
+// --- Obsidian graph expansion (ADR 0005 follow-up) --------------------------
+// deps.listGraphNeighbors is optional and additive: every test above omits it
+// and keeps behaving exactly as before (already verified since those tests
+// are unmodified).
+
+test("deps.listGraphNeighbors is optional; omitting it changes nothing", async () => {
+  const deps = baseDeps({
+    httpScript: [responsesEnvelope(validPlanJson), responsesEnvelope(judgeSuccessJson("supports"))],
+    qmdRows: [{ file: "Memory/Feedback.md", title: "Feedback", snippet: "Feedback loops expose experience gaps", score: 0.9 }],
+  });
+  assert.equal(deps.listGraphNeighbors, undefined);
+
+  const result = await runFullPipeline(args, llm, deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.candidates.length, 1);
+});
+
+test("graph-expansion neighbors merge into the candidate pool alongside QMD retrieval", async () => {
+  const deps = baseDeps({
+    httpScript: [responsesEnvelope(validPlanJson), responsesEnvelope({
+      ok: true,
+      sourcePath: "Source.md",
+      generatedAt: null,
+      summary: "Judged two candidates.",
+      warnings: [],
+      error: null,
+      candidates: [
+        judgeSuccessJson("supports").candidates[0],
+        {
+          notePath: "Memory/Linked.md",
+          noteTitle: "Linked",
+          relation: "weak",
+          hit: "Linked via outlink",
+          why: "Neighborhood signal only.",
+          quotes: [],
+          selected: true,
+        },
+      ],
+    })],
+    qmdRows: [{ file: "Memory/Feedback.md", title: "Feedback", snippet: "Feedback loops expose experience gaps", score: 0.9 }],
+  });
+  vaultNotes["/vault/Memory/Linked.md"] = "Linked note body with enough substantive text to pass the excerpt filter.";
+  deps.listGraphNeighbors = async (sourcePath) => {
+    assert.equal(sourcePath, "Source.md");
+    return { neighbors: [{ notePath: "Memory/Linked.md", kind: "outlink" }], warnings: [] };
+  };
+
+  const result = await runFullPipeline(args, llm, deps);
+
+  assert.equal(result.ok, true);
+  const paths = result.candidates.map((candidate) => candidate.notePath);
+  assert.ok(paths.includes("Memory/Linked.md"), "graph-expansion neighbor should reach the final candidate set");
+});
+
+test("a listGraphNeighbors failure surfaces as a warning without failing the pipeline", async () => {
+  const deps = baseDeps({
+    httpScript: [responsesEnvelope(validPlanJson), responsesEnvelope(judgeSuccessJson("supports"))],
+    qmdRows: [{ file: "Memory/Feedback.md", title: "Feedback", snippet: "Feedback loops expose experience gaps", score: 0.9 }],
+  });
+  deps.listGraphNeighbors = async () => {
+    throw new Error("obsidian CLI not found");
+  };
+
+  const result = await runFullPipeline(args, llm, deps);
+
+  assert.equal(result.ok, true);
+  assert.ok(result.warnings.some((warning) => warning.includes("Obsidian graph expansion failed: obsidian CLI not found")));
+});
+
 test("args.queryPromptOverride threads through to the query-plan LLM call and is recorded on the result", async () => {
   let capturedInput;
   const deps = baseDeps({
