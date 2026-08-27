@@ -4,21 +4,33 @@ This directory keeps executable project scripts grouped by workflow.
 
 ## Layout
 
+The orchestration logic itself (query plan, QMD retrieval, pool merge/rerank, Relation Judge) lives in `obsidian-plugin/src/core/`, not here — see [ADR 0005](../docs/adr/0005-share-compiled-core-between-plugin-and-bench.md). Everything under `scripts/` either consumes that compiled core (`lib/core-artifact.mjs`) for bench/CLI use, or is legacy machinery kept as a rollback path.
+
 ```text
 scripts/
   bench/
-    build-fixture.mjs       # Build a qmd bench fixture from active cases.
-    collect-review-seeds.mjs # Collect Obsidian Review Note seeds into an ignored draft case inbox.
-    normalize-case-paths.mjs # Rewrite vault-absolute case paths to vault-relative paths.
-    run-qmd-bench.mjs       # L1: QMD-only retrieval benchmark.
-    run-pipeline-bench.mjs  # L2: query plan -> QMD -> backlinks -> Relation Judge benchmark.
-    summarize-report.mjs    # Print a compact QMD bench report summary.
+    build-fixture.mjs         # Build a qmd bench fixture from active cases.
+    collect-review-seeds.mjs  # Collect Obsidian Review Note seeds into an ignored draft case inbox.
+    extract-note-excerpt.mjs  # Preview a case's exact source-note excerpt.
+    normalize-case-paths.mjs  # Rewrite vault-absolute case paths to vault-relative paths.
+    run-qmd-bench.mjs         # L1: QMD-only retrieval benchmark.
+    run-pipeline-bench.mjs    # L2: query plan -> QMD -> backlinks -> Relation Judge benchmark, via core.
+    run-pipeline-ablations.mjs # Runs the standard L2 ablation variant suite.
+    summarize-report.mjs      # Print a compact QMD bench report summary.
   lib/
-    *.mjs                   # Shared benchmark scoring, trace, and helper modules.
+    core-artifact.mjs         # Rebuild-first loader for the shared core artifact (ADR 0005); the main entry point for bench/CLI.
+    core-node-deps.mjs        # Node bindings (fetch, spawn, fs) injected into core's dependency seam.
+    *.mjs                     # Other shared benchmark scoring, trace, and path helpers.
   aha/
-    run-insight-search.mjs  # Obsidian plugin search runner.
-    query-plan.mjs          # Shared query-plan generation.
-    relation-judge.mjs      # Shared quote-backed relation judging.
+    run-insight-search.mjs    # Legacy CLI wrapper. DeepSeek runs now delegate to core-artifact.mjs; kept as
+                               # the plugin's hidden `useLegacyWrapper` rollback switch, bench's process
+                               # bridge, and the still-independent Codex CLI agentic path.
+    query-plan.mjs            # Thin shell around core's query-plan generation, used by the legacy wrapper/bench.
+    relation-judge.mjs        # Thin shell around core's quote-backed relation judging.
+    legacy-review-migration.mjs # One-time migration of old Review Note state into the plugin's Session Store.
+    tests/{unit,integration,e2e}/ # wrapper/retrieval/judge/scoring tests, tiered by what they touch.
+  debug-pipeline.mjs         # CLI harness for running the full core pipeline outside Obsidian.
+  dev/install-dev-plugin.mjs # Installs a side-by-side dev-channel plugin build into the vault.
 ```
 
 ## Common Commands

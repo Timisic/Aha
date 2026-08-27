@@ -26,32 +26,42 @@
 
 ## 架构
 
+管线的编排逻辑（查询计划、QMD 检索、候选合并重排、Relation Judge）住在 `obsidian-plugin/src/core/`，是唯一事实来源（[ADR 0005](./docs/adr/0005-share-compiled-core-between-plugin-and-bench.md)）。它不依赖 Obsidian API 也不依赖 Node，靠外部注入依赖；esbuild 把它编译成两份产物——直接打进插件本体，另外编译出一份独立 ESM 给 bench/CLI 复用——插件和评测因此跑的是同一份逻辑，不是两套平行实现。
+
 ```text
-┌─ Obsidian Plugin（Memory Surface）────────────────┐
-│  从当前笔记触发搜索 · 生成/复用 Review Note           │
-│  展示候选与关系理由 · 打开旧笔记 · 记录反馈动作         │
-└──────────────────┬───────────────────────────────┘
-                   │ 调用
-┌─ scripts/aha wrapper（机械连接层）────────────────┐
-│  环境检查 · QMD SDK/CLI · 代理与重试 · 候选过滤     │
-│  正文读取 · JSON schema 校验 · 结构化失败记录       │
-└──────────────────┬──────────────────────────────┘
-                   │ 编排
-┌─ LLM + QMD（Reasoning Workflow）─────────────────┐
-│  多路结构化查询生成 · 混合召回 + 链接图扩展           │
-│  候选原文阅读 · Relation Judge（引句校验）· 重排     │
-└──────────────────────────────────────────────────┘
+┌─ Obsidian Plugin（Memory Surface + 编排）─────────────┐
+│  触发搜索 · Capability Tier 编排                        │
+│  （Neighborhood / Recall / Full + Runtime Fallback）    │
+│  Review Note / Review Panel · 会话状态 · 反馈动作        │
+└──────────────────┬─────────────────────────────────────┘
+                   │ 进程内直接调用（不再 spawn 子进程）
+┌─ core/（Reasoning Workflow · 单一事实来源）────────────┐
+│  多路结构化查询生成 · QMD 混合召回 + 链接图扩展          │
+│  候选合并重排 · 正文读取 · Relation Judge（引句校验）    │
+└──────────────────┬─────────────────────────────────────┘
+                   │ esbuild 编译为独立 ESM 产物（未入库，用时现编）
+┌─ scripts/（bench 与遗留 CLI，非主路径）─────────────────┐
+│  scripts/bench 通过 core-artifact.mjs 消费同一份 core，  │
+│  评测结果因此仍是插件真实行为的证据                       │
+│  scripts/aha/run-insight-search.mjs：DeepSeek 路径已委托 │
+│  给 core，仅作隐藏回滚开关（useLegacyWrapper，默认关）    │
+│  与 Codex CLI 智能体路径（无 core 对应物）                │
+└──────────────────────────────────────────────────────────┘
 ```
 
 检索层组合多路信号：LLM 生成的多条结构化 QMD 查询（含结构抽象、反例导向、同义扩展、外文关键词）、确定性的原文/thought 补充查询（不依赖 LLM 措辞的召回底线）、源笔记的链接/反链邻域、QMD top-10 种子的反链扩展。
 
+DeepSeek 是唯一的 API provider（OpenAI provider 已移除）；Codex CLI 路径作为智能体式的独立分支保留，不经过 core。
+
 ## 仓库结构
 
 ```text
-obsidian-plugin/     Memory Surface：Obsidian 插件（触发、Review Note、Review Panel）
-scripts/aha/         产品 wrapper：检索编排、Relation Judge、结果 schema 校验
-scripts/bench/       评测管线入口（run-pipeline-bench 等）
-scripts/lib/         wrapper 与评测共享的模块（LLM 传输、代理、评分、PipelineTrace）
+obsidian-plugin/     Memory Surface + 编排：Obsidian 插件
+  src/core/            检索/判断逻辑的唯一事实来源（ADR 0005），esbuild 编译后插件与 scripts 共用同一份
+  src/*.ts             插件专属：触发、Review Note/Panel、会话状态、设置、Capability Tier 编排
+scripts/aha/         遗留 CLI wrapper：DeepSeek 路径已委托给 core，现为回滚开关 + bench 进程桥 + Codex CLI 路径
+scripts/bench/       评测管线入口（run-pipeline-bench 等），通过 scripts/lib/core-artifact.mjs 消费与插件相同的 core
+scripts/lib/         Node 侧共享绑定：core-artifact.mjs/core-node-deps.mjs（core 的 Node 依赖注入）、代理、评分、PipelineTrace
 bench/               评测用例与报告说明（生成物不入库）
 docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
 ```

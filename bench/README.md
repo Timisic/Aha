@@ -87,7 +87,11 @@ By default the scripts ask a query-generation agent to translate raw input into 
 
 During early curation, keep only human-vetted cases as `active`, even if that means the default suite has just a few cases. As the suite matures, aim for 12-20 real active cases. Engineering edge cases such as exact cue handling, duplicate basenames, qmd URI resolution, source-note self-hit filtering, and no-related-memory behavior belong in a separate regression fixture, not in the primary benchmark score. Local private regression cases can live in ignored `bench/aha-memory-regression-cases.json`.
 
-Review Feedback Actions are a separate daily flow. The Obsidian Review Note can record visible **Review Benchmark Seeds**:
+Review Feedback Actions are a separate daily flow. Per-candidate `accept` / `noise` / `should_have_found` feedback is stored by default in the plugin's Session Store ([ADR 0004](../docs/adr/0004-use-session-store-for-aha-panel-state.md)), not in a file — the Review Note is now a low-frequency, explicit `Aha: Export Review Note` action, not something every round produces.
+
+**`collect-review-seeds.mjs` only reads exported Review Notes, not the Session Store.** It has not been updated for ADR 0004: if you don't run `Aha: Export Review Note`, there is nothing in `Aha/Reviews` for it to scan and it collects zero seeds, even though your feedback exists in the Session Store. Run the export command first if you want seeds collected, or expect this flow to need a Session-Store-reading rewrite before it reflects real day-to-day usage.
+
+When a Review Note is exported, it can record visible **Review Benchmark Seeds**:
 
 - `accept` -> draft `gold.nice` seed material.
 - `reject_as_noise` -> draft `gold.noise` seed material.

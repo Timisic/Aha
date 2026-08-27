@@ -11,13 +11,14 @@
 source note
   → [查询计划] LLM 生成 3-5 条 QMD 查询（失败时确定性兜底）
   → [QMD 多路检索] 每条查询调 store.search / searchLex
+  → [图扩展] 源笔记 1 跳出链 + 反链，作为一路 obsidian_graph 结果（score 0.14/0.18）
   → [候选合并] mergeAndRankQueryResults：按 finalScore 排序，取 top-20
   → [正文读取] excerptNoteMarkdown（全文，不截断）+ isSubstantiveExcerpt 过滤
   → [Relation Judge] 每条候选独立 LLM 调用（并发 5），判定关系 + 引句校验
   → [输出] AhaResult
 ```
 
-核心路径（orchestrator.ts）与遗留路径（run-insight-search.mjs）的唯一结构差异：遗留路径在检索后有一步 **Obsidian 图扩展**（1 跳出链 + 反链，score 0.14/0.18），核心路径没有。
+审计时核心路径缺少图扩展这一步，`23b4cdf` 已把它移入 core（graph-expansion.ts），插件、bench、遗留 wrapper 现在跑同一份逻辑。
 
 ---
 
