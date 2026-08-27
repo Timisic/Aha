@@ -26,48 +26,40 @@
 
 ## 时间距离
 
-当下判断会被近因和情绪窄化——低谷时人倾向于认为"一直如此、只会更糟"。从时间距离外以旁观视角重看自己的负面经历，情绪反应与反刍都会下降，一周后依然有效；起作用的是重新评估，不是转移注意力。
+当下判断会被近因和情绪窄化，低谷时人倾向于认为“一直如此、只会更糟”。从时间距离外以旁观视角重看自己的负面经历，情绪反应与反刍都会下降，一周后依然有效；起作用的是重新评估，重新审视。
 
 Aha 的召回天然产生这种距离：写下想法的当下，它把数月甚至数年前与之 `supports` / `challenges` / `bounds` 的旧文字调回来。那是另一种情绪和认知状态下的自己所写，不需要记得，也不需要去翻。**旧笔记是一份不受当前心境污染的证据。**
 
 ## 架构
 
-管线的编排逻辑（查询计划、QMD 检索、候选合并重排、Relation Judge）住在 `obsidian-plugin/src/core/`，是唯一事实来源（[ADR 0005](./docs/adr/0005-share-compiled-core-between-plugin-and-bench.md)）。它不依赖 Obsidian API 也不依赖 Node，靠外部注入依赖；esbuild 把它编译成两份产物——直接打进插件本体，另外编译出一份独立 ESM 给 bench/CLI 复用——插件和评测因此跑的是同一份逻辑，不是两套平行实现。
+Aha 是一个 Obsidian 插件：触发搜索、展示候选、记录反馈都在插件里完成。检索与判断的逻辑单独封装成一个模块（`core`），评测脚本复用的是同一份逻辑，不是另外写一套。
 
 ```text
-┌─ Obsidian Plugin（Memory Surface + 编排）─────────────┐
-│  触发搜索 · Capability Tier 编排                        │
-│  （Neighborhood / Recall / Full + Runtime Fallback）    │
-│  Review Panel · 会话状态 · 反馈动作                       │
-└──────────────────┬─────────────────────────────────────┘
-                   │ 进程内直接调用（不再 spawn 子进程）
-┌─ core/（Reasoning Workflow · 单一事实来源）────────────┐
-│  多路结构化查询生成 · QMD 混合召回 + 链接图扩展          │
-│  候选合并重排 · 正文读取 · Relation Judge（引句校验）    │
-└──────────────────┬─────────────────────────────────────┘
-                   │ esbuild 编译为独立 ESM 产物（未入库，用时现编）
-┌─ scripts/（bench 与遗留 CLI，非主路径）─────────────────┐
-│  scripts/bench 通过 core-artifact.mjs 消费同一份 core，  │
-│  评测结果因此仍是插件真实行为的证据                       │
-│  scripts/aha/run-insight-search.mjs：DeepSeek 路径已委托 │
-│  给 core，仅作隐藏回滚开关（useLegacyWrapper，默认关）    │
-│  与 Codex CLI 智能体路径（无 core 对应物）                │
-└──────────────────────────────────────────────────────────┘
+┌─ Obsidian 插件 ──────────────────┐
+│  触发搜索 · Review Panel · 反馈   │
+└────────────┬─────────────────────┘
+             │
+┌─ core（检索与判断）───────────────┐
+│  生成查询 · 检索 · 候选排序        │
+│  判断每条旧笔记的关系（引句校验）  │
+└────────────┬─────────────────────┘
+             │
+┌─ scripts（评测）──────────────────┐
+│  复用同一份 core 逻辑跑评测         │
+└────────────────────────────────────┘
 ```
 
-检索层组合多路信号：LLM 生成的多条结构化 QMD 查询（含结构抽象、反例导向、同义扩展、外文关键词）、确定性的原文/thought 补充查询（不依赖 LLM 措辞的召回底线）、源笔记的链接/反链邻域、QMD top-10 种子的反链扩展。
-
-DeepSeek 是唯一的 API provider（OpenAI provider 已移除）；Codex CLI 路径作为智能体式的独立分支保留，不经过 core。
+检索层组合多路信号：模型生成的多条结构化查询、不依赖模型措辞的确定性兜底查询、源笔记的链接网络、检索结果的进一步反链扩展。
 
 ## 仓库结构
 
 ```text
-obsidian-plugin/     Memory Surface + 编排：Obsidian 插件
-  src/core/            检索/判断逻辑的唯一事实来源（ADR 0005），esbuild 编译后插件与 scripts 共用同一份
-  src/*.ts             插件专属：触发、Review Panel、会话状态、设置、Capability Tier 编排
-scripts/aha/         遗留 CLI wrapper：DeepSeek 路径已委托给 core，现为回滚开关 + bench 进程桥 + Codex CLI 路径
-scripts/bench/       评测管线入口（run-pipeline-bench 等），通过 scripts/lib/core-artifact.mjs 消费与插件相同的 core
-scripts/lib/         Node 侧共享绑定：core-artifact.mjs/core-node-deps.mjs（core 的 Node 依赖注入）、代理、评分、PipelineTrace
+obsidian-plugin/     Obsidian 插件
+  src/core/            检索与判断逻辑，插件和评测脚本共用
+  src/*.ts             插件专属：触发、Review Panel、会话状态、设置
+scripts/aha/         命令行工具
+scripts/bench/       评测入口（run-pipeline-bench 等）
+scripts/lib/         Node 侧共享工具：评分、PipelineTrace 等
 bench/               评测用例与报告说明（生成物不入库）
 docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
 ```
