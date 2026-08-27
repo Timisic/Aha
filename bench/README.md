@@ -347,9 +347,9 @@ npm run verify
 For focused benchmark or review-note changes, the deterministic subset is:
 
 ```bash
-node --test scripts/aha/tests/bench-scoring.test.mjs
-node --test scripts/aha/tests/review-note.test.mjs
-node --test scripts/aha/tests/review-seeds-collector.test.mjs
+node --test scripts/aha/tests/integration/bench-scoring.test.mjs
+node --test scripts/aha/tests/unit/review-note.test.mjs
+node --test scripts/aha/tests/integration/review-seeds-collector.test.mjs
 ```
 
 For a live local benchmark smoke, run the L2 pipeline only after confirming `bench/aha-memory-cases.json` is the ignored private file you intend to use:

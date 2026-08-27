@@ -77,7 +77,7 @@ node scripts/bench/summarize-report.mjs bench/reports/latest/pipeline.json
 ## 开发与验证
 
 ```bash
-node --test scripts/aha/tests/*.test.mjs   # wrapper/检索/judge/评分单测
+node --test scripts/aha/tests/**/*.test.mjs   # wrapper/检索/judge/评分单测 (unit/integration/e2e)
 cd obsidian-plugin && npm run verify       # 插件构建 + 测试
 ```
 

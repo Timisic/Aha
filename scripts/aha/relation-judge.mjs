@@ -77,7 +77,7 @@ export function defaultRelationJudgeOptions(overrides = {}) {
 
 // Generic-adapter Relation Judge orchestration (bench/legacy entry point used
 // directly by scripts/aha/run-insight-search.mjs, the frozen legacy wrapper,
-// and covered by scripts/aha/tests/relation-judge.test.mjs). The adapter
+// and covered by scripts/aha/tests/unit/relation-judge.test.mjs). The adapter
 // callback stays provider-agnostic here (it can wrap DeepSeek or the legacy
 // codex CLI); prompt construction, validation, quote-enforcement, and
 // merging all come from core.

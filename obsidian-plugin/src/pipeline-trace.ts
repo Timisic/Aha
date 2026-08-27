@@ -16,7 +16,7 @@
 // bundling hazard #57 hit with result-validator.mjs (see core/result-validator.ts's
 // comment). TRACE_SCHEMA/TRACE_VERSION are duplicated as literals here and
 // kept in sync via a dedicated guard test
-// (scripts/aha/tests/pipeline-trace-plugin.test.mjs) that imports both this
+// (scripts/aha/tests/unit/pipeline-trace-plugin.test.mjs) that imports both this
 // file and the exported constants from pipeline-trace.mjs and asserts they
 // are equal -- the same pattern core-result-validator.test.mjs established
 // for AHA_RESULT_SCHEMA.
