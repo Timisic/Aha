@@ -21,9 +21,10 @@ scripts/
     core-node-deps.mjs        # Node bindings (fetch, spawn, fs) injected into core's dependency seam.
     *.mjs                     # Other shared benchmark scoring, trace, and path helpers.
   aha/
-    run-insight-search.mjs    # Legacy CLI wrapper. DeepSeek runs now delegate to core-artifact.mjs; kept as
-                               # the plugin's hidden `useLegacyWrapper` rollback switch, bench's process
-                               # bridge, and the still-independent Codex CLI agentic path.
+    run-insight-search.mjs    # Legacy CLI wrapper. DeepSeek runs now delegate to core-artifact.mjs; kept
+                               # as the plugin's hidden `useLegacyWrapper` rollback switch and bench's
+                               # process bridge. Codex CLI (an alternate LLM provider for this path) has
+                               # been removed entirely -- DeepSeek is the sole provider.
     query-plan.mjs            # Thin shell around core's query-plan generation, used by the legacy wrapper/bench.
     relation-judge.mjs        # Thin shell around core's quote-backed relation judging.
     tests/{unit,integration,e2e}/ # wrapper/retrieval/judge/scoring tests, tiered by what they touch.

@@ -2,7 +2,7 @@
 
 面向开发与排障的运行约束说明。产品定位与架构见根目录 [README](../README.md)。
 
-主路径：插件在进程内直接调用 `src/core/`，不再 spawn wrapper 子进程。遗留 wrapper 仅在 `useLegacyWrapper`（隐藏开关，默认关）或 Codex CLI provider 下才会被启动。
+主路径：插件在进程内直接调用 `src/core/`，不再 spawn wrapper 子进程。遗留 wrapper 仅在 `useLegacyWrapper`（隐藏开关，默认关）下才会被启动；Codex CLI（曾经的另一个 LLM provider 选项）已整体移除，DeepSeek 是唯一 provider。
 
 ## 失败可见性与降级
 
@@ -16,7 +16,7 @@
 - QMD 由插件自身的桌面 Node runtime 直接 spawn qmd 二进制：关闭 stdin、超时后 SIGTERM/SIGKILL、限制 stdout/stderr 大小。
 - LLM 生成的多条 QMD plan query 逐条执行，避免争用 QMD/SQLite runtime；单条默认 30 秒超时。SDK runner 默认关闭 QMD 内部 rerank，CLI fallback 传 `-C 20`。某条 QMD 慢或卡住作为 warning 保留，不会自动降级到 `qmd vsearch`。
 - Query planner 生成 3-5 条改写查询后，runtime 额外追加 1 条由原 source note 确定性构造的 `source_fallback` 查询；模型改写不能挤掉这条原文兜底。
-- 遗留 wrapper / Codex CLI 路径才需要 Node 可执行文件：Obsidian 桌面 App 的 PATH 可能没有 Node，插件会优先用设置里的 Node command，其次探测常见安装路径。该路径的 HTTPS 请求走受控 curl transport（代理写入权限 `0600` 的临时 config，无代理时 `--noproxy '*'`），共享解析在 `scripts/lib/https-proxy.mjs`。
+- 只有遗留 wrapper 路径才需要 Node 可执行文件：Obsidian 桌面 App 的 PATH 可能没有 Node，插件会优先用设置里的 Node command，其次探测常见安装路径。该路径的 HTTPS 请求走受控 curl transport（代理写入权限 `0600` 的临时 config，无代理时 `--noproxy '*'`），共享解析在 `scripts/lib/https-proxy.mjs`。
 
 ## 候选边界与过滤
 

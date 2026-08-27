@@ -8,7 +8,7 @@ Three tiers, matching a standard test pyramid:
   implementation detail of testing compiled TS as `.mjs` — the tests
   themselves exercise one module's logic in isolation with injected fakes.
 - **`integration/`** (9 files) — real subprocess spawns (the CLI wrapper,
-  `qmd`/`codex`/`obsidian` stand-ins, `curl`), real `esbuild` + dynamic
+  `qmd`/`obsidian` stand-ins, `curl`), real `esbuild` + dynamic
   import of the compiled artifact, real localhost HTTP servers standing in
   for the LLM provider. These catch wiring bugs (arg-passing, env handling,
   protocol/URL construction) across multiple real components — but the LLM
