@@ -68,7 +68,6 @@ test("carried fields keep their old values when present and well-typed", async (
     deepseekModel: "deepseek-custom",
     deepseekApiKey: "ds-custom",
     deepseekApiKeyEnv: "CUSTOM_DEEPSEEK_KEY",
-    reviewFolder: "Custom/Reviews",
     targetCandidates: 17,
     qmdCommand: "/opt/custom/qmd",
     qmdIndex: "custom-index",
@@ -213,7 +212,6 @@ test("a copy of the real production settings object's key set migrates losslessl
 
   // Carried fields keep the production fixture's values.
   assert.equal(migrated.deepseekModel, "deepseek-v4-pro");
-  assert.equal(migrated.reviewFolder, "Aha/Reviews");
   assert.equal(migrated.targetCandidates, 18);
   assert.equal(migrated.qmdCommand, "/usr/local/bin/qmd");
   assert.equal(migrated.qmdIndex, "obsidian");
@@ -232,6 +230,9 @@ test("a copy of the real production settings object's key set migrates losslessl
   assert.equal(migrated.llmBaseUrl, undefined);
   assert.equal(migrated.llmModel, undefined);
   assert.equal(migrated.llmApiKeyEnv, undefined);
+  // reviewFolder (Review Note markdown export) was removed entirely, not
+  // just reset.
+  assert.equal(migrated.reviewFolder, undefined);
   assert.equal(migrated.ahaWorkspace, DEFAULT_SETTINGS.ahaWorkspace);
   assert.notEqual(DEFAULT_SETTINGS.ahaWorkspace, PRODUCTION_KEY_SET_FIXTURE.ahaWorkspace);
   assert.equal(migrated.nodeCommand, DEFAULT_SETTINGS.nodeCommand);

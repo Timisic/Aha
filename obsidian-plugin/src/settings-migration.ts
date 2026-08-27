@@ -111,7 +111,6 @@ export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSetting
     deepseekModel: stringField(old.deepseekModel, DEFAULT_SETTINGS.deepseekModel),
     deepseekApiKey: stringField(old.deepseekApiKey, DEFAULT_SETTINGS.deepseekApiKey),
     deepseekApiKeyEnv: stringField(old.deepseekApiKeyEnv, DEFAULT_SETTINGS.deepseekApiKeyEnv),
-    reviewFolder: stringField(old.reviewFolder, DEFAULT_SETTINGS.reviewFolder),
     targetCandidates: numberField(old.targetCandidates, DEFAULT_SETTINGS.targetCandidates),
     qmdCommand: stringField(old.qmdCommand, DEFAULT_SETTINGS.qmdCommand),
     qmdIndex: stringField(old.qmdIndex, DEFAULT_SETTINGS.qmdIndex),

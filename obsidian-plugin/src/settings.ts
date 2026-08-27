@@ -67,7 +67,6 @@ export interface AhaPluginSettings {
   codexModel: string;
   codexReasoningEffort: string;
   codexSandbox: string;
-  reviewFolder: string;
   nodeCommand: string;
   codexCommand: string;
   qmdRunner: string;
@@ -138,7 +137,6 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   codexModel: "gpt-5.3-codex-spark",
   codexReasoningEffort: "low",
   codexSandbox: "danger-full-access",
-  reviewFolder: "Aha/Reviews",
   nodeCommand: "",
   codexCommand: "codex",
   qmdRunner: "sdk",
@@ -222,7 +220,6 @@ export class AhaSettingTab extends PluginSettingTab {
     this.renderProviderFields(providerContainer);
 
     containerEl.createEl("h3", { text: "Search" });
-    this.textSetting("reviewFolder", "Review folder", "Review Note 存放位置。");
 
     new Setting(containerEl)
       .setName("Target candidates")

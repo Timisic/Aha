@@ -3,7 +3,6 @@ import {
   renderGrillHandoff,
   seedLabelForAction,
   type ReviewBenchmarkSeedAction,
-  type ReviewBenchmarkSeedInput,
   type ReviewBenchmarkSeedLabel,
   type ReviewPanelCandidate,
 } from "./review-note";
@@ -296,55 +295,6 @@ export function appendSessionFeedback(record: AhaSessionRecord, input: AhaSessio
   }
   record.updatedAt = input.createdAt.toISOString();
   return feedback;
-}
-
-export function resultForSessionRound(round: AhaSessionRound): AhaWrapperResult {
-  return {
-    ok: true,
-    sourcePath: round.sourcePath,
-    generatedAt: round.generatedAt,
-    summary: round.summary,
-    warnings: round.warnings,
-    candidates: round.candidates.map((candidate) => ({
-      notePath: candidate.notePath,
-      noteTitle: candidate.noteTitle,
-      relation: candidate.relation,
-      hit: candidate.hit,
-      why: candidate.why,
-      quotes: candidate.quotes,
-      selected: candidate.selected,
-    })),
-  };
-}
-
-export function reviewSeedInputForSessionFeedback(feedback: AhaSessionFeedback): ReviewBenchmarkSeedInput | null {
-  const createdAt = new Date(feedback.createdAt);
-  if (Number.isNaN(createdAt.getTime())) return null;
-  if (feedback.action === "should_have_found") {
-    return {
-      action: feedback.action,
-      createdAt,
-      sourcePath: feedback.sourcePath,
-      sourceTitle: feedback.sourceTitle,
-      missingMemory: feedback.memory,
-      note: feedback.note,
-    };
-  }
-  if (!feedback.memory || !feedback.relation || !feedback.hit || !feedback.why) return null;
-  return {
-    action: feedback.action,
-    createdAt,
-    sourcePath: feedback.sourcePath,
-    sourceTitle: feedback.sourceTitle,
-    candidate: {
-      notePath: feedback.memory,
-      relation: feedback.relation as AhaCandidate["relation"],
-      hit: feedback.hit,
-      why: feedback.why,
-      quotes: [],
-    },
-    note: feedback.note,
-  };
 }
 
 function ensureRecord(store: AhaSessionStoreData, source: AhaSessionSourceInput, updatedAt: string): AhaSessionRecord {

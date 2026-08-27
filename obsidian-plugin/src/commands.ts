@@ -11,10 +11,6 @@ export const AHA_COMMANDS = {
     id: "aha-open-panel",
     name: "Open Panel",
   },
-  exportReviewNote: {
-    id: "aha-export-review-note",
-    name: "Export Review Note",
-  },
   openCandidate: {
     id: "aha-open-candidate-under-cursor",
     name: "Open Candidate",
