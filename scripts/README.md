@@ -10,7 +10,6 @@ The orchestration logic itself (query plan, QMD retrieval, pool merge/rerank, Re
 scripts/
   bench/
     build-fixture.mjs         # Build a qmd bench fixture from active cases.
-    collect-review-seeds.mjs  # Collect Obsidian Review Note seeds into an ignored draft case inbox.
     extract-note-excerpt.mjs  # Preview a case's exact source-note excerpt.
     normalize-case-paths.mjs  # Rewrite vault-absolute case paths to vault-relative paths.
     run-qmd-bench.mjs         # L1: QMD-only retrieval benchmark.
@@ -27,7 +26,6 @@ scripts/
                                # bridge, and the still-independent Codex CLI agentic path.
     query-plan.mjs            # Thin shell around core's query-plan generation, used by the legacy wrapper/bench.
     relation-judge.mjs        # Thin shell around core's quote-backed relation judging.
-    legacy-review-migration.mjs # One-time migration of old Review Note state into the plugin's Session Store.
     tests/{unit,integration,e2e}/ # wrapper/retrieval/judge/scoring tests, tiered by what they touch.
   debug-pipeline.mjs         # CLI harness for running the full core pipeline outside Obsidian.
   dev/install-dev-plugin.mjs # Installs a side-by-side dev-channel plugin build into the vault.
@@ -40,14 +38,6 @@ Run the QMD-only benchmark:
 ```bash
 cp bench/aha-memory-cases.example.json bench/aha-memory-cases.json # first run only; then edit local private cases
 node scripts/bench/run-qmd-bench.mjs
-```
-
-Collect Obsidian Review Note seeds into a private draft case inbox:
-
-```bash
-node scripts/bench/collect-review-seeds.mjs \
-  --vault-root "$HOME/Obsidian Notes" \
-  --output bench/aha-memory-seed-cases.json
 ```
 
 Normalize private benchmark case files to the shorter vault-relative path style:

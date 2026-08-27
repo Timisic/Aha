@@ -230,7 +230,7 @@ The user's explicit acceptance, rejection, or uncertainty judgment about a memor
 _Avoid_: passive viewing, agent-selected evidence
 
 **Memory Review State**:
-The minimal persisted state owned by the Memory Surface: source insight identity, search round summaries, visible candidates, relation outputs, user review choices, and draft review benchmark seeds. For the Obsidian plugin path, the Aha Session Record is the source of truth; Review Notes are optional exports rather than default state storage. It deliberately excludes trace logs, raw retrieval diagnostics, and the later grilling conversation.
+The minimal persisted state owned by the Memory Surface: source insight identity, search round summaries, visible candidates, relation outputs, user review choices, and draft review benchmark seeds. For the Obsidian plugin path, the Aha Session Record is the sole source of truth; there is no Markdown export or alternate state store. It deliberately excludes trace logs, raw retrieval diagnostics, and the later grilling conversation.
 _Avoid_: grill transcript, full workflow state, chat history, trace log, raw pipeline evidence
 
 **Panel State**:
@@ -279,10 +279,6 @@ _Avoid_: vault folder, review-note database, trace archive, raw event log
 An Aha Session Record whose source note can no longer be found in the vault. Orphaned records should be retained quietly and excluded from the active-note panel flow until a matching source note reappears or the user explicitly cleans them up.
 _Avoid_: immediate deletion, noisy missing-file warning, active panel result
 
-**Aha Review Note**:
-An optional Markdown export of an Aha Session Record, created only when the user explicitly asks for a durable vault artifact. It can gather the source insight link, search round summaries, selected memories, relation reasons, optional relation quotes, grill handoff material, and review benchmark seeds saved during that insight review.
-_Avoid_: default state store, global benchmark file, per-seed file, final summary
-
 **Aha Review Panel**:
 A low-friction Memory Surface view for actively reviewing one Aha Session Record. It presents memory candidates, relation evidence, and user review choices so the user can decide which candidates become Selected Memories and then export the Grill Handoff.
 _Avoid_: agent chat UI, embedded grill, final judgment editor, markdown editor replacement, instructional copy, marketing copy
@@ -295,33 +291,13 @@ _Avoid_: review-note-bound panel, static sidebar context
 A temporary panel state where the Aha Review Panel stays focused on one source note even if the active Obsidian note changes. Pinning protects focused review without changing the underlying Aha Session Record.
 _Avoid_: permanent session ownership, hidden active-note override
 
-**Aha Review Filename**:
-The human-readable filename for an exported Aha Review Note, preferably `{YYYY-MM-DD} {source insight title}.md`, with title sanitization and a short suffix only when needed to avoid collisions on the same date or title.
-_Avoid_: opaque session id, global counter, title-less hash
-
-**Aha Review Frontmatter**:
-A minimal YAML header on an exported Aha Review Note used for stable extraction and filtering. It should identify the note as an Aha review export, link the source insight, record creation time, and track coarse status without turning the note into a database.
-_Avoid_: full candidate JSON, hidden workflow state, verbose metadata
-
-**Aha Review Status**:
-The coarse lifecycle marker for an exported Aha Review Note. The initial statuses are memory_review, handoff_ready, and grilled.
-_Avoid_: complete workflow stage machine, archived, summary_done
-
 **Handoff Export**:
-An explicit Memory Surface action that builds the Grill Handoff from Selected Memories and copies that handoff so the user can paste it into Codex for grilling. Exporting a handoff does not mean the selected memories have become benchmark seeds, final judgment evidence, or a Review Note.
-_Avoid_: automatic Codex launch, benchmark save, final summary, hidden agent run, review note export
+An explicit Memory Surface action that builds the Grill Handoff from Selected Memories and copies that handoff so the user can paste it into Codex for grilling. Exporting a handoff does not mean the selected memories have become benchmark seeds or final judgment evidence.
+_Avoid_: automatic Codex launch, benchmark save, final summary, hidden agent run
 
 **Grill Handoff**:
 A concise handoff text that passes the current insight link, Selected Memory links, and sufficiently detailed relation reasons from the Memory Surface into the Reasoning Workflow. It starts grilling by pointing Codex to readable notes and explaining why each selected memory matters, but is not itself a grill transcript.
 _Avoid_: final summary, complete session state, automatic rewrite, copied full note bodies
-
-**Review Note Export**:
-An explicit low-frequency Memory Surface action that creates or updates an Aha Review Note from the current Panel State when the user wants a durable vault artifact. It exports the current review surface rather than full Search Round History or trace detail, belongs in the command palette rather than the Aha Review Panel, is separate from Handoff Export, and should not happen as a side effect of copying handoff text.
-_Avoid_: default session creation, copy handoff, hidden markdown write, panel button
-
-**Legacy Review Migration**:
-A one-time agent-assisted migration from existing Aha Review Notes into Aha Session Records. It succeeds when the panel can reopen the old candidates, restore selection and draft feedback, and rebuild handoff from the migrated record; unmatched or ambiguous notes should be reported rather than guessed. It is not a standing product command; after successful migration, the user may manually delete old Review Notes without losing panel history.
-_Avoid_: recurring import command, automatic vault cleanup, destructive migration, perfect markdown preservation
 
 **Codex Grill Launch**:
 An explicit user action from the Memory Surface that prepares the Grill Handoff Markdown for later use in Codex. It does not start an embedded grill UI or automatically run Codex.
@@ -368,7 +344,7 @@ _Avoid_: agent action, passive response
 ### Benchmark & Evaluation
 
 **Review Benchmark Seed**:
-A reviewed memory candidate and relation result that the user explicitly saves as material for a future benchmark case, usually first as a structured entry inside an Aha Review Note. It records a real use discovery after review; it is not an automatic gold label at retrieval time or a committed benchmark case.
+A reviewed memory candidate and relation result that the user explicitly saves as material for a future benchmark case, recorded as draft feedback on the Aha Session Record. It records a real use discovery after review; it is not an automatic gold label at retrieval time or a committed benchmark case.
 _Avoid_: auto-generated benchmark answer, unreviewed candidate, exhaustive relevance set, direct bench JSON write
 
 **Memory Candidate Recall Benchmark**:

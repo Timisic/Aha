@@ -6,7 +6,7 @@ This folder holds the small evaluation set for Aha / Pi `/insight` memory recall
 
 Real benchmark cases live in the local-only `aha-memory-cases.json`. This file can contain private note text and Obsidian paths, so it is ignored by Git and should not be committed.
 
-Review feedback seeds can also be collected into the local-only `aha-memory-seed-cases.json`. This second file is an ignored benchmark-like inbox: it is generated from Obsidian Review Notes, stays `state: draft`, and is meant for human review before any case is copied or promoted into `aha-memory-cases.json`.
+Draft cases promoted from Review Panel feedback (see "Review Feedback Actions" below) can also live in a local-only, hand-maintained file such as `bench/my-draft-cases.json`: an ignored benchmark-like inbox that stays `state: draft` until a human copies/promotes a case into `aha-memory-cases.json`.
 
 Start by copying the sanitized template:
 
@@ -87,42 +87,15 @@ By default the scripts ask a query-generation agent to translate raw input into 
 
 During early curation, keep only human-vetted cases as `active`, even if that means the default suite has just a few cases. As the suite matures, aim for 12-20 real active cases. Engineering edge cases such as exact cue handling, duplicate basenames, qmd URI resolution, source-note self-hit filtering, and no-related-memory behavior belong in a separate regression fixture, not in the primary benchmark score. Local private regression cases can live in ignored `bench/aha-memory-regression-cases.json`.
 
-Review Feedback Actions are a separate daily flow. Per-candidate `accept` / `noise` / `should_have_found` feedback is stored by default in the plugin's Session Store ([ADR 0004](../docs/adr/0004-use-session-store-for-aha-panel-state.md)), not in a file — the Review Note is now a low-frequency, explicit `Aha: Export Review Note` action, not something every round produces.
+Review Feedback Actions are a separate daily flow. Per-candidate `accept` / `noise` / `should_have_found` feedback is stored in the plugin's Session Store (`data.json`, [ADR 0004](../docs/adr/0004-use-session-store-for-aha-panel-state.md)) -- `accept` maps to `gold.nice`, `reject_as_noise` to `gold.noise`, `should_have_found` to `gold.must`.
 
-**`collect-review-seeds.mjs` only reads exported Review Notes, not the Session Store.** It has not been updated for ADR 0004: if you don't run `Aha: Export Review Note`, there is nothing in `Aha/Reviews` for it to scan and it collects zero seeds, even though your feedback exists in the Session Store. Run the export command first if you want seeds collected, or expect this flow to need a Session-Store-reading rewrite before it reflects real day-to-day usage.
+There is currently no automated collector from Session Store into a draft case file: the old Review Note markdown feature (and its `scripts/bench/collect-review-seeds.mjs` collector, which only ever read exported Review Note files) was removed entirely. Promoting a piece of feedback into `bench/aha-memory-cases.json` today means reading it out of the vault's `.obsidian/plugins/aha-memory-surface*/data.json` `sessionStore.records[*].feedback` by hand and writing the case yourself using the schema below.
 
-When a Review Note is exported, it can record visible **Review Benchmark Seeds**:
-
-- `accept` -> draft `gold.nice` seed material.
-- `reject_as_noise` -> draft `gold.noise` seed material.
-- `should_have_found` -> draft `gold.must` seed material.
-
-These seeds are inspectable Markdown in the Review Note. They do **not** mutate `bench/aha-memory-cases.json`.
-
-To avoid hand-copying Markdown fields, collect Review Note seeds into the ignored seed inbox:
-
-```bash
-node scripts/bench/collect-review-seeds.mjs \
-  --vault-root "$HOME/Obsidian Notes" \
-  --output bench/aha-memory-seed-cases.json
-```
-
-The collector scans `Aha/Reviews` by default and writes v3 draft cases grouped by source note:
-
-- `accept` seeds become `gold.nice`.
-- `reject_as_noise` seeds become `gold.noise`.
-- `should_have_found` seeds become `gold.must`.
-- accept-only or noise-only groups get `expected_no_recall: true` so they remain valid draft eval-v2 cases without inventing a must label.
-- same-memory label conflicts are resolved as `must > noise > nice` and recorded in `seed_label_conflicts` for human inspection.
-- because current Review Notes do not store source line ranges, seed inbox cases use `input.whole_note: true`; replace it with `input.lines` before promoting to active when the original excerpt is known.
-
-Seed inbox cases do not become active Benchmark Cases until a human copies/promotes them into `aha-memory-cases.json` and changes `state` deliberately.
-
-You can smoke-test the seed inbox without touching the active suite:
+You can still hand-write a draft case file and smoke-test it without touching the active suite:
 
 ```bash
 node scripts/bench/run-pipeline-bench.mjs \
-  --cases bench/aha-memory-seed-cases.json \
+  --cases bench/my-draft-cases.json \
   --include-draft
 ```
 

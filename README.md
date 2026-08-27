@@ -38,7 +38,7 @@ Aha 的召回天然产生这种距离：写下想法的当下，它把数月甚�
 ┌─ Obsidian Plugin（Memory Surface + 编排）─────────────┐
 │  触发搜索 · Capability Tier 编排                        │
 │  （Neighborhood / Recall / Full + Runtime Fallback）    │
-│  Review Note / Review Panel · 会话状态 · 反馈动作        │
+│  Review Panel · 会话状态 · 反馈动作                       │
 └──────────────────┬─────────────────────────────────────┘
                    │ 进程内直接调用（不再 spawn 子进程）
 ┌─ core/（Reasoning Workflow · 单一事实来源）────────────┐
@@ -64,7 +64,7 @@ DeepSeek 是唯一的 API provider（OpenAI provider 已移除）；Codex CLI �
 ```text
 obsidian-plugin/     Memory Surface + 编排：Obsidian 插件
   src/core/            检索/判断逻辑的唯一事实来源（ADR 0005），esbuild 编译后插件与 scripts 共用同一份
-  src/*.ts             插件专属：触发、Review Note/Panel、会话状态、设置、Capability Tier 编排
+  src/*.ts             插件专属：触发、Review Panel、会话状态、设置、Capability Tier 编排
 scripts/aha/         遗留 CLI wrapper：DeepSeek 路径已委托给 core，现为回滚开关 + bench 进程桥 + Codex CLI 路径
 scripts/bench/       评测管线入口（run-pipeline-bench 等），通过 scripts/lib/core-artifact.mjs 消费与插件相同的 core
 scripts/lib/         Node 侧共享绑定：core-artifact.mjs/core-node-deps.mjs（core 的 Node 依赖注入）、代理、评分、PipelineTrace
@@ -78,7 +78,7 @@ docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
 
 个人笔记库没有标准答案，同一条旧笔记对不同 insight 的关系不同，"该召回什么"只有笔记的主人知道。Aha 把评估设计纳入到日常的 Review 行为中：
 
-1. **反馈即标注**：在 Review Note 里对候选点 `accept` / `noise` / `should_have_found`，动作被收集为 benchmark seed（`scripts/bench/collect-review-seeds.mjs`），人工确认后进入私有评测集（`gold.must` / `nice` / `noise`，本地文件不入库）。
+1. **反馈即标注**：在 Review Panel 里对候选点 `accept` / `noise` / `should_have_found`，动作存进插件 Session Store（`data.json`），人工确认后进入私有评测集（`gold.must` / `nice` / `noise`，本地文件不入库）。
 2. **围绕TOP10计分**：@10——`Must Recall@10`、`Useful Precision@10`、`nDCG@10`、`Negative Rate@10`。
 3. **失败归因**：每个 case 自动归因到 query / retrieval / rerank / relation / 标注 / 输入表示六类，诊断指标（`Expanded Pool Recall@20`、`Dropped Must Count`）区分"没找到"和"找到了但排丢了"——决定下一步优化哪一层。
 
@@ -99,7 +99,9 @@ cd obsidian-plugin && npm run verify       # 插件构建 + 测试
 
 ## 状态与边界
 
-已支持：Obsidian Plugin（触发、Review Note、候选跳转、反馈按钮）、多路混合召回、引句校验的关系判断、分批 judge 与检索先验保底排序、评测闭环与失败归因、review 反馈到 benchmark seed 的收集链路。
+已支持：Obsidian Plugin（触发、Review Panel、候选跳转、反馈按钮）、多路混合召回、引句校验的关系判断、分批 judge 与检索先验保底排序、评测闭环与失败归因。
+
+不再支持：Review Note（Markdown 导出/解析）已整体移除——包括导出命令、`scripts/aha/legacy-review-migration.mjs`、`scripts/bench/collect-review-seeds.mjs`；反馈只存进 Session Store，从反馈到 benchmark seed 目前没有自动收集链路，需要人工从 `data.json` 里挑。
 
 不做：自动修改 Obsidian 原文、自动沉淀总结、把候选自动写入知识库。
 

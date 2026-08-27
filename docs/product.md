@@ -26,12 +26,10 @@ Avoid marketing-style panels, explanatory onboarding text, oversized cards, deco
 - Put judgment evidence first: old note, relation, reason, and optional hit.
 - Prefer compact native controls over custom UI.
 - Use an icon that suggests memory relationships around an insight, such as `orbit`; avoid checklist, generic AI sparkle, or generic lightbulb metaphors.
-- Keep command-palette commands short and product-shaped: `Aha: Run`, `Aha: Open Panel`, `Aha: Check Readiness`, and low-frequency `Aha: Export Review Note`.
+- Keep command-palette commands short and product-shaped: `Aha: Run`, `Aha: Open Panel`, `Aha: Check Readiness`.
 - Keep the no-history panel state quiet: show the current source note, a short `No history yet` state, and one primary `Run Aha` action.
 - Let the user decide what enters the handoff; never auto-promote candidates beyond the visible selection state.
-- Keep session state compact; Review Notes are optional exports, not default state storage.
-- Keep Review Note export out of the panel; expose it as a low-frequency `Aha: Export Review Note` command instead.
-- Export Review Notes from the current panel state only; keep full history in session state and process detail in traces.
+- Keep session state compact.
 - Keep the panel footer focused on one primary action, `Copy handoff`; place rerun in the header, candidate feedback inline, and low-frequency actions outside the panel.
 - Let the panel follow the active source note by default, with a pin control for focused review that should not change when the active note changes.
 - Preserve user choices and feedback across reruns when the same memory candidate appears again, while allowing model-generated relation text to refresh.

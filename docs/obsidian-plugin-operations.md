@@ -28,7 +28,7 @@
 
 - Session Record 以 Source Note Identity 为主键：桌面本地文件系统可用时使用 inode 级身份，因此 source note 改名、编辑大小或 mtime 变化后仍复用同一条记录；降级到 ctime 身份时要求 `source_path` 同时匹配，避免同时间戳碰撞。
 - 路径归一化统一处理 qmd URI 的标点混写（全角标点、弯引号、撇号、破折号），默认大小写不敏感，匹配 macOS/Obsidian vault 行为。
-- Review Note 是显式导出（`Aha: Export Review Note`），不是状态底座（[ADR 0004](./adr/0004-use-session-store-for-aha-panel-state.md)）。导出的生成区块采用 `<!-- aha:* -->` marker 替换语义，marker 外的人工记录不会被删除。
+- Session Store（`data.json`）是唯一状态底座（[ADR 0004](./adr/0004-use-session-store-for-aha-panel-state.md)）；Review Note（Markdown 导出/解析、`Aha: Export Review Note` 命令、`legacy-review-migration.mjs`）已整体移除，不再有任何形式的 vault 内 Markdown 状态文件。
 
 ## 配置
 
