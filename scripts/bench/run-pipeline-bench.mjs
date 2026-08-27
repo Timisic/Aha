@@ -65,7 +65,6 @@ const DEFAULTS = {
   llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_DEEPSEEK_MODEL,
   llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_DEEPSEEK_API_KEY_ENV,
   queryAgentProvider: process.env.AHA_BENCH_QUERY_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "deepseek",
-  queryAgentBin: "codex",
   queryAgentModel: "",
   queryAgentCache: "bench/generated/qmd-query-agent-cache.json",
   queryAgentFallback: true,
@@ -75,7 +74,6 @@ const DEFAULTS = {
     || process.env.AHA_BENCH_RERANK_AGENT_PROVIDER
     || process.env.AHA_BENCH_LLM_PROVIDER
     || "deepseek",
-  relationJudgeAgentBin: "codex",
   relationJudgeAgentModel: "",
   relationJudgeAgentCache: "bench/generated/relation-judge-cache.json",
   relationJudgeAgentFallback: true,
@@ -106,21 +104,19 @@ function usage() {
     "  --backlink-limit <n>           Default 20",
     "  --qmd-timeout-ms <n>           Default: 90000",
     "  --obsidian-timeout-ms <n>      Default: 8000",
-    "  --llm-provider <deepseek|codex-cli> Default: deepseek",
+    "  --llm-provider <deepseek>      Default: deepseek",
     "  --llm-base-url <url>           Default: https://api.deepseek.com",
     "  --llm-model <model>            Default: deepseek-v4-pro",
     "  --llm-api-key-env <name>       Default: DEEPSEEK_API_KEY",
     "  --query-generator <agent|rules> Default: agent",
-    "  --query-agent-provider <deepseek|codex-cli> Default: --llm-provider",
-    "  --query-agent-bin <bin>         Default: codex",
+    "  --query-agent-provider <deepseek>  Default: --llm-provider",
     "  --query-agent-model <model>     Overrides --llm-model for query generation",
     "  --query-agent-cache <path>      Default: bench/generated/qmd-query-agent-cache.json",
     "  --query-agent-timeout-ms <n>    Default: 120000",
     "  --no-query-agent-cache",
     "  --no-query-agent-fallback",
     "  --relation-judge <agent|none>   Default: agent (--reranker kept as deprecated alias)",
-    "  --relation-judge-agent-provider <deepseek|codex-cli> Default: --llm-provider",
-    "  --relation-judge-agent-bin <bin>        Default: codex",
+    "  --relation-judge-agent-provider <deepseek>  Default: --llm-provider",
     "  --relation-judge-agent-model <model>    Overrides --llm-model for relation judging",
     "  --relation-judge-agent-cache <path>     Default: bench/generated/relation-judge-cache.json",
     "  --relation-judge-agent-timeout-ms <n>   Default: 300000",
@@ -247,9 +243,6 @@ function parseArgs() {
       case "--query-mode":
         options.queryMode = value;
         break;
-      case "--query-agent-bin":
-        options.queryAgentBin = value;
-        break;
       case "--query-agent-provider":
         options.queryAgentProvider = value;
         options.queryAgentProviderExplicit = true;
@@ -271,10 +264,6 @@ function parseArgs() {
       case "--rerank-agent-provider":
         options.relationJudgeAgentProvider = value;
         options.relationJudgeAgentProviderExplicit = true;
-        break;
-      case "--relation-judge-agent-bin":
-      case "--rerank-agent-bin":
-        options.relationJudgeAgentBin = value;
         break;
       case "--relation-judge-agent-model":
       case "--rerank-agent-model":
@@ -312,8 +301,8 @@ function parseArgs() {
     ["queryAgentProvider", options.queryAgentProvider],
     ["relationJudgeAgentProvider", options.relationJudgeAgentProvider],
   ]) {
-    if (!["deepseek", "codex", "codex-cli"].includes(String(value || "").toLowerCase())) {
-      throw new Error(`${key} must be deepseek or codex-cli.`);
+    if (String(value || "").toLowerCase() !== "deepseek") {
+      throw new Error(`${key} must be deepseek.`);
     }
   }
   delete options.queryAgentProviderExplicit;
@@ -998,17 +987,9 @@ function reportMetadata(options) {
     llm_model: options.llmModel,
     llm_api_key_env: options.llmApiKeyEnv,
     query_agent_provider: options.queryAgentProvider,
-    query_agent_bin: options.queryAgentBin,
-    query_agent_version: ["codex", "codex-cli"].includes(String(options.queryAgentProvider).toLowerCase())
-      ? commandOutput(options.queryAgentBin, ["--version"])
-      : null,
     query_agent_model: options.queryAgentModel || options.llmModel || null,
     query_agent_cache: options.queryAgentCache || null,
     relation_judge_agent_provider: options.relationJudgeAgentProvider,
-    relation_judge_agent_bin: options.relationJudgeAgentBin,
-    relation_judge_agent_version: ["codex", "codex-cli"].includes(String(options.relationJudgeAgentProvider).toLowerCase())
-      ? commandOutput(options.relationJudgeAgentBin, ["--version"])
-      : null,
     relation_judge_agent_model: options.relationJudgeAgentModel || options.llmModel || null,
     relation_judge_agent_cache: options.relationJudgeAgentCache || null,
     qmd_bin: options.qmd,

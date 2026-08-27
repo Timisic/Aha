@@ -141,14 +141,6 @@ function wrapperRuntimeArgs(settings: AhaPluginSettings): string[] {
     provider.model,
     "--llm-api-key-env",
     provider.apiKeyEnv,
-    "--codex-command",
-    settings.codexCommand,
-    "--codex-model",
-    settings.codexModel,
-    "--codex-sandbox",
-    settings.codexSandbox,
-    "--codex-reasoning-effort",
-    settings.codexReasoningEffort,
     "--qmd-runner",
     settings.qmdRunner,
     "--qmd-command",
@@ -292,7 +284,7 @@ function wrapperChildEnv(settings?: AhaPluginSettings): NodeJS.ProcessEnv {
   const provider = settings ? providerConfig(settings) : null;
   const directKey = (provider?.apiKey ?? "").trim();
   const keyEnvName = (provider?.apiKeyEnv ?? "").trim();
-  if (settings && settings.llmProvider !== "codex-cli" && directKey && keyEnvName) {
+  if (settings && directKey && keyEnvName) {
     env[keyEnvName] = directKey;
   }
   for (const [name, value] of qmdRemoteEnvironment(settings)) {

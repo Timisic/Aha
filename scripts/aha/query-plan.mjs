@@ -1,8 +1,6 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import {
   DEFAULT_DEEPSEEK_API_KEY_ENV,
   DEFAULT_DEEPSEEK_BASE_URL,
@@ -17,9 +15,8 @@ import {
 // obsidian-plugin/src/core/query-plan-llm.ts (issue #57) and is consumed here
 // through the compiled core artifact, exactly like the deterministic pieces.
 // Everything that stays local below is bench/Node infrastructure: file-based
-// caching, CLI option parsing, and the legacy codex-CLI provider path (kept
-// as a legacy-only fallback; the core LLM path is HTTP-only via llmJsonCall —
-// see the module comment above generateQueryPlanWithCodexCliLegacy).
+// caching and CLI option parsing around the core LLM path (HTTP-only via
+// llmJsonCall).
 import {
   QUERY_PLAN_PROMPT_VERSION,
   QUERY_PLAN_SCHEMA,
@@ -69,7 +66,6 @@ export function defaultQueryGenerationOptions(overrides = {}) {
     llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_DEEPSEEK_MODEL,
     llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_DEEPSEEK_API_KEY_ENV,
     queryAgentProvider: process.env.AHA_BENCH_QUERY_AGENT_PROVIDER || process.env.AHA_BENCH_LLM_PROVIDER || "deepseek",
-    queryAgentBin: process.env.AHA_BENCH_QUERY_AGENT_BIN || "codex",
     queryAgentModel: process.env.AHA_BENCH_QUERY_AGENT_MODEL || "",
     queryAgentCache: process.env.AHA_BENCH_QUERY_AGENT_CACHE || "bench/generated/qmd-query-agent-cache.json",
     queryAgentFallback: process.env.AHA_BENCH_QUERY_AGENT_FALLBACK !== "0",
@@ -144,9 +140,8 @@ export async function resolveQmdQueryForCase(caseItem, options = {}) {
 
 // Resolves the query plan for one benchmark case: rules generator short
 // circuits to the deterministic fallback rules (#56); agent generator tries
-// the cache, then the configured LLM provider (deepseek routes through the
-// core llmJsonCall path; codex/codex-cli use the legacy CLI adapter kept
-// below), falling back to the deterministic rules on failure when
+// the cache, then the configured LLM provider (routed through the core
+// llmJsonCall path), falling back to the deterministic rules on failure when
 // queryAgentFallback is enabled (the default).
 export async function resolveQmdQueriesForCase(caseItem, options = {}) {
   const queryOptions = defaultQueryGenerationOptions(options);
@@ -179,10 +174,9 @@ export async function resolveQmdQueriesForCase(caseItem, options = {}) {
     const plan = await generateQueryPlanWithAgent(caseItem, queryOptions);
     cache.entries[cacheKey] = {
       generated_at: new Date().toISOString(),
-      generator: queryAgentProvider(queryOptions) === "deepseek" ? "deepseek-chat-completions" : "codex-exec",
+      generator: "deepseek-chat-completions",
       prompt_version: QUERY_PLAN_PROMPT_VERSION,
       agent_provider: queryAgentProvider(queryOptions),
-      agent_bin: queryOptions.queryAgentBin,
       agent_model: queryAgentModel(queryOptions),
       queries: plan.queries,
     };
@@ -206,90 +200,28 @@ export async function qmdQueryForCase(caseItem, options = {}) {
   return (await resolveQmdQueryForCase(caseItem, options)).query;
 }
 
-// Dispatches to the core HTTP-only LLM path for "deepseek" (issue #57), or
-// the legacy codex CLI subprocess adapter for "codex"/"codex-cli" (kept as a
-// legacy-only path; see the module comment above
-// generateQueryPlanWithCodexCliLegacy for why it was not carried into core).
-// Throws on any failure; the caller (resolveQmdQueriesForCase) decides
-// whether to fall back to the deterministic rules plan.
+// Dispatches to the core HTTP-only LLM path (issue #57). Throws on any
+// failure; the caller (resolveQmdQueriesForCase) decides whether to fall
+// back to the deterministic rules plan.
 async function generateQueryPlanWithAgent(caseItem, options) {
-  if (queryAgentProvider(options) === "deepseek") {
-    const apiKeyEnv = String(options.llmApiKeyEnv || DEFAULT_DEEPSEEK_API_KEY_ENV).trim() || DEFAULT_DEEPSEEK_API_KEY_ENV;
-    const apiKey = process.env[apiKeyEnv];
-    if (!apiKey) throw new Error(`${apiKeyEnv} is not set.`);
-    const outcome = await generateQueryPlanViaLlm(caseItem, caseItem._resolved_insight_input, {
-      baseUrl: options.llmBaseUrl,
-      apiKey,
-      model: queryAgentModel(options),
-      protocol: "chat-completions",
-      thinking: "disabled",
-      timeoutMs: options.queryAgentTimeoutMs,
-    });
-    if (outcome.fallback) {
-      throw new Error(`DeepSeek query plan failed: ${outcome.error}`);
-    }
-    return { queries: outcome.queries, model_query_count: outcome.model_query_count };
-  }
-
-  if (!["codex", "codex-cli"].includes(queryAgentProvider(options))) {
+  if (queryAgentProvider(options) !== "deepseek") {
     throw new Error(`${caseItem.id}: unknown query agent provider: ${options.queryAgentProvider}`);
   }
-  return generateQueryPlanWithCodexCliLegacy(caseItem, options);
-}
-
-// Legacy codex CLI provider path (spawnSync codex exec). Issue #57 states the
-// codex CLI path is "not carried over" into the new core-based orchestration
-// (core is HTTP-only via llmJsonCall); this function is that pre-existing
-// behavior, kept reachable rather than deleted so a bench config that still
-// sets AHA_BENCH_QUERY_AGENT_PROVIDER=codex does not silently break. It is
-// legacy/deprecated: new work should use the "deepseek" provider (core path)
-// or the "rules" generator.
-function generateQueryPlanWithCodexCliLegacy(caseItem, options) {
-  const prompt = buildQueryPlanPrompt({ sourcePath: caseItem.source_note_path || caseItem.id }, caseItem._resolved_insight_input);
-  const tmpRoot = mkdtempSync(join(tmpdir(), "aha-query-plan-agent-"));
-  const schemaPath = join(tmpRoot, "schema.json");
-  const outputPath = join(tmpRoot, "queries.json");
-  writeFileSync(schemaPath, `${JSON.stringify(QUERY_PLAN_SCHEMA, null, 2)}\n`);
-
-  const args = [
-    "--ask-for-approval",
-    "never",
-    "exec",
-    "--skip-git-repo-check",
-    "--ephemeral",
-    "--ignore-rules",
-    "--sandbox",
-    "read-only",
-    "--output-schema",
-    schemaPath,
-    "-o",
-    outputPath,
-    "-C",
-    tmpRoot,
-  ];
-  if (options.queryAgentModel) {
-    args.push("-m", options.queryAgentModel);
+  const apiKeyEnv = String(options.llmApiKeyEnv || DEFAULT_DEEPSEEK_API_KEY_ENV).trim() || DEFAULT_DEEPSEEK_API_KEY_ENV;
+  const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) throw new Error(`${apiKeyEnv} is not set.`);
+  const outcome = await generateQueryPlanViaLlm(caseItem, caseItem._resolved_insight_input, {
+    baseUrl: options.llmBaseUrl,
+    apiKey,
+    model: queryAgentModel(options),
+    protocol: "chat-completions",
+    thinking: "disabled",
+    timeoutMs: options.queryAgentTimeoutMs,
+  });
+  if (outcome.fallback) {
+    throw new Error(`DeepSeek query plan failed: ${outcome.error}`);
   }
-  args.push("-");
-
-  try {
-    const result = spawnSync(options.queryAgentBin || "codex", args, {
-      input: prompt,
-      encoding: "utf-8",
-      timeout: options.queryAgentTimeoutMs,
-      env: process.env,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      const stderr = String(result.stderr ?? "").trim();
-      const stdout = String(result.stdout ?? "").trim();
-      throw new Error(stderr || stdout || `query plan agent exited with ${result.status}`);
-    }
-    const output = existsSync(outputPath) ? readFileSync(outputPath, "utf-8") : result.stdout;
-    return normalizeQueryPlan(parseJsonOutput(output), caseItem, caseItem._resolved_insight_input);
-  } finally {
-    rmSync(tmpRoot, { recursive: true, force: true });
-  }
+  return { queries: outcome.queries, model_query_count: outcome.model_query_count };
 }
 
 function withQueryPlanMetadata(plan, metadata) {
@@ -308,8 +240,7 @@ function withQueryPlanMetadata(plan, metadata) {
 }
 
 // Only used by the generic-adapter path (generateQueryPlanWithAdapter, which
-// accepts arbitrary adapters including the legacy codex CLI text output) and
-// the legacy codex CLI subprocess path above. The core HTTP-only path
+// accepts arbitrary text-returning adapters). The core HTTP-only path
 // (generateQueryPlanViaLlm, via llmJsonCall) does its own JSON
 // parsing/extraction internally, so this is not a second implementation of
 // that parsing — it is the one remaining parser for non-HTTP adapter output.
@@ -347,17 +278,10 @@ function queryAgentModel(options) {
 
 function queryProviderCacheShape(options) {
   const provider = queryAgentProvider(options);
-  if (provider === "deepseek") {
-    return JSON.stringify({
-      provider,
-      baseUrl: options.llmBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
-      model: queryAgentModel(options),
-    });
-  }
   return JSON.stringify({
     provider,
-    bin: options.queryAgentBin || "codex",
-    model: options.queryAgentModel || "",
+    baseUrl: options.llmBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
+    model: queryAgentModel(options),
   });
 }
 

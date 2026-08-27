@@ -15,7 +15,6 @@ const USAGE = [
   "Options:",
   "  --include-draft",
   "  --query-generator <agent|rules>        Default: agent",
-  "  --query-agent-bin <bin>                Default: codex",
   "  --query-agent-model <model>",
   "  --query-agent-cache <path>             Default: bench/generated/qmd-query-agent-cache.json",
   "  --no-query-agent-cache",
@@ -29,7 +28,6 @@ function parseArgs() {
   const options = {
     includeDraft: false,
     queryGenerator: undefined,
-    queryAgentBin: undefined,
     queryAgentModel: undefined,
     queryAgentCache: undefined,
     queryAgentFallback: undefined,
@@ -67,9 +65,6 @@ function parseArgs() {
     switch (arg) {
       case "--query-generator":
         options.queryGenerator = value;
-        break;
-      case "--query-agent-bin":
-        options.queryAgentBin = value;
         break;
       case "--query-agent-model":
         options.queryAgentModel = value;

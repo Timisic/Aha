@@ -18,7 +18,7 @@ test.after(() => {
   }
 });
 
-test("benchmark query and rerank agents can use DeepSeek chat completions without Codex", async () => {
+test("benchmark query and rerank agents use DeepSeek chat completions", async () => {
   process.env.AHA_TEST_DEEPSEEK_KEY = "test-key";
   const requests = [];
   const server = await startDeepSeekFixtureServer(requests);
@@ -34,8 +34,6 @@ test("benchmark query and rerank agents can use DeepSeek chat completions withou
       llmBaseUrl: server.baseUrl,
       llmModel: "deepseek-test",
       llmApiKeyEnv: "AHA_TEST_DEEPSEEK_KEY",
-      queryAgentBin: "/definitely/missing/codex",
-      relationJudgeAgentBin: "/definitely/missing/codex",
     };
 
     const queryPlan = await resolveQmdQueriesForCase(caseItem, {

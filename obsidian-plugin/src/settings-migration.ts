@@ -10,8 +10,7 @@
 //   - Carried: still-migratable fields keep their old value when present and
 //     of the right type, falling back to DEFAULT_SETTINGS otherwise.
 //   - Dead-field group (llmProvider, ahaWorkspace, wrapperRelativePath,
-//     nodeCommand, codexCommand, codexModel, codexReasoningEffort,
-//     codexSandbox, obsidianCommand, qmdRunner, qmdSdkModule): always reset
+//     nodeCommand, obsidianCommand, qmdRunner, qmdSdkModule): always reset
 //     to DEFAULT_SETTINGS regardless of the old object's stored value. These
 //     fields stay in the AhaPluginSettings *interface* (process.ts's frozen
 //     legacy-wrapper rollback path still reads them), but migration does not
@@ -123,10 +122,6 @@ export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSetting
     ahaWorkspace: DEFAULT_SETTINGS.ahaWorkspace,
     wrapperRelativePath: DEFAULT_SETTINGS.wrapperRelativePath,
     nodeCommand: DEFAULT_SETTINGS.nodeCommand,
-    codexCommand: DEFAULT_SETTINGS.codexCommand,
-    codexModel: DEFAULT_SETTINGS.codexModel,
-    codexReasoningEffort: DEFAULT_SETTINGS.codexReasoningEffort,
-    codexSandbox: DEFAULT_SETTINGS.codexSandbox,
     obsidianCommand: DEFAULT_SETTINGS.obsidianCommand,
     qmdRunner: DEFAULT_SETTINGS.qmdRunner,
     qmdSdkModule: DEFAULT_SETTINGS.qmdSdkModule,

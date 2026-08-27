@@ -1,7 +1,7 @@
 {
   "ok": true,
   "summary": "Fixture search round for plugin and wrapper smoke tests.",
-  "warnings": ["Fixture mode does not run Codex or QMD."],
+  "warnings": ["Fixture mode does not run the LLM or QMD."],
   "candidates": [
     {
       "notePath": "Aha/Fixtures/Feedback Loop.md",

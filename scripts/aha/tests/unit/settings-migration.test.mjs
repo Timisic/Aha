@@ -90,10 +90,6 @@ test("dead-field group resets to DEFAULT_SETTINGS regardless of old stored value
     ahaWorkspace: "/old/workspace",
     wrapperRelativePath: "old/wrapper/path.mjs",
     nodeCommand: "/old/node",
-    codexCommand: "/old/codex",
-    codexModel: "old-codex-model",
-    codexReasoningEffort: "high",
-    codexSandbox: "workspace-write",
     obsidianCommand: "/old/obsidian",
     qmdRunner: "cli",
     qmdSdkModule: "/old/sdk-module.js",
@@ -230,16 +226,17 @@ test("a copy of the real production settings object's key set migrates losslessl
   assert.equal(migrated.llmBaseUrl, undefined);
   assert.equal(migrated.llmModel, undefined);
   assert.equal(migrated.llmApiKeyEnv, undefined);
-  // reviewFolder (Review Note markdown export) was removed entirely, not
-  // just reset.
+  // reviewFolder (Review Note markdown export) and codexCommand/codexModel/
+  // codexReasoningEffort/codexSandbox (Codex CLI provider) were removed
+  // entirely, not just reset.
   assert.equal(migrated.reviewFolder, undefined);
+  assert.equal(migrated.codexCommand, undefined);
+  assert.equal(migrated.codexModel, undefined);
+  assert.equal(migrated.codexReasoningEffort, undefined);
+  assert.equal(migrated.codexSandbox, undefined);
   assert.equal(migrated.ahaWorkspace, DEFAULT_SETTINGS.ahaWorkspace);
   assert.notEqual(DEFAULT_SETTINGS.ahaWorkspace, PRODUCTION_KEY_SET_FIXTURE.ahaWorkspace);
   assert.equal(migrated.nodeCommand, DEFAULT_SETTINGS.nodeCommand);
-  assert.equal(migrated.codexCommand, DEFAULT_SETTINGS.codexCommand);
-  assert.equal(migrated.codexModel, DEFAULT_SETTINGS.codexModel);
-  assert.equal(migrated.codexReasoningEffort, DEFAULT_SETTINGS.codexReasoningEffort);
-  assert.equal(migrated.codexSandbox, DEFAULT_SETTINGS.codexSandbox);
   assert.equal(migrated.obsidianCommand, DEFAULT_SETTINGS.obsidianCommand);
   assert.equal(migrated.qmdRunner, DEFAULT_SETTINGS.qmdRunner);
   assert.equal(migrated.qmdSdkModule, DEFAULT_SETTINGS.qmdSdkModule);

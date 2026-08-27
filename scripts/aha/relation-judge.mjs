@@ -1,8 +1,6 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { validateAhaResult } from "./lib/result-validator.mjs";
 import { compactLine } from "./query-plan.mjs";
 import {
@@ -17,9 +15,7 @@ import {
 // consumed here through the compiled core artifact — plugin and bench judge
 // relations identically. Everything that stays local below is bench/Node
 // infrastructure: file-based caching, chunking/concurrency across candidate
-// batches, CLI option parsing, and the legacy codex-CLI provider path (kept
-// as a legacy-only fallback; see the module comment above
-// generateRelationJudgeWithCodexCliLegacy for why it was not carried into core).
+// batches, and CLI option parsing around the core LLM path.
 import {
   AHA_RESULT_SCHEMA,
   RELATION_JUDGE_PROMPT_VERSION,
@@ -66,7 +62,6 @@ export function defaultRelationJudgeOptions(overrides = {}) {
     llmModel: process.env.AHA_BENCH_LLM_MODEL || DEFAULT_DEEPSEEK_MODEL,
     llmApiKeyEnv: process.env.AHA_BENCH_LLM_API_KEY_ENV || DEFAULT_DEEPSEEK_API_KEY_ENV,
     relationJudgeAgentProvider: env("AHA_BENCH_RELATION_JUDGE_AGENT_PROVIDER", "AHA_BENCH_RERANK_AGENT_PROVIDER") || process.env.AHA_BENCH_LLM_PROVIDER || "deepseek",
-    relationJudgeAgentBin: env("AHA_BENCH_RELATION_JUDGE_AGENT_BIN", "AHA_BENCH_RERANK_AGENT_BIN") || "codex",
     relationJudgeAgentModel: env("AHA_BENCH_RELATION_JUDGE_AGENT_MODEL", "AHA_BENCH_RERANK_AGENT_MODEL") || "",
     relationJudgeAgentCache: env("AHA_BENCH_RELATION_JUDGE_AGENT_CACHE", "AHA_BENCH_RERANK_AGENT_CACHE") || "bench/generated/relation-judge-cache.json",
     relationJudgeAgentFallback: env("AHA_BENCH_RELATION_JUDGE_AGENT_FALLBACK", "AHA_BENCH_RERANK_AGENT_FALLBACK") !== "0",
@@ -75,12 +70,10 @@ export function defaultRelationJudgeOptions(overrides = {}) {
   };
 }
 
-// Generic-adapter Relation Judge orchestration (bench/legacy entry point used
-// directly by scripts/aha/run-insight-search.mjs, the frozen legacy wrapper,
-// and covered by scripts/aha/tests/unit/relation-judge.test.mjs). The adapter
-// callback stays provider-agnostic here (it can wrap DeepSeek or the legacy
-// codex CLI); prompt construction, validation, quote-enforcement, and
-// merging all come from core.
+// Generic-adapter Relation Judge orchestration (covered by
+// scripts/aha/tests/unit/relation-judge.test.mjs). The adapter callback
+// stays provider-agnostic here; prompt construction, validation,
+// quote-enforcement, and merging all come from core.
 export async function judgeCandidateRelations({
   sourcePath,
   sourceText,
@@ -232,10 +225,9 @@ export async function relationJudgeCandidatesForCase(caseItem, candidates, optio
     judgedCandidates = composeFinalSlate(judgedCandidates, annotated);
     cache.entries[cacheKey] = {
       generated_at: new Date().toISOString(),
-      generator: relationJudgeProvider(judgeOptions) === "deepseek" ? "deepseek-chat-completions" : "codex-exec",
+      generator: "deepseek-chat-completions",
       prompt_version: RELATION_JUDGE_PROMPT_VERSION,
       agent_provider: relationJudgeProvider(judgeOptions),
-      agent_bin: judgeOptions.relationJudgeAgentBin,
       agent_model: relationJudgeModel(judgeOptions),
       candidates: judgedCandidates,
     };
@@ -304,10 +296,7 @@ function relationJudgeResult({ candidates, generatedBy, fallback, error }) {
   };
 }
 
-function relationJudgeConcurrency(options) {
-  // Concurrency only helps the async LLM transport; the legacy Codex CLI path
-  // shells out synchronously, so keep it at one lane.
-  if (relationJudgeProvider(options) !== "deepseek") return 1;
+function relationJudgeConcurrency() {
   return Math.max(1, Number(process.env.AHA_RELATION_JUDGE_CONCURRENCY || DEFAULT_RELATION_JUDGE_CONCURRENCY));
 }
 
@@ -339,109 +328,34 @@ export async function mapWithBoundedConcurrency(items, limit, worker) {
   return results;
 }
 
-// Dispatches to the core HTTP-only LLM path for "deepseek" (issue #57), or
-// the legacy codex CLI subprocess adapter for "codex"/"codex-cli" (kept as a
-// legacy-only path). Throws on any failure; relationJudgeCandidatesForCase
-// decides whether to fall back (relationJudgeAgentFallback).
+// Dispatches to the core HTTP-only LLM path (issue #57). Throws on any
+// failure; relationJudgeCandidatesForCase decides whether to fall back
+// (relationJudgeAgentFallback).
 async function generateRelationJudgeWithAgentAsync(caseItem, candidateInputs, options) {
-  if (relationJudgeProvider(options) === "deepseek") {
-    const apiKeyEnv = String(options.llmApiKeyEnv || DEFAULT_DEEPSEEK_API_KEY_ENV).trim() || DEFAULT_DEEPSEEK_API_KEY_ENV;
-    const apiKey = process.env[apiKeyEnv];
-    if (!apiKey) throw new Error(`${apiKeyEnv} is not set.`);
-    const raw = await judgeRelationsRawViaLlm({
-      sourcePath: caseItem.source_note_path || caseItem.id,
-      sourceText: caseItem._resolved_insight_input,
-      candidateInputs,
-    }, {
-      baseUrl: options.llmBaseUrl,
-      apiKey,
-      model: relationJudgeModel(options),
-      protocol: "chat-completions",
-      thinking: "disabled",
-      timeoutMs: options.relationJudgeAgentTimeoutMs,
-    });
-    if (!raw.ok) throw new Error(raw.error);
-    return raw.candidates;
+  if (relationJudgeProvider(options) !== "deepseek") {
+    throw new Error(`${caseItem.id}: unknown relation judge provider: ${options.relationJudgeAgentProvider}`);
   }
-  return generateRelationJudgeWithCodexCliLegacy(caseItem, candidateInputs, options);
-}
-
-// Legacy codex CLI provider path (spawnSync codex exec). Issue #57 states the
-// codex CLI path is "not carried over" into the new core-based orchestration
-// (core is HTTP-only via llmJsonCall); this function is that pre-existing
-// behavior, kept reachable rather than deleted so a bench config that still
-// sets AHA_BENCH_RELATION_JUDGE_AGENT_PROVIDER=codex does not silently break.
-// It is legacy/deprecated: new work should use the "deepseek" provider (core
-// path).
-function generateRelationJudgeWithCodexCliLegacy(caseItem, candidateInputs, options) {
-  const prompt = buildRelationJudgePrompt({
+  const apiKeyEnv = String(options.llmApiKeyEnv || DEFAULT_DEEPSEEK_API_KEY_ENV).trim() || DEFAULT_DEEPSEEK_API_KEY_ENV;
+  const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) throw new Error(`${apiKeyEnv} is not set.`);
+  const raw = await judgeRelationsRawViaLlm({
     sourcePath: caseItem.source_note_path || caseItem.id,
     sourceText: caseItem._resolved_insight_input,
     candidateInputs,
+  }, {
+    baseUrl: options.llmBaseUrl,
+    apiKey,
+    model: relationJudgeModel(options),
+    protocol: "chat-completions",
+    thinking: "disabled",
+    timeoutMs: options.relationJudgeAgentTimeoutMs,
   });
-
-  if (!["codex", "codex-cli"].includes(relationJudgeProvider(options))) {
-    throw new Error(`${caseItem.id}: unknown relation judge provider: ${options.relationJudgeAgentProvider}`);
-  }
-
-  const tmpRoot = mkdtempSync(join(tmpdir(), "aha-relation-judge-"));
-  const schemaPath = join(tmpRoot, "schema.json");
-  const outputPath = join(tmpRoot, "relation-judge.json");
-  writeFileSync(schemaPath, `${JSON.stringify(AHA_RESULT_SCHEMA, null, 2)}\n`);
-
-  const args = [
-    "--ask-for-approval",
-    "never",
-    "exec",
-    "--skip-git-repo-check",
-    "--ephemeral",
-    "--ignore-rules",
-    "--sandbox",
-    "read-only",
-    "--output-schema",
-    schemaPath,
-    "-o",
-    outputPath,
-    "-C",
-    tmpRoot,
-  ];
-  if (options.relationJudgeAgentModel) {
-    args.push("-m", options.relationJudgeAgentModel);
-  }
-  args.push("-");
-
-  try {
-    const result = spawnSync(options.relationJudgeAgentBin || "codex", args, {
-      input: prompt,
-      encoding: "utf-8",
-      timeout: options.relationJudgeAgentTimeoutMs,
-      env: process.env,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      const stderr = String(result.stderr ?? "").trim();
-      const stdout = String(result.stdout ?? "").trim();
-      throw new Error(stderr || stdout || `relation judge exited with ${result.status}`);
-    }
-    const output = existsSync(outputPath) ? readFileSync(outputPath, "utf-8") : result.stdout;
-    return parseRelationJudgeOutput(output, caseItem.id);
-  } finally {
-    rmSync(tmpRoot, { recursive: true, force: true });
-  }
-}
-
-function parseRelationJudgeOutput(output, caseId) {
-  const parsed = normalizeStructuredResult(parseJsonOutput(output));
-  const validation = validateAhaResult(parsed);
-  if (!validation.ok) {
-    throw new Error(`${caseId}: relation judge returned malformed output: ${validation.errors.join("; ")}`);
-  }
-  return parsed.candidates ?? [];
+  if (!raw.ok) throw new Error(raw.error);
+  return raw.candidates;
 }
 
 // Only used by the generic-adapter path (judgeCandidateRelations, which
-// accepts arbitrary adapters including the legacy codex CLI text output) and
-// the legacy codex CLI subprocess path above. The core HTTP-only path
+// accepts arbitrary text-returning adapters). The core HTTP-only path
 // (judgeRelationsRawViaLlm / judgeCandidateRelationsViaLlm, via llmJsonCall)
 // does its own JSON parsing/extraction internally, so this is not a second
 // implementation of that parsing — it is the one remaining parser for
@@ -500,17 +414,10 @@ function relationJudgeModel(options) {
 
 function relationJudgeProviderCacheShape(options) {
   const provider = relationJudgeProvider(options);
-  if (provider === "deepseek") {
-    return JSON.stringify({
-      provider,
-      baseUrl: options.llmBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
-      model: relationJudgeModel(options),
-    });
-  }
   return JSON.stringify({
     provider,
-    bin: options.relationJudgeAgentBin || "codex",
-    model: options.relationJudgeAgentModel || "",
+    baseUrl: options.llmBaseUrl || DEFAULT_DEEPSEEK_BASE_URL,
+    model: relationJudgeModel(options),
   });
 }
 

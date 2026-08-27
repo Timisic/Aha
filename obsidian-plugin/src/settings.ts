@@ -31,14 +31,12 @@ import { parseQmdEnvironment, probeQmdAvailable, runQmdEmbed, runQmdStatus, runQ
 //   - Hidden developer settings (no UI row at all, data.json-only):
 //     traceDirectory, useFixtureResult, useLegacyWrapper.
 //   - Truly invisible / dead-but-still-functional (no UI row, data.json-only,
-//     NOT carried forward by migration): llmProvider (fixed to "deepseek";
-//     the only other value process.ts's wrapper accepts is "codex-cli",
-//     which was never reachable from this settings UI either), ahaWorkspace,
-//     wrapperRelativePath, nodeCommand, codexCommand, codexModel,
-//     codexReasoningEffort, codexSandbox, obsidianCommand, qmdRunner,
-//     qmdSdkModule. These stay in the TS interface/DEFAULT_SETTINGS only
-//     because process.ts's frozen runAhaWrapper/runReadinessCheck (the #58
-//     legacy-wrapper rollback path) hard-require them.
+//     NOT carried forward by migration): llmProvider (fixed to "deepseek",
+//     the only supported value), ahaWorkspace, wrapperRelativePath,
+//     nodeCommand, obsidianCommand, qmdRunner, qmdSdkModule. These stay in
+//     the TS interface/DEFAULT_SETTINGS only because process.ts's frozen
+//     runAhaWrapper/runReadinessCheck (the #58 legacy-wrapper rollback path)
+//     hard-require them.
 //   - Invisible but still alive for BOTH the legacy and internalized paths
 //     (no UI row, but carried forward by migration): qmdIndex, qmdRerank,
 //     and the six qmdRemote* fields (process.ts's frozen wrapperChildEnv
@@ -55,20 +53,15 @@ import { parseQmdEnvironment, probeQmdAvailable, runQmdEmbed, runQmdStatus, runQ
 export interface AhaPluginSettings {
   ahaWorkspace: string;
   /**
-   * Fixed to "deepseek" (DeepSeek is the only supported API provider; the
-   * only other value process.ts's frozen wrapper accepts is "codex-cli",
-   * never reachable from this settings UI). No settings-page row.
+   * Fixed to "deepseek" (the only supported API provider). No settings-page
+   * row.
    */
   llmProvider: string;
   deepseekBaseUrl: string;
   deepseekModel: string;
   deepseekApiKey: string;
   deepseekApiKeyEnv: string;
-  codexModel: string;
-  codexReasoningEffort: string;
-  codexSandbox: string;
   nodeCommand: string;
-  codexCommand: string;
   qmdRunner: string;
   qmdCommand: string;
   qmdIndex: string;
@@ -134,11 +127,7 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   deepseekModel: "deepseek-v4-pro",
   deepseekApiKey: "",
   deepseekApiKeyEnv: "DEEPSEEK_API_KEY",
-  codexModel: "gpt-5.3-codex-spark",
-  codexReasoningEffort: "low",
-  codexSandbox: "danger-full-access",
   nodeCommand: "",
-  codexCommand: "codex",
   qmdRunner: "sdk",
   qmdCommand: "qmd",
   qmdIndex: "obsidian",

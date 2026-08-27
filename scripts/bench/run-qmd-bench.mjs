@@ -16,7 +16,6 @@ function parseArgs() {
     index: "obsidian",
     qmd: "qmd",
     queryGenerator: "agent",
-    queryAgentBin: "codex",
     queryAgentModel: "",
     queryAgentCache: "bench/generated/qmd-query-agent-cache.json",
     queryAgentFallback: true,
@@ -43,9 +42,6 @@ function parseArgs() {
     switch (name) {
       case "query-generator":
         defaults.queryGenerator = value;
-        break;
-      case "query-agent-bin":
-        defaults.queryAgentBin = value;
         break;
       case "query-agent-model":
         defaults.queryAgentModel = value;
@@ -144,8 +140,6 @@ function main() {
     options.fixture,
     "--query-generator",
     options.queryGenerator,
-    "--query-agent-bin",
-    options.queryAgentBin,
     "--query-agent-timeout-ms",
     String(options.queryAgentTimeoutMs),
   ];

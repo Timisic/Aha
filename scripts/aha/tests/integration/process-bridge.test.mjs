@@ -27,19 +27,15 @@ test("process bridge runs wrapper through explicit Node when PATH lacks node", a
   await chmod(helper, 0o755);
 
   try {
+    process.env.AHA_TEST_PROCESS_BRIDGE_KEY = "test-key";
     const result = await processBridge.runReadinessCheck({
       ahaWorkspace: repoRoot,
       nodeCommand: "",
-      llmProvider: "codex-cli",
-      llmBaseUrl: "https://api.openai.com/v1",
-      llmModel: "gpt-5.5",
-      llmApiKey: "",
-      llmApiKeyEnv: "OPENAI_API_KEY",
-      codexModel: "gpt-5.3-codex-spark",
-      codexReasoningEffort: "low",
-      codexSandbox: "danger-full-access",
-      reviewFolder: "Aha/Reviews",
-      codexCommand: helper,
+      llmProvider: "deepseek",
+      deepseekBaseUrl: "https://api.deepseek.test",
+      deepseekModel: "deepseek-v4-pro",
+      deepseekApiKey: "",
+      deepseekApiKeyEnv: "AHA_TEST_PROCESS_BRIDGE_KEY",
       qmdRunner: "cli",
       qmdCommand: helper,
       qmdIndex: "obsidian",
@@ -53,7 +49,7 @@ test("process bridge runs wrapper through explicit Node when PATH lacks node", a
 
     assert.equal(result.ok, true);
     assert.ok(result.checks.some((check) => check.name === "Node CLI" && check.ok));
-    assert.ok(result.checks.some((check) => check.name === "Codex CLI" && check.ok));
+    assert.ok(result.checks.some((check) => check.name === "DeepSeek API key" && check.ok));
     assert.ok(result.checks.some((check) => check.name === "QMD CLI" && check.ok));
     assert.ok(result.checks.some((check) => check.name === "Obsidian CLI" && check.ok));
   } finally {
@@ -63,6 +59,7 @@ test("process bridge runs wrapper through explicit Node when PATH lacks node", a
       globalThis.require = previousRequire;
     }
     process.env.PATH = previousPath;
+    delete process.env.AHA_TEST_PROCESS_BRIDGE_KEY;
     await rm(temp, { recursive: true, force: true });
   }
 });
@@ -103,11 +100,6 @@ test("process bridge forwards LLM and QMD runtime arguments", async () => {
     deepseekModel: "deepseek-v4-pro",
     deepseekApiKey: "direct-deepseek-key",
     deepseekApiKeyEnv: "AHA_TEST_DEEPSEEK_KEY",
-    codexModel: "gpt-5.3-codex-spark",
-    codexReasoningEffort: "low",
-    codexSandbox: "danger-full-access",
-    reviewFolder: "Aha/Reviews",
-    codexCommand: "/tmp/codex",
     qmdRunner: "sdk",
     qmdCommand: "/tmp/qmd",
     qmdIndex: "obsidian",
@@ -190,11 +182,6 @@ test("process bridge forwards the DeepSeek connection-check profile", async () =
     deepseekModel: "deepseek-v4-pro",
     deepseekApiKey: "deepseek-direct-key",
     deepseekApiKeyEnv: "AHA_TEST_DEEPSEEK_KEY",
-    codexModel: "gpt-test",
-    codexReasoningEffort: "low",
-    codexSandbox: "danger-full-access",
-    reviewFolder: "Aha/Reviews",
-    codexCommand: "/tmp/codex",
     qmdRunner: "sdk",
     qmdCommand: "/tmp/qmd",
     qmdIndex: "obsidian",
@@ -256,11 +243,6 @@ test("process bridge skips leading ANSI-only stderr lines when reporting wrapper
         deepseekModel: "deepseek-v4-pro",
         deepseekApiKey: "test-key",
         deepseekApiKeyEnv: "AHA_TEST_DEEPSEEK_KEY",
-        codexModel: "gpt-5.3-codex-spark",
-        codexReasoningEffort: "low",
-        codexSandbox: "danger-full-access",
-        reviewFolder: "Aha/Reviews",
-        codexCommand: "/tmp/codex",
         qmdRunner: "sdk",
         qmdCommand: "/tmp/qmd",
         qmdIndex: "obsidian",

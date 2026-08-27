@@ -4,11 +4,11 @@
 // retry, quote-backed relation enforcement (the decision-for-decision-critical
 // demotion to weak), candidate merging, and final-slate composition/ordering.
 //
-// Cache-file management, CLI option parsing, per-chunk concurrency, and the
-// codex-CLI legacy adapter stay in scripts/aha/relation-judge.mjs (bench/Node
-// infrastructure); this module offers the LLM round-trip + validation +
-// quote-enforcement + merge primitives that infrastructure calls into,
-// mirroring the query-plan split in query-plan-llm.ts.
+// Cache-file management, CLI option parsing, and per-chunk concurrency stay
+// in scripts/aha/relation-judge.mjs (bench/Node infrastructure); this module
+// offers the LLM round-trip + validation + quote-enforcement + merge
+// primitives that infrastructure calls into, mirroring the query-plan split
+// in query-plan-llm.ts.
 //
 // This module must stay free of `obsidian` imports, node imports, and
 // module-level I/O: all LLM network calls flow through llmJsonCall
