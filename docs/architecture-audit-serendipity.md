@@ -18,8 +18,6 @@ source note
   → [输出] AhaResult
 ```
 
-审计时核心路径缺少图扩展这一步，`23b4cdf` 已把它移入 core（graph-expansion.ts），插件、bench、遗留 wrapper 现在跑同一份逻辑。
-
 ---
 
 ## 2. 关键参数速查
