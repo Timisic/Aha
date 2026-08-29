@@ -93,8 +93,6 @@ cd obsidian-plugin && npm run verify       # 插件构建 + 测试
 
 已支持：Obsidian Plugin（触发、Review Panel、候选跳转、反馈按钮）、多路混合召回、引句校验的关系判断、分批 judge 与检索先验保底排序、评测闭环与失败归因。
 
-不再支持：Review Note（Markdown 导出/解析）已整体移除——包括导出命令、`scripts/aha/legacy-review-migration.mjs`、`scripts/bench/collect-review-seeds.mjs`；反馈只存进 Session Store，从反馈到 benchmark seed 目前没有自动收集链路，需要人工从 `data.json` 里挑。
-
 不做：自动修改 Obsidian 原文、自动沉淀总结、把候选自动写入知识库。
 
 边界：自用驱动的深度产品实验，评估基于真实个人 review 行为；检索层的 must 入池率已通过确定性手段做到 ~97%，top-10 排序质量仍在通过反馈判例持续校准。

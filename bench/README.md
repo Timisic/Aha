@@ -6,7 +6,7 @@ This folder holds the small evaluation set for Aha / Pi `/insight` memory recall
 
 Real benchmark cases live in the local-only `aha-memory-cases.json`. This file can contain private note text and Obsidian paths, so it is ignored by Git and should not be committed.
 
-Draft cases promoted from Review Panel feedback (see "Review Feedback Actions" below) can also live in a local-only, hand-maintained file such as `bench/my-draft-cases.json`: an ignored benchmark-like inbox that stays `state: draft` until a human copies/promotes a case into `aha-memory-cases.json`.
+Draft cases collected from Review Panel feedback (see "Review Feedback Actions" below) land in `bench/aha-memory-seed-cases.json` by default: an ignored benchmark-like inbox that stays `state: draft` until a human inspects and copies/promotes a case into `aha-memory-cases.json`. You can also hand-maintain your own draft file, e.g. `bench/my-draft-cases.json`, the same way.
 
 Start by copying the sanitized template:
 
@@ -45,6 +45,7 @@ The fields you must fill for each real case are:
   - `gold.must`: 1-8 old note paths, preferably vault-relative, that must appear in the ten-candidate Review Attention Budget unless `expected_no_recall` is explicitly true.
   - `gold.nice`: useful old notes that improve review quality but should not count as hard failures if missing.
   - `gold.noise`: superficially related notes that should be treated as noise if surfaced as useful.
+  - `gold.surprise`: optional, additive -- old notes that were genuinely surprising to rediscover, independent of must/nice/noise (a note can be both `gold.nice` and `gold.surprise` at once). Not wired into any eval-v2 scoring metric yet; how to report it (a surprise rate normalized by candidate count, or a raw average count per run) is still an open decision, since a run doesn't always surface the same number of candidates.
 - `why`: short annotation rationale for future human maintenance. It is not retrieval input and does not affect scoring.
 
 Useful optional fields:
@@ -87,15 +88,28 @@ By default the scripts ask a query-generation agent to translate raw input into 
 
 During early curation, keep only human-vetted cases as `active`, even if that means the default suite has just a few cases. As the suite matures, aim for 12-20 real active cases. Engineering edge cases such as exact cue handling, duplicate basenames, qmd URI resolution, source-note self-hit filtering, and no-related-memory behavior belong in a separate regression fixture, not in the primary benchmark score. Local private regression cases can live in ignored `bench/aha-memory-regression-cases.json`.
 
-Review Feedback Actions are a separate daily flow. Per-candidate `accept` / `noise` / `should_have_found` feedback is stored in the plugin's Session Store (`data.json`, [ADR 0004](../docs/adr/0004-use-session-store-for-aha-panel-state.md)) -- `accept` maps to `gold.nice`, `reject_as_noise` to `gold.noise`, `should_have_found` to `gold.must`.
+Review Feedback Actions are a separate daily flow. Per-candidate `surprise` / `accept` / `noise` (in that order in the Review Panel) plus the free-text `should_have_found` feedback is stored in the plugin's Session Store (`data.json`, [ADR 0004](../docs/adr/0004-use-session-store-for-aha-panel-state.md)) -- `accept` maps to `gold.nice`, `reject_as_noise` to `gold.noise`, `should_have_found` to `gold.must`, `surprise` to `gold.surprise`. Unlike the other three, `surprise` is additive rather than a competing classification: a candidate can be both accepted and marked surprising, so it's tracked independently and never overwrites (or gets overwritten by) a nice/noise/must label on the same note.
 
-There is currently no automated collector from Session Store into a draft case file: the old Review Note markdown feature (and its `scripts/bench/collect-review-seeds.mjs` collector, which only ever read exported Review Note files) was removed entirely. Promoting a piece of feedback into `bench/aha-memory-cases.json` today means reading it out of the vault's `.obsidian/plugins/aha-memory-surface*/data.json` `sessionStore.records[*].feedback` by hand and writing the case yourself using the schema below.
+`scripts/bench/collect-session-feedback.mjs` is the collector: the successor to the removed Review Note-era `collect-review-seeds.mjs` (the old markdown-export flow it read from no longer exists), reading straight from `sessionStore.records[*].feedback` instead.
 
-You can still hand-write a draft case file and smoke-test it without touching the active suite:
+```bash
+node scripts/bench/collect-session-feedback.mjs
+```
+
+By default this reads `.obsidian/plugins/aha-memory-surface-dev/data.json` under `AHA_BENCH_VAULT_ROOT`/`~/Obsidian Notes` and writes `bench/aha-memory-seed-cases.json` -- one `state: draft` case per source note with feedback, `gold.must`/`gold.nice`/`gold.noise`/`gold.surprise` filled from `should_have_found`/`accept`/`reject_as_noise`/`surprise`. It never writes to `bench/aha-memory-cases.json`; promoting a case into the active suite is still a deliberate human step (inspect, add `input.lines`, flip `state` to `active`).
+
+Two things it flags for you rather than guessing at:
+
+- If the same memory got conflicting `must`/`nice`/`noise` labels over time (e.g. accepted, later marked noise), the most recent feedback wins and every conflicting label is recorded in `feedback_label_conflicts` on that case. `surprise` never participates in this conflict resolution -- it's additive, so it coexists with whatever `must`/`nice`/`noise` label the same memory ends up with.
+- `should_have_found`'s `memory` field is free text a human typed into a prompt ("输入 Obsidian 路径或 [[链接]]"), not a resolved link, and a note's Session Store path is only as fresh as its last Aha run -- if the note moved/got renamed afterward, `record.source.path` is stale even though the record's filesystem identity still tracks it correctly. The collector checks every `input.note` and `gold.*` path against the vault and adds a warning for anything it can't find, instead of silently writing a case that will fail to resolve later.
+
+Useful flags: `--plugin-id aha-memory-surface` to read the production install instead of `-dev`, `--data-json <path>` to point at a data.json directly, `--output <path>` to write somewhere other than the default, `--dry-run` to print the document instead of writing it. Run `node scripts/bench/collect-session-feedback.mjs --help` for the full list.
+
+Smoke-test a draft file without touching the active suite:
 
 ```bash
 node scripts/bench/run-pipeline-bench.mjs \
-  --cases bench/my-draft-cases.json \
+  --cases bench/aha-memory-seed-cases.json \
   --include-draft
 ```
 
@@ -104,7 +118,7 @@ Path notes:
 - `input.note` can still be an absolute path, a path relative to this `bench/` folder, or a path under the Obsidian vault root, but vault-relative paths are the recommended hand-editing format.
 - By default the vault root is the local Obsidian vault, usually `~/Obsidian Notes`.
 - Override it with `AHA_BENCH_VAULT_ROOT=/path/to/vault` if needed.
-- `gold.must` / `gold.nice` / `gold.noise` paths can be absolute or collection-relative, but vault-relative is preferred and they must resolve to a unique canonical vault-relative identity. The scorer no longer accepts suffix-only matches because duplicate basenames can create false hits.
+- `gold.must` / `gold.nice` / `gold.noise` / `gold.surprise` paths can be absolute or collection-relative, but vault-relative is preferred and they must resolve to a unique canonical vault-relative identity. The scorer no longer accepts suffix-only matches because duplicate basenames can create false hits.
 
 Minimal source-note excerpt case:
 
@@ -326,7 +340,8 @@ For focused benchmark or review-note changes, the deterministic subset is:
 ```bash
 node --test scripts/aha/tests/integration/bench-scoring.test.mjs
 node --test scripts/aha/tests/unit/review-note.test.mjs
-node --test scripts/aha/tests/integration/review-seeds-collector.test.mjs
+node --test scripts/aha/tests/unit/session-feedback-cases.test.mjs
+node --test scripts/aha/tests/integration/collect-session-feedback.test.mjs
 ```
 
 For a live local benchmark smoke, run the L2 pipeline only after confirming `bench/aha-memory-cases.json` is the ignored private file you intend to use:

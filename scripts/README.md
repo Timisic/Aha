@@ -12,13 +12,15 @@ scripts/
     build-fixture.mjs         # Build a qmd bench fixture from active cases.
     extract-note-excerpt.mjs  # Preview a case's exact source-note excerpt.
     normalize-case-paths.mjs  # Rewrite vault-absolute case paths to vault-relative paths.
+    collect-session-feedback.mjs # Collects Review Panel accept/noise/should_have_found feedback out of a plugin's data.json into draft bench cases.
     run-qmd-bench.mjs         # L1: QMD-only retrieval benchmark.
     run-pipeline-bench.mjs    # L2: query plan -> QMD -> backlinks -> Relation Judge benchmark, via core.
     run-pipeline-ablations.mjs # Runs the standard L2 ablation variant suite.
     summarize-report.mjs      # Print a compact QMD bench report summary.
   lib/
     core-artifact.mjs         # Rebuild-first loader for the shared core artifact (ADR 0005); the main entry point for bench/CLI.
-    session-artifact.mjs      # Rebuild-first loader for the session-store Node artifact (same pattern, "session" esbuild target); used by dev/run-batch-vault.mjs.
+    session-artifact.mjs      # Rebuild-first loader for the session-store Node artifact (same pattern, "session" esbuild target); used by dev/run-batch-vault.mjs and bench/collect-session-feedback.mjs.
+    session-feedback-cases.mjs # Turns Session Store feedback (accept/reject_as_noise/should_have_found) into draft bench cases; used by bench/collect-session-feedback.mjs.
     core-node-deps.mjs        # Node bindings (fetch, spawn, fs) injected into core's dependency seam.
     *.mjs                     # Other shared benchmark scoring, trace, and path helpers.
   aha/
