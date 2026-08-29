@@ -16,6 +16,12 @@ import { markdownFilePathForLink, noteDisplayTitleFromPath } from "./wikilink";
 
 export const AHA_REVIEW_PANEL_VIEW_TYPE = "aha-review-panel";
 
+const SEED_BUTTON_TITLE: Record<Exclude<ReviewBenchmarkSeedAction, "should_have_found">, string> = {
+  surprise: "保存为草稿 surprise seed，记录一次意外的有价值召回",
+  accept: "保存为草稿 nice-to-have seed，不会自动标记 must-recall",
+  reject_as_noise: "保存为草稿 negative seed，不会自动启用负例标签",
+};
+
 export interface AhaReviewPanelContext {
   recordKey: string;
   sourcePath: string;
@@ -279,6 +285,7 @@ export class AhaReviewPanelView extends ItemView {
 
   private renderSeedActions(cell: HTMLElement, candidate: ReviewPanelCandidate): void {
     const actions = cell.createDiv({ cls: "aha-review-panel-seed-actions" });
+    this.renderSeedButton(actions, "surprise", "surprise", candidate);
     this.renderSeedButton(actions, "accept", "accept", candidate);
     this.renderSeedButton(actions, "reject_as_noise", "noise", candidate);
   }
@@ -287,9 +294,7 @@ export class AhaReviewPanelView extends ItemView {
     const button = parent.createEl("button", {
       text,
       cls: "aha-review-panel-seed-button",
-      title: action === "accept"
-        ? "保存为草稿 nice-to-have seed，不会自动标记 must-recall"
-        : "保存为草稿 negative seed，不会自动启用负例标签",
+      title: SEED_BUTTON_TITLE[action],
     });
     button.addEventListener("click", () => {
       void this.recordCandidateSeed(action, candidate);
@@ -310,7 +315,7 @@ export class AhaReviewPanelView extends ItemView {
         candidate.selected = false;
         this.updateCount();
       }
-      new Notice(action === "accept" ? "已记录 accept 草稿 seed。" : "已记录 reject_as_noise 草稿 seed。", 3000);
+      new Notice(`已记录 ${action} 草稿 seed。`, 3000);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`Aha seed 写回失败：${message}`, 8000);

@@ -39,6 +39,7 @@ test("seedLabelForAction maps review actions to benchmark seed labels", async ()
   assert.equal(reviewNote.seedLabelForAction("accept"), "nice_to_have");
   assert.equal(reviewNote.seedLabelForAction("reject_as_noise"), "negative");
   assert.equal(reviewNote.seedLabelForAction("should_have_found"), "must_recall");
+  assert.equal(reviewNote.seedLabelForAction("surprise"), "surprise");
 });
 
 test("obsidianLink omits the alias when it matches the target or its last segment", async () => {
@@ -111,6 +112,19 @@ test("panel source keeps follow and pin hooks without a Review Note export butto
   assert.match(source, /renderPinButton/);
   assert.doesNotMatch(source, /Export Review Note/);
   assert.doesNotMatch(source, /exportReviewNote/);
+});
+
+test("panel renders the surprise seed button first, before accept and noise", async () => {
+  const source = await readFile(path.join(repoRoot, "obsidian-plugin/src/review-panel.ts"), "utf8");
+  const body = source.match(/private renderSeedActions\([^)]*\): void \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+
+  const surpriseIndex = body.indexOf('"surprise"');
+  const acceptIndex = body.indexOf('"accept"');
+  const noiseIndex = body.indexOf('"reject_as_noise"');
+
+  assert.ok(surpriseIndex >= 0 && acceptIndex >= 0 && noiseIndex >= 0, "expected all three seed buttons to be rendered");
+  assert.ok(surpriseIndex < acceptIndex, "surprise button must render before accept");
+  assert.ok(acceptIndex < noiseIndex, "accept button must render before noise");
 });
 
 test("panel header keeps source title space beside compact actions", async () => {
@@ -470,6 +484,43 @@ test("session store separates handoff selection from feedback actions", async ()
     ["should_have_found", "draft", "must_recall"],
   ]);
   assert.doesNotMatch(sessionStore.handoffForRound(record, latest), /Memory\/Candidate/);
+});
+
+test("session store records surprise feedback independently of accept/noise", async () => {
+  const sessionStore = await loadTsModule("obsidian-plugin/src/session-store.ts");
+  const store = sessionStore.createEmptySessionStore();
+  const source = sourceInput("srcfs:surprise-source", "Source/Insight.md");
+  const record = sessionStore.recordSuccessfulSessionRound(store, {
+    generatedAt: new Date("2026-06-28T09:00:00Z"),
+    source,
+    result: searchRound("2026-06-28T09:00:00Z").result,
+  });
+  const latest = sessionStore.latestSuccessfulRound(record);
+
+  const surprise = sessionStore.appendSessionFeedback(record, {
+    action: "surprise",
+    createdAt: new Date("2026-06-28T09:01:00Z"),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+    candidate: latest.candidates[0],
+  });
+  assert.equal(surprise.seedLabel, "surprise");
+  assert.equal(latest.candidates[0].selected, true, "marking a candidate surprising should not implicitly deselect it");
+
+  // A candidate can be both accepted and surprising -- these are independent
+  // axes, not competing classifications of the same candidate.
+  sessionStore.appendSessionFeedback(record, {
+    action: "accept",
+    createdAt: new Date("2026-06-28T09:02:00Z"),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+    candidate: latest.candidates[0],
+  });
+
+  assert.deepEqual(record.feedback.map((feedback) => [feedback.action, feedback.seedLabel, feedback.memory]), [
+    ["surprise", "surprise", "Memory/Candidate.md"],
+    ["accept", "nice_to_have", "Memory/Candidate.md"],
+  ]);
 });
 
 test("session store exposes stale source state without hiding candidates", async () => {

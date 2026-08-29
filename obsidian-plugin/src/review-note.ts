@@ -9,9 +9,9 @@ export interface ReviewPanelCandidate extends AhaCandidate {
   quotes: string[];
 }
 
-export type ReviewBenchmarkSeedAction = "accept" | "reject_as_noise" | "should_have_found";
+export type ReviewBenchmarkSeedAction = "accept" | "reject_as_noise" | "should_have_found" | "surprise";
 
-export type ReviewBenchmarkSeedLabel = "nice_to_have" | "negative" | "must_recall";
+export type ReviewBenchmarkSeedLabel = "nice_to_have" | "negative" | "must_recall" | "surprise";
 
 export function renderGrillHandoff(sourcePath: string, sourceTitle: string, candidates: AhaCandidate[]): string[] {
   const selected = candidates.filter((candidate) => candidate.selected !== false);
@@ -32,6 +32,7 @@ export function renderGrillHandoff(sourcePath: string, sourceTitle: string, cand
 export function seedLabelForAction(action: ReviewBenchmarkSeedAction): ReviewBenchmarkSeedLabel {
   if (action === "reject_as_noise") return "negative";
   if (action === "should_have_found") return "must_recall";
+  if (action === "surprise") return "surprise";
   return "nice_to_have";
 }
 

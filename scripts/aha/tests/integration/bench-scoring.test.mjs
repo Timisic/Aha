@@ -9,6 +9,7 @@ import {
   applyBenchEvaluationPolicy,
   droppedMustFromExpandedPool,
   failureAttributionForPipelineCase,
+  normalizeBenchmarkCase,
   normalizeFailureAttribution,
   readBenchmarkCases,
   scoreEvalV2,
@@ -130,6 +131,33 @@ test("benchmark validation rejects duplicate identities across must, nice, and n
     }),
     /duplicate canonical identities/,
   );
+  await rm(vaultRoot, { recursive: true, force: true });
+});
+
+test("gold.surprise normalizes to an array and mirrors onto the flat surprise field", () => {
+  const normalized = normalizeBenchmarkCase({
+    id: "surprise-case",
+    input: { thought: "input" },
+    gold: { must: [], nice: ["Memory/nice.md"], noise: [], surprise: ["Memory/nice.md", "Memory/other.md"] },
+  });
+  assert.deepEqual(normalized.gold.surprise, ["Memory/nice.md", "Memory/other.md"]);
+  assert.deepEqual(normalized.surprise, ["Memory/nice.md", "Memory/other.md"]);
+});
+
+test("a note may appear in both gold.nice and gold.surprise -- surprise is additive, not a competing classification", async () => {
+  const vaultRoot = await mkdtemp(path.join(tmpdir(), "aha-eval-v2-vault-"));
+  process.env.AHA_BENCH_VAULT_ROOT = vaultRoot;
+
+  assert.doesNotThrow(() => validateCase({
+    id: "surprise-overlap",
+    _resolved_insight_input: "input",
+    must_recall: [],
+    nice_to_have: ["Memory/same.md"],
+    negative: [],
+    surprise: ["Memory/same.md"],
+    expected_no_recall: true,
+  }));
+
   await rm(vaultRoot, { recursive: true, force: true });
 });
 

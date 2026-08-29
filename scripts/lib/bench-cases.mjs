@@ -139,6 +139,13 @@ export function normalizeBenchmarkCase(caseItem) {
   const must = normalizeStringArray(gold.must ?? caseItem.must_recall, "gold.must", caseItem.id || "(missing id)");
   const nice = normalizeStringArray(gold.nice ?? caseItem.nice_to_have, "gold.nice", caseItem.id || "(missing id)");
   const noise = normalizeStringArray(gold.noise ?? caseItem.negative, "gold.noise", caseItem.id || "(missing id)");
+  // Unlike must/nice/noise (mutually exclusive classifications of a
+  // candidate), surprise is an independent, additive tag -- a note can be
+  // both accepted (gold.nice) and surprising (gold.surprise) at once. It is
+  // not yet wired into any eval-v2 scoring metric; today it is carried
+  // through so Session Store `surprise` feedback (see review-note.ts) has
+  // somewhere to land in the case schema.
+  const surprise = normalizeStringArray(gold.surprise ?? caseItem.surprise, "gold.surprise", caseItem.id || "(missing id)");
   const title = String(caseItem.title ?? caseItem.description ?? caseItem.id ?? "").trim();
   const why = String(caseItem.why ?? caseItem.annotation_note ?? "").trim();
 
@@ -157,6 +164,7 @@ export function normalizeBenchmarkCase(caseItem) {
       must,
       nice,
       noise,
+      surprise,
     },
     source_note_path: note || undefined,
     source_note_start_line: lines?.[0],
@@ -166,6 +174,7 @@ export function normalizeBenchmarkCase(caseItem) {
     must_recall: must,
     nice_to_have: nice,
     negative: noise,
+    surprise,
     expected_no_recall: caseItem.expected_no_recall === true,
     _schema_version: 3,
   };
@@ -224,9 +233,15 @@ export function validateCase(caseItem) {
   if (caseItem.negative !== undefined) {
     assertArrayOfStrings(caseItem.negative, "negative", caseId);
   }
+  if (caseItem.surprise !== undefined) {
+    assertArrayOfStrings(caseItem.surprise, "surprise", caseId);
+  }
   assertRelationTargets(caseItem.relation_targets, caseId);
   normalizeFailureAttribution(caseItem.failure_attribution, caseId);
   const relationTargetPaths = (caseItem.relation_targets ?? []).map((target) => target.note_path ?? target.notePath);
+  // surprise is intentionally excluded here: it is an additive tag, not a
+  // fourth mutually-exclusive classification, so the same note appearing in
+  // both e.g. gold.nice and gold.surprise is expected, not a data error.
   const goldIdentities = [
     ...caseItem.must_recall,
     ...(caseItem.nice_to_have ?? []),
@@ -238,7 +253,7 @@ export function validateCase(caseItem) {
   }
   const vaultRoot = benchVaultRoot();
   const resolver = buildVaultPathResolver(vaultRoot);
-  for (const goldPath of [...caseItem.must_recall, ...(caseItem.nice_to_have ?? []), ...(caseItem.negative ?? []), ...relationTargetPaths]) {
+  for (const goldPath of [...caseItem.must_recall, ...(caseItem.nice_to_have ?? []), ...(caseItem.negative ?? []), ...(caseItem.surprise ?? []), ...relationTargetPaths]) {
     const resolved = resolveVaultPath(goldPath, resolver);
     if (resolved.status === "ambiguous") {
       throw new Error(`${caseId}: ambiguous benchmark gold path ${goldPath}: ${resolved.matches.join(", ")}`);
