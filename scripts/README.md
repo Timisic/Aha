@@ -18,6 +18,7 @@ scripts/
     summarize-report.mjs      # Print a compact QMD bench report summary.
   lib/
     core-artifact.mjs         # Rebuild-first loader for the shared core artifact (ADR 0005); the main entry point for bench/CLI.
+    session-artifact.mjs      # Rebuild-first loader for the session-store Node artifact (same pattern, "session" esbuild target); used by dev/run-batch-vault.mjs.
     core-node-deps.mjs        # Node bindings (fetch, spawn, fs) injected into core's dependency seam.
     *.mjs                     # Other shared benchmark scoring, trace, and path helpers.
   aha/
@@ -30,6 +31,7 @@ scripts/
     tests/{unit,integration,e2e}/ # wrapper/retrieval/judge/scoring tests, tiered by what they touch.
   debug-pipeline.mjs         # CLI harness for running the full core pipeline outside Obsidian.
   dev/install-dev-plugin.mjs # Installs a side-by-side dev-channel plugin build into the vault.
+  dev/run-batch-vault.mjs    # Batch-runs the real pipeline over many real notes, writing results into the dev plugin's data.json session store (see BATCH-VAULT-RUNNER-PLAN.md).
 ```
 
 ## Common Commands
