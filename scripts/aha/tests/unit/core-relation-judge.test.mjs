@@ -128,8 +128,8 @@ function judgeResultPayload(candidatePatch) {
 
 // --- basic prompt/version sanity ---
 
-test("RELATION_JUDGE_PROMPT_VERSION is aha-relation-judge-v6", () => {
-  assert.equal(RELATION_JUDGE_PROMPT_VERSION, "aha-relation-judge-v6");
+test("RELATION_JUDGE_PROMPT_VERSION is aha-relation-judge-v7", () => {
+  assert.equal(RELATION_JUDGE_PROMPT_VERSION, "aha-relation-judge-v7");
 });
 
 test("buildRelationJudgePrompt embeds sourcePath and candidateInputs JSON", () => {
@@ -139,6 +139,20 @@ test("buildRelationJudgePrompt embeds sourcePath and candidateInputs JSON", () =
 });
 
 // --- judgeCandidateRelationsViaLlm: success, failure, repair-retry ---
+
+for (const hit of [undefined, "", "Memory/Feedback.md"]) {
+  test(`weak candidate without evidence never substitutes its path for hit (${hit})`, async () => {
+    const { deps } = fakeDeps([responsesEnvelope(judgeResultPayload({ hit, quotes: [] }))]);
+    const result = await judgeCandidateRelationsViaLlm({
+      sourcePath: "Source.md", sourceText: "An insight about practice.",
+      candidates: retrievalCandidates, candidateInputs,
+    }, transportRequest(), deps);
+    assert.equal(result.ok, true);
+    assert.equal(result.candidates[0].relation, "weak");
+    assert.notEqual(result.candidates[0].hit, "Memory/Feedback.md");
+    assert.deepEqual(result.candidates[0].quotes, []);
+  });
+}
 
 test("successful LLM call preserves a quote-backed strong relation", async () => {
   const { deps } = fakeDeps([responsesEnvelope(judgeResultPayload({

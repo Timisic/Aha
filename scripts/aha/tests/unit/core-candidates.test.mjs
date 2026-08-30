@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -45,6 +45,24 @@ if (build.error) throw new Error(`core artifact build failed to spawn: ${build.e
 if (build.status !== 0) throw new Error(`core artifact build failed (exit ${build.status}):\n${build.stdout ?? ""}${build.stderr ?? ""}`);
 const core = await import(pathToFileURL(artifactPath).href);
 const { isExcludedCandidatePath } = core;
+
+test("QMD slug resolution rejects ambiguity, traversal, other collections and outside symlinks", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-qmd-slug-boundary-"));
+  const vault = path.join(temp, "vault");
+  try {
+    await mkdir(vault);
+    await writeFile(path.join(vault, "Old Note.md"), "inside");
+    const args = { vaultRoot: vault };
+    assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/Old-Note.md"), await realpath(path.join(vault, "Old Note.md")));
+    await writeFile(path.join(vault, "Old，Note.md"), "ambiguous");
+    assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/Old-Note.md"), "");
+    assert.equal(await qmdUriVaultPath(args, "qmd://other/Old-Note.md"), "");
+    assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/../outside.md"), "");
+    await writeFile(path.join(temp, "outside.md"), "outside");
+    await symlink(path.join(temp, "outside.md"), path.join(vault, "Outside Link.md"));
+    assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/Outside-Link.md"), "");
+  } finally { await rm(temp, { recursive: true, force: true }); }
+});
 
 test("candidatePath prefers file, then path, slug, title", () => {
   assert.equal(candidatePath({ file: "a.md", path: "b.md" }), "a.md");

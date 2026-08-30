@@ -14,6 +14,7 @@ import {
   normalizeNoteIdentity,
   notePathForObsidian,
   sameNotePath,
+  slugPath,
 } from "./note-identity";
 
 export interface CandidateRecord {
@@ -46,6 +47,8 @@ export interface VaultBoundaryDeps {
   posixNormalize(value: string): string;
   /** May reject (mirrors fs.promises.realpath on missing paths). */
   realpath(absolutePath: string): Promise<string>;
+  /** Directory entry names for resolving QMD's slugged path components. */
+  listDirectory?(absolutePath: string): Promise<string[]>;
 }
 
 export function candidatePath(candidate: CandidateRecord | null | undefined): string {
@@ -156,8 +159,23 @@ export function isObsidianQmdUri(value: unknown): boolean {
 }
 
 export async function qmdUriVaultPath(args: CandidateFilterArgs, value: string, deps: VaultBoundaryDeps): Promise<string> {
+  if (!isObsidianQmdUri(value)) return "";
   const notePath = notePathForObsidian(args, { file: value }, deps.path);
-  return resolveVaultContainedPath(args, notePath, deps);
+  const exact = await resolveVaultContainedPath(args, notePath, deps).catch(() => "");
+  if (exact) return exact;
+  if (!args.vaultRoot || !deps.listDirectory || !isSafeVaultRelativePath(notePath, deps)) return "";
+  let current = args.vaultRoot;
+  for (const segment of deps.posixNormalize(notePath).split("/")) {
+    const entries = await deps.listDirectory(current).catch((): string[] => []);
+    // Prefer literal identity; otherwise require a unique full component
+    // match. Never fall back to a basename from a different folder.
+    const matches = entries.includes(segment) ? [segment] : entries.filter(name => slugPath(name) === slugPath(segment));
+    if (matches.length !== 1) return "";
+    current = deps.path.resolve(current, matches[0]);
+    // Check every hop, so even listing a symlink outside the vault is denied.
+    if (!(await resolveVaultContainedPath(args, current, deps).catch(() => ""))) return "";
+  }
+  return resolveVaultContainedPath(args, current, deps);
 }
 
 export function isSafeVaultRelativePath(value: unknown, deps: VaultBoundaryDeps): boolean {

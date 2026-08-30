@@ -43,7 +43,7 @@ if (!DEEPSEEK_API_KEY) {
   }
 
   const core = await import(pathToFileURL(artifactPath).href);
-  const { AHA_RESULT_SCHEMA, QUERY_PLAN_SCHEMA, RELATIONS, validateAhaResult } = core;
+  const { RELATIONS, validateAhaResult } = core;
 
   async function coreHttpJsonPost(url, headers, body, timeoutMs) {
     const controller = new AbortController();
@@ -116,7 +116,8 @@ if (!DEEPSEEK_API_KEY) {
     assert.equal(raw.candidates.length, 1);
     const candidate = raw.candidates[0];
     assert.ok(RELATIONS.has(candidate.relation), `relation "${candidate.relation}" must be one of ${[...RELATIONS].join(", ")}`);
-    assert.ok(typeof candidate.hit === "string" && candidate.hit.trim(), "hit must be a non-empty string");
+    assert.ok(typeof candidate.hit === "string", "hit must be a string");
+    if (candidate.relation !== "weak") assert.ok(candidate.hit.trim(), "strong relation must have a hit");
     assert.ok(Array.isArray(candidate.quotes), "quotes must be normalized to an array");
 
     // Full-shape validation against the same schema production traffic is judged against.

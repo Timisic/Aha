@@ -20,9 +20,10 @@ import {
   llmJsonCall,
 } from "./llm-transport";
 import { compactLine } from "./query-plan-deterministic";
+import { candidateHit } from "./candidate-hit";
 import { AHA_RESULT_SCHEMA, RELATIONS as VALID_RELATIONS, validateAhaResult } from "./result-validator";
 
-export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v6";
+export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v7";
 export const RELATION_JUDGE_SCHEMA_NAME = "aha_relation_judge";
 export const DEFAULT_RELATION_JUDGE_CHUNK_SIZE = 20;
 export const DEFAULT_RELATION_JUDGE_CONCURRENCY = 3;
@@ -70,7 +71,7 @@ export function buildRelationJudgePrompt({ sourcePath, sourceText, candidateInpu
     "",
     "以 JSON 格式输出，每条候选包含以下字段：",
     "- relation：必填，上面五个关系标签之一（supports/challenges/bounds/resembles/weak），不要省略这个字段。",
-    "- hit：候选 excerpt 中的原文短引句。",
+    "- hit：候选 excerpt 中的原文短引句；weak 且没有可用引句时返回空字符串，绝不能用文件路径或标题代替引句。",
     "- why：用自然中文写，以具体观点或张力开头，点出旧判断和当前 insight 之间的具体连接。",
     "- quotes：字符串数组（即使只有一条引句，也要写成 [\"引句\"] 而不是裸字符串）。支撑标签的 excerpt 原文引句。",
     "- notePath：保持传入的 notePath 值不变，必须原样返回。",
@@ -130,10 +131,7 @@ export function normalizeStructuredResult(value: unknown): unknown {
       if (typeof next.quotes === "string" && next.quotes.trim()) {
         next.quotes = [next.quotes];
       }
-      if (typeof next.hit !== "string" || !next.hit.trim()) {
-        const quotes = Array.isArray(next.quotes) ? next.quotes.filter((q): q is string => typeof q === "string" && q.trim().length > 0) : [];
-        next.hit = quotes[0] || String(next.notePath || "unknown");
-      }
+      next.hit = candidateHit(next);
       // A missing relation (not just an invalid one) defaults to "weak", the
       // same safe default the schema and enforceQuoteBackedRelation already
       // use for "no clear evidence-backed relation" -- needed because

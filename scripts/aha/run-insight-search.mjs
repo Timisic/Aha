@@ -731,25 +731,6 @@ async function resolveSourceFilePath(args) {
   return resolveVaultContainedPath(args, args.sourceAbsolutePath || args.sourcePath);
 }
 
-async function isCandidatePathAllowed(args, notePath, row) {
-  const rawLocations = [row.file, row.path, row.uri]
-    .filter((value) => typeof value === "string")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  if (rawLocations.length === 0) {
-    return Boolean(await resolveVaultContainedPath(args, notePath).catch(() => ""));
-  }
-
-  for (const location of rawLocations) {
-    if (isObsidianQmdUri(location)) {
-      if (await qmdUriVaultPath(args, location).catch(() => "")) return true;
-      continue;
-    }
-    if (await resolveVaultContainedPath(args, location).catch(() => "")) return true;
-  }
-  return false;
-}
-
 function isObsidianQmdUri(value) {
   return /^qmd:\/\/obsidian\//i.test(String(value ?? ""));
 }

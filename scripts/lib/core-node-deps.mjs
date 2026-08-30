@@ -4,7 +4,7 @@
 // scripts/aha/lib modules it replaces.
 
 import { existsSync, readdirSync, statSync } from "node:fs";
-import { realpath } from "node:fs/promises";
+import { realpath, readdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -37,6 +37,7 @@ export const coreVaultBoundaryDeps = {
   path: coreNodeDeps.path,
   posixNormalize: (value) => path.posix.normalize(value),
   realpath: (absolutePath) => realpath(absolutePath),
+  listDirectory: (absolutePath) => readdir(absolutePath),
 };
 
 // --- LLM transport deps (issue #57) ---
@@ -487,7 +488,7 @@ function normalizeQmdSdkRows(config, rows) {
   return rows.map((row) => normalizeQmdSdkRow(config, row)).filter(Boolean);
 }
 
-async function runQmdSdkQuery(config, query, timeoutMs) {
+async function runQmdSdkQuery(config, query) {
   const sdk = await loadQmdSdk(config);
   const store = await sdk.module.createStore({ dbPath: qmdDbPath(config) });
   try {
@@ -514,7 +515,7 @@ export function createQmdSdkRunner(config) {
   return {
     async runQmdQuery(query, timeoutMs) {
       const rows = await withTimeout(
-        runQmdSdkQuery(config, query, timeoutMs),
+        runQmdSdkQuery(config, query),
         timeoutMs,
         `QMD SDK timed out after ${timeoutMs}ms.`,
       );

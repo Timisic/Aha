@@ -17,6 +17,8 @@ import {
   isExcludedCandidatePath,
   isGeneratedReviewCandidate,
   isSourceCandidate,
+  isObsidianQmdUri,
+  qmdUriVaultPath,
 } from "./candidates";
 
 export interface QueryResultLike {
@@ -76,7 +78,14 @@ export async function mergeAndRankQueryResults(
   const byPath = new Map<string, PooledCandidate>();
   for (const queryResult of queryResults) {
     for (const [index, row] of queryResult.rows.entries()) {
-      const notePath = notePathForObsidian(args, row, deps.path);
+      let notePath = notePathForObsidian(args, row, deps.path);
+      const rawPath = String(row.file ?? row.path ?? row.uri ?? "");
+      if (isObsidianQmdUri(rawPath) && args.vaultRoot) {
+        const resolved = await qmdUriVaultPath(args, rawPath, deps).catch(() => "");
+        if (!resolved) continue;
+        const root = await deps.realpath(args.vaultRoot);
+        notePath = deps.path.relative(root, resolved).replace(/\\/g, "/");
+      }
       if (!(await isCandidatePathAllowed(args, notePath, row, deps))) continue;
       if (isSourceCandidate(args, notePath, row, deps.path)) continue;
       if (isGeneratedReviewCandidate(args, notePath, row, deps.path)) continue;

@@ -28,6 +28,10 @@ export function createVaultBoundaryDeps(): VaultBoundaryDeps {
       basename: (value, ext) => (ext === undefined ? path.basename(value) : path.basename(value, ext)),
     },
     posixNormalize: (value) => path.posix.normalize(value),
+    listDirectory: async (absolutePath: string) => {
+      const fs = getNodeRequire()("fs") as typeof import("fs");
+      return fs.promises.readdir(absolutePath);
+    },
     realpath: async (absolutePath: string) => {
       const fs = getNodeRequire()("fs") as typeof import("fs");
       return fs.promises.realpath(absolutePath);

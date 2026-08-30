@@ -51,7 +51,7 @@ export const AHA_RESULT_SCHEMA = {
             type: "string",
             enum: ["supports", "challenges", "resembles", "bounds", "weak"],
           },
-          hit: { type: "string", minLength: 1 },
+          hit: { type: "string", minLength: 0 },
           why: { type: "string", minLength: 12 },
           quotes: {
             type: ["array", "null"],
@@ -68,7 +68,6 @@ const candidateProperties = AHA_RESULT_SCHEMA.properties.candidates.items.proper
 
 export const RELATIONS: ReadonlySet<string> = new Set(candidateProperties.relation.enum);
 const STRONG_RELATIONS = new Set(["supports", "challenges", "resembles", "bounds"]);
-const HIT_MIN_LENGTH = candidateProperties.hit.minLength ?? 1;
 const WHY_MIN_LENGTH = candidateProperties.why.minLength ?? 12;
 
 export interface AhaResultValidation {
@@ -133,8 +132,8 @@ function validateCandidate(candidate: unknown, index: number, errors: string[]):
   if (typeof record.relation !== "string" || !RELATIONS.has(record.relation)) {
     errors.push(`candidates[${index}].relation is invalid.`);
   }
-  if (typeof record.hit !== "string" || record.hit.trim().length < HIT_MIN_LENGTH) {
-    errors.push(`candidates[${index}].hit must be a non-empty string.`);
+  if (typeof record.hit !== "string" || (record.relation !== "weak" && !record.hit.trim())) {
+    errors.push(`candidates[${index}].hit must be a string (non-empty for strong relations).`);
   }
   if (typeof record.why !== "string" || record.why.trim().length < WHY_MIN_LENGTH) {
     errors.push(`candidates[${index}].why must be a sufficiently detailed string.`);

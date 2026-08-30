@@ -1,4 +1,5 @@
 import type { AhaCandidate } from "./schema";
+import { candidateHit } from "./core/candidate-hit";
 import { lastPathSegment, noteDisplayTitleFromPath, stripMarkdownExtension } from "./wikilink";
 
 export { noteDisplayTitleFromPath } from "./wikilink";
@@ -24,7 +25,8 @@ export function renderGrillHandoff(sourcePath: string, sourceTitle: string, cand
       ? ["- _还没有纳入 handoff 的记忆。_"]
       : selected.map((candidate) => {
           const title = noteDisplayTitleFromPath(candidate.notePath);
-          return `- ${obsidianLink(candidate.notePath, title)} (${candidate.relation}): ${candidate.why.trim()}${candidate.hit ? ` hit: ${candidate.hit.trim()}` : ""}`;
+          const hit = candidateHit(candidate);
+          return `- ${obsidianLink(candidate.notePath, title)} (${candidate.relation}): ${candidate.why.trim()}${hit ? ` hit: ${hit}` : ""}`;
         })),
   ];
 }
