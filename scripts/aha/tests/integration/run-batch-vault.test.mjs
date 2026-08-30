@@ -6,10 +6,11 @@
 // real LLM or QMD call happens in this file.
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { normalizeSessionStore, appendSessionFeedback } from "../../../lib/session-artifact.mjs";
 import {
   collectNotesFromFile,
   collectNotesUnderFolder,
@@ -42,6 +43,59 @@ function fakeSuccessResult(sourcePath) {
     candidates: [{ notePath: "Memory/Old.md", relation: "supports", hit: "hit", why: "why", quotes: [] }],
   };
 }
+
+test("batch honors traceDirectory and writes a trace for each completed round", async () => {
+  const vaultRoot = await makeVault();
+  const pluginId = "aha-memory-surface-dev";
+  try {
+    await writeFile(path.join(vaultRoot, "note.md"), "A source note.");
+    const traceDirectory = path.join(vaultRoot, "debug-traces");
+    const dataPath = await writeDataJson(vaultRoot, pluginId, { settings: { traceDirectory } });
+    const config = { settings: { traceDirectory }, runPipeline: async args => fakeSuccessResult(args.sourcePath) };
+    await runBatch({ vaultRoot, pluginId }, config, ["note.md"]);
+    const files = await readdir(traceDirectory);
+    assert.equal(files.length, 1);
+    const trace = JSON.parse(await readFile(path.join(traceDirectory, files[0]), "utf-8"));
+    assert.equal(trace.schema, "PipelineTrace");
+    assert.equal(trace.origin, "batch");
+    assert.equal(trace.case.id, "note.md");
+    assert.equal(trace.steps.final_candidates.length, 1);
+    const data = JSON.parse(await readFile(dataPath, "utf8"));
+    const store = normalizeSessionStore(data.sessionStore);
+    const record = Object.values(store.records)[0];
+    const round = record.rounds[0];
+    assert.deepEqual(round.trace, { path: path.join(traceDirectory, files[0]), origin: "batch" });
+    for (const action of ["accept", "surprise"]) {
+      appendSessionFeedback(record, { action, createdAt: new Date(), sourcePath: record.source.path, sourceTitle: record.source.title, candidate: round.candidates[0] });
+    }
+    await writeFile(dataPath, JSON.stringify({ ...data, sessionStore: store }));
+    const reopened = normalizeSessionStore(JSON.parse(await readFile(dataPath, "utf8")).sessionStore);
+    const reopenedRecord = Object.values(reopened.records)[0];
+    assert.deepEqual(reopenedRecord.feedback.map(f => f.action), ["accept", "surprise"]);
+    assert.deepEqual(reopenedRecord.rounds[0].trace, round.trace);
+  } finally {
+    await rm(vaultRoot, { recursive: true, force: true });
+  }
+});
+
+test("batch trace failure preserves a successful round and records the warning", async () => {
+  const vaultRoot = await makeVault();
+  const pluginId = "aha-memory-surface-dev";
+  try {
+    await writeFile(path.join(vaultRoot, "note.md"), "A source note.");
+    const traceDirectory = path.join(vaultRoot, "not-a-directory");
+    await writeFile(traceDirectory, "existing file");
+    const dataPath = await writeDataJson(vaultRoot, pluginId, { settings: { traceDirectory } });
+    const config = { settings: { traceDirectory }, runPipeline: async args => fakeSuccessResult(args.sourcePath) };
+    await runBatch({ vaultRoot, pluginId }, config, ["note.md"]);
+    const data = JSON.parse(await readFile(dataPath, "utf-8"));
+    const round = Object.values(data.sessionStore.records)[0].rounds[0];
+    assert.equal(round.status, "success");
+    assert.ok(round.warnings.some(w => w.startsWith("Pipeline trace write failed:")));
+  } finally {
+    await rm(vaultRoot, { recursive: true, force: true });
+  }
+});
 
 test("parseArgs requires exactly one of --folder or --notes-file", () => {
   assert.throws(() => parseArgs(["--folder", "x", "--notes-file", "y"]), /exactly one/);

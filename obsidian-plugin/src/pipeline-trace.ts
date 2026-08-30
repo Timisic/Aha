@@ -1,48 +1,22 @@
-// Plugin-side, lighter Pipeline Trace writer (issue #59; ADR 0003). The
-// bench-side scripts/lib/pipeline-trace.mjs builds a much richer trace
-// (backlink expansion, gold-label positions, rerank chunking with
-// `rerankId`s) that only makes sense for benchmark cases with gold labels --
-// none of that exists on the plugin's internalized search path (#58 never
-// does backlink expansion or gold-label scoring). This module builds a
-// plugin-appropriate trace that reuses the SAME top-level schema/version
-// markers plus the additive `origin` field, with honest `null`/empty values
-// for the parts that genuinely don't apply or aren't available from the
-// plugin's one-shot tier-pipeline calls (see the module comment on
-// buildPluginPipelineTrace below for exactly which fields are approximated
-// and why).
-//
-// Deliberately NOT importing scripts/lib/pipeline-trace.mjs directly: that
-// file has static `node:crypto`/`node:fs`/`node:path` imports, the same
-// bundling hazard #57 hit with result-validator.mjs (see core/result-validator.ts's
-// comment). TRACE_SCHEMA/TRACE_VERSION are duplicated as literals here and
-// kept in sync via a dedicated guard test
-// (scripts/aha/tests/unit/pipeline-trace-plugin.test.mjs) that imports both this
-// file and the exported constants from pipeline-trace.mjs and asserts they
-// are equal -- the same pattern core-result-validator.test.mjs established
-// for AHA_RESULT_SCHEMA.
-//
-// This module uses Node's `crypto`/`fs`/`path` via getNodeRequire(), the
-// same pattern process.ts and qmd-request.ts already use for other Node
-// built-ins, so it is safe to bundle into the plugin (no static node:*
-// imports).
+// Compact runtime Pipeline Trace shared by Obsidian searches and the batch
+// runner (ADR 0003). Both use the same schema as benchmark traces, with an
+// explicit origin and no invented gold labels. Graph-expansion details and
+// gold-driven diagnosis are not captured here; their null fields do not mean
+// that graph expansion did not run. Node builtins remain external in the
+// plugin build and also work in the session artifact's native Node ESM.
 
 import type { AhaWrapperResult } from "./schema";
+import type { QmdQueryObject } from "./core/query-plan-deterministic";
+import { createHash } from "crypto";
+import * as fs from "fs";
+import * as path from "path";
 
 /** Duplicated from scripts/lib/pipeline-trace.mjs; kept in sync by a guard test. */
 export const TRACE_SCHEMA = "PipelineTrace";
 export const TRACE_VERSION = 1;
 
-function getNodeRequire(): NodeRequire {
-  const globalRequire = (globalThis as { require?: NodeRequire }).require;
-  if (typeof globalRequire === "function") return globalRequire;
-  const windowRequire = (globalThis as { window?: { require?: NodeRequire } }).window?.require;
-  if (typeof windowRequire === "function") return windowRequire;
-  throw new Error("Node require is unavailable.");
-}
-
 function sha256Hex(value: string): string {
-  const crypto = getNodeRequire()("crypto") as typeof import("crypto");
-  return crypto.createHash("sha256").update(value).digest("hex");
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function compactWhitespace(value: string): string {
@@ -55,9 +29,11 @@ function boundedSnippet(value: string, maxChars = 300): string {
 }
 
 export interface PluginTraceQuery {
+  id: string;
   kind: string;
   command: string;
   text: string;
+  qmd?: QmdQueryObject;
 }
 
 export interface PluginTraceQueryGeneration {
@@ -87,6 +63,7 @@ export interface PluginTraceQmdRow {
 }
 
 export interface PluginTraceQmdRun {
+  query_id: string | null;
   kind: string;
   command: string;
   query_text: string;
@@ -106,9 +83,10 @@ export interface PluginTracePooledCandidate {
 }
 
 export interface PluginPipelineTrace {
+  generated_at: string;
   schema: typeof TRACE_SCHEMA;
   version: typeof TRACE_VERSION;
-  origin: "plugin";
+  origin: "plugin" | "batch";
   case: {
     id: string;
     title: string;
@@ -118,7 +96,7 @@ export interface PluginPipelineTrace {
   steps: {
     query_generation: PluginTraceQueryGeneration;
     qmd_runs: PluginTraceQmdRun[];
-    /** The plugin path never does backlink expansion (issue #58). */
+    /** Graph expansion can run; this compact trace does not capture its detail. */
     backlink_expansion: null;
     pre_rerank_candidates: PluginTracePooledCandidate[] | null;
     rerank: {
@@ -136,6 +114,7 @@ export interface PluginPipelineTrace {
 }
 
 export interface BuildPluginPipelineTraceInput {
+  origin?: "plugin" | "batch";
   sourcePath: string;
   sourceTitle: string;
   sourceText: string;
@@ -146,7 +125,7 @@ export interface BuildPluginPipelineTraceInput {
     fallback: boolean;
     error: string | null;
     promptVersion: string;
-    queries?: Array<{ kind: string; command: string; text: string }>;
+    queries?: Array<{ kind: string; command: string; text: string; qmd?: QmdQueryObject }>;
   };
   qmdQueryResults?: Array<{
     query: { kind: string; command: string; query?: string; text?: string };
@@ -178,7 +157,7 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
         fallback: input.queryPlan.fallback,
         error: input.queryPlan.error,
         prompt_version: input.queryPlan.promptVersion,
-        queries: (input.queryPlan.queries ?? []).map((q) => ({ kind: q.kind, command: q.command, text: boundedSnippet(q.text, 400) })),
+        queries: (input.queryPlan.queries ?? []).map((q, i) => ({ id: `q${i + 1}`, kind: q.kind, command: q.command, text: q.text, qmd: q.qmd ? { ...q.qmd, lex: [...q.qmd.lex] } : undefined })),
       }
     : {
         generated_by: input.tier === "recall" ? "rules" : null,
@@ -189,6 +168,7 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
       };
 
   const qmdRuns: PluginTraceQmdRun[] = (input.qmdQueryResults ?? []).map((qr) => {
+    const queryIndex = (input.queryPlan?.queries ?? []).findIndex(q => q.kind === qr.query.kind && q.command === qr.query.command && q.text === qr.query.text);
     const rows: PluginTraceQmdRow[] = qr.rows.map((row, i) => ({
       file: String(row.file ?? row.path ?? ""),
       title: String(row.title ?? ""),
@@ -196,9 +176,10 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
       rank: i + 1,
     }));
     return {
+      query_id: queryIndex < 0 ? null : `q${queryIndex + 1}`,
       kind: qr.query.kind,
       command: qr.query.command,
-      query_text: boundedSnippet(String(qr.query.query ?? qr.query.text ?? ""), 500),
+      query_text: String(qr.query.query ?? qr.query.text ?? ""),
       row_count: rows.length,
       rows: rows.slice(0, 30),
     };
@@ -218,9 +199,10 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
     : null;
 
   return {
+    generated_at: input.result.generatedAt ?? new Date().toISOString(),
     schema: TRACE_SCHEMA,
     version: TRACE_VERSION,
-    origin: "plugin",
+    origin: input.origin ?? "plugin",
     case: {
       id: input.sourcePath,
       title: input.sourceTitle || input.sourcePath,
@@ -260,12 +242,13 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
   };
 }
 
-function safeTraceName(sourcePath: string): string {
-  const safe = String(sourcePath ?? "round")
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "round";
-  return `${safe}-${sha256Hex(sourcePath ?? "").slice(0, 8)}-${Date.now()}`;
+export function traceFileBaseName(title: string, generatedAt: string): string {
+  const safe = Array.from(String(title).normalize("NFC").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-").replace(/\s+/g, " ").trim()).slice(0, 50).join("").replace(/[. ]+$/g, "") || "未命名";
+  const date = new Date(generatedAt);
+  if (!Number.isFinite(date.getTime())) throw new Error("Invalid trace timestamp");
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  return `${safe}__${stamp}`;
 }
 
 /**
@@ -276,16 +259,19 @@ function safeTraceName(sourcePath: string): string {
  * write many traces for the same source note across rounds, unlike bench's
  * one-trace-per-case-per-report model). Callers must only invoke this when
  * `traceDirectory` is a non-empty string -- see tier-pipeline.ts's
- * writePluginTraceIfConfigured, which is the single call site and the one
- * place that decision is made.
+ * writePluginTraceIfConfigured and the batch runner both gate writes on it.
  */
 export function writePluginPipelineTrace(trace: PluginPipelineTrace, traceDirectory: string): string {
-  const fs = getNodeRequire()("fs") as typeof import("fs");
-  const path = getNodeRequire()("path") as typeof import("path");
   fs.mkdirSync(traceDirectory, { recursive: true });
-  const baseName = safeTraceName(trace.case.id);
-  const tracePath = path.join(traceDirectory, `${baseName}.json`);
-  fs.writeFileSync(tracePath, `${JSON.stringify(trace, null, 2)}\n`);
-  return tracePath;
+  const baseName = traceFileBaseName(trace.case.title || path.basename(trace.case.id, ".md"), trace.generated_at);
+  for (let attempt = 1; attempt <= 1000; attempt++) {
+    const tracePath = path.join(traceDirectory, `${baseName}${attempt === 1 ? "" : `-${attempt}`}.json`);
+    try {
+      fs.writeFileSync(tracePath, `${JSON.stringify(trace, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+      return tracePath;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error("Too many trace filename collisions");
 }
-

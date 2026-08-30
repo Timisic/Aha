@@ -28,6 +28,8 @@ import { createQmdCliRunner } from "../lib/core-node-deps.mjs";
 import { runFullPipeline } from "../lib/core-artifact.mjs";
 import { expandHome } from "../lib/vault-paths.mjs";
 import {
+  buildPluginPipelineTrace,
+  writePluginPipelineTrace,
   normalizeSessionStore,
   recordFailedSessionRound,
   recordSuccessfulSessionRound,
@@ -171,6 +173,7 @@ export async function loadPipelineConfig(dataJsonPath) {
     apiKey,
     model,
     protocol,
+    thinking: isDeepSeek ? "disabled" : undefined,
     timeoutMs: 120_000,
   };
 
@@ -240,6 +243,32 @@ export async function runOneNote(options, config, notePath) {
   const runPipeline = config.runPipeline ?? runFullPipeline;
   const result = await runPipeline(args, config.llmConfig, config.qmdDeps);
 
+  const traceDirectory = config.settings?.traceDirectory?.trim();
+  if (traceDirectory) {
+    try {
+      const trace = buildPluginPipelineTrace({
+        origin: "batch", sourcePath: notePath, sourceTitle: source.title, sourceText,
+        tier: "full", result,
+        queryPlan: result.queryPlanPromptVersion ? {
+          generatedBy: result.queryPlanGeneratedBy,
+          fallback: result.queryPlanFallback,
+          error: null,
+          promptVersion: result.queryPlanPromptVersion,
+          queries: result.queryPlanQueries,
+        } : undefined,
+        qmdQueryResults: result.qmdQueryResults,
+        pooledCandidates: result.pooledCandidates,
+      });
+      const tracePath = writePluginPipelineTrace(trace, traceDirectory);
+      result.trace = { path: tracePath, origin: "batch" };
+      (result.warnings ??= []).push(`Pipeline trace saved: ${tracePath}`);
+    } catch (error) {
+      const warning = `Pipeline trace write failed: ${error.code || "unknown error"}; directory: ${traceDirectory}`;
+      (result.warnings ??= []).push(warning);
+      console.warn(warning);
+    }
+  }
+
   const dataJsonPath = dataJsonPathFor(options.vaultRoot, options.pluginId);
   if (result.ok) {
     await readMergeWrite(dataJsonPath, (store) => {
@@ -253,6 +282,8 @@ export async function runOneNote(options, config, notePath) {
       generatedAt: new Date(),
       source,
       failure: result.error ?? { message: "Aha pipeline failed with no structured error.", tool: "pipeline" },
+      trace: result.trace,
+      warnings: result.warnings,
     });
   });
   return { ok: false, message: result.error?.message ?? "Aha pipeline failed." };

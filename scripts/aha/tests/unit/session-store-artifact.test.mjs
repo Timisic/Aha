@@ -19,6 +19,7 @@ import {
   recordSuccessfulSessionRound,
   sessionRecordKeyForSource,
   sourceIdentityForFile,
+  appendSessionFeedback,
 } from "../../../lib/session-artifact.mjs";
 
 function fakeSource(overrides = {}) {
@@ -162,6 +163,23 @@ test("normalizeSessionStore round-trips through JSON and keeps schemaVersion 1",
   const key = sessionRecordKeyForSource(source.id, source.path);
   assert.equal(roundTripped.records[key].rounds.length, 1);
   assert.equal(roundTripped.records[key].rounds[0].candidates[0].notePath, "Memory/Old.md");
+});
+
+test("trace reference survives warning limits, JSON reload and later panel feedback", () => {
+  const store = createEmptySessionStore();
+  const source = fakeSource();
+  const trace = { path: "/private/traces/笔记__20260830-220000.json", origin: "batch" };
+  const result = { ...fakeSuccessResult(), trace, warnings: Array.from({ length: 20 }, (_, i) => `warning ${i}`) };
+  recordSuccessfulSessionRound(store, { generatedAt: new Date(), result, source });
+  const reopened = normalizeSessionStore(JSON.parse(JSON.stringify(store)));
+  const key = sessionRecordKeyForSource(source.id, source.path);
+  const record = reopened.records[key];
+  assert.deepEqual(record.rounds[0].trace, trace);
+  appendSessionFeedback(record, { action: "surprise", createdAt: new Date(), sourcePath: source.path, sourceTitle: source.title, candidate: record.rounds[0].candidates[0] });
+  const reloaded = normalizeSessionStore(JSON.parse(JSON.stringify(reopened)));
+  assert.deepEqual(reloaded.records[key].rounds[0].trace, trace);
+  assert.equal(reloaded.records[key].feedback[0].action, "surprise");
+  assert.equal(reloaded.records[key].rounds[0].candidates.length, 1);
 });
 
 test("normalizeSessionStore discards a malformed value instead of throwing", () => {

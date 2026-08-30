@@ -29,7 +29,7 @@ import { parseQmdEnvironment, probeQmdAvailable, runQmdEmbed, runQmdStatus, runQ
 //     the single multi-line qmd environment field (qmdEnvironment, replacing
 //     the six discrete qmdRemote* fields in the UI).
 //   - Hidden developer settings (no UI row at all, data.json-only):
-//     traceDirectory, useFixtureResult, useLegacyWrapper.
+//     useFixtureResult, useLegacyWrapper.
 //   - Truly invisible / dead-but-still-functional (no UI row, data.json-only,
 //     NOT carried forward by migration): llmProvider (fixed to "deepseek",
 //     the only supported value), ahaWorkspace, wrapperRelativePath,
@@ -112,10 +112,10 @@ export interface AhaPluginSettings {
    */
   queryPromptOverride: string;
   /**
-   * Hidden developer setting (issue #59): when non-empty, each plugin
+   * Advanced setting: when non-empty, each plugin
    * search round writes a Pipeline Trace (ADR 0003, origin: "plugin") as a
    * JSON file under this directory. Empty/unset (the default) writes
-   * nothing. No settings-page row; only reachable via data.json.
+   * nothing. Batch runs honor the same directory, with origin: "batch".
    */
   traceDirectory: string;
 }
@@ -294,7 +294,7 @@ export class AhaSettingTab extends PluginSettingTab {
   // Obsidian's Setting API has no built-in collapsible section, so this
   // implements one directly: a toggle button that shows/hides a dedicated
   // sub-container. Collapsed by default (these are advanced, rarely-touched
-  // settings). Three items live inside: query-plan prompt override, qmd
+  // settings). Items include trace directory, query-plan prompt override, qmd
   // path override (qmdCommand), and the qmd environment field
   // (qmdEnvironment).
   private renderAdvancedSection(containerEl: HTMLElement): void {
@@ -306,7 +306,7 @@ export class AhaSettingTab extends PluginSettingTab {
 
     const toggle = new Setting(advancedContainer)
       .setName("Advanced")
-      .setDesc("QMD 路径与环境变量。")
+      .setDesc("查询提示词、Trace 保存目录、QMD 路径与环境变量。")
       .addButton((button) => button
         .setButtonText("Show advanced")
         .onClick(() => {
@@ -315,6 +315,17 @@ export class AhaSettingTab extends PluginSettingTab {
           button.setButtonText(expanded ? "Hide advanced" : "Show advanced");
         }));
     void toggle;
+
+    new Setting(body)
+      .setName("Trace directory")
+      .setDesc("每轮搜索保存 JSON trace 的绝对目录；留空关闭。包含笔记摘录，建议放在 vault 外。")
+      .addText((text) => text
+        .setPlaceholder("/absolute/path/to/traces")
+        .setValue(this.plugin.settings.traceDirectory)
+        .onChange(async (value) => {
+          this.plugin.settings.traceDirectory = value.trim();
+          await this.plugin.saveSettings();
+        }));
 
     new Setting(body)
       .setName("Query prompt override")

@@ -160,7 +160,7 @@ interface QueryPlanTraceMetadata {
   fallback: boolean;
   error: string | null;
   promptVersion: string;
-  queries?: Array<{ kind: string; command: string; text: string }>;
+  queries?: NonNullable<BuildPluginPipelineTraceInput["queryPlan"]>["queries"];
 }
 
 /** Writes a plugin-origin Pipeline Trace only when settings.traceDirectory is a non-empty string; otherwise does nothing (no filesystem access at all). */
@@ -183,8 +183,15 @@ function writePluginTraceIfConfigured(
     qmdQueryResults,
     pooledCandidates,
   };
-  const trace = buildPluginPipelineTrace(traceInput);
-  writePluginPipelineTrace(trace, traceDirectory);
+  try {
+    const trace = buildPluginPipelineTrace(traceInput);
+    const tracePath = writePluginPipelineTrace(trace, traceDirectory);
+    outcome.result.trace = { path: tracePath, origin: "plugin" };
+    (outcome.result.warnings ??= []).push(`Pipeline trace saved: ${tracePath}`);
+  } catch (error) {
+    const code = (error as { code?: string })?.code;
+    (outcome.result.warnings ??= []).push(`Pipeline trace write failed: ${code || "unknown error"}; directory: ${traceDirectory}`);
+  }
 }
 
 /**
@@ -264,7 +271,7 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
     fallback: fullResult.queryPlanFallback,
     error: null,
     promptVersion: fullResult.queryPlanPromptVersion,
-    queries: fullResult.queryPlanQueries.map((q) => ({ kind: q.kind, command: q.command, text: q.text })),
+    queries: fullResult.queryPlanQueries,
   }, fullResult.qmdQueryResults, fullResult.pooledCandidates);
   return outcome;
 }

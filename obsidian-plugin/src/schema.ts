@@ -29,6 +29,7 @@ export interface AhaWrapperFailure {
 }
 
 export interface AhaWrapperResult {
+  trace?: AhaTraceReference;
   ok: boolean;
   sourcePath?: string;
   generatedAt?: string;
@@ -36,6 +37,12 @@ export interface AhaWrapperResult {
   candidates?: AhaCandidate[];
   warnings?: string[];
   error?: AhaWrapperFailure;
+}
+
+/** Compact locator only; prompts and retrieval details stay outside data.json. */
+export interface AhaTraceReference {
+  path: string;
+  origin: "plugin" | "batch";
 }
 
 export interface ValidationResult {

@@ -25,10 +25,11 @@ function exportedFunctionNames(fileName) {
   return names;
 }
 
-test("session-artifact.mjs re-exports exactly the exported functions of session-store.ts and source-identity.ts", () => {
+test("session-artifact.mjs re-exports the shared session, identity, and trace functions", () => {
   const expected = [
     ...exportedFunctionNames("session-store.ts"),
     ...exportedFunctionNames("source-identity.ts"),
+    ...exportedFunctionNames("pipeline-trace.ts"),
   ].sort();
 
   assert.ok(expected.length > 0, "sanity: the source-file scan must find at least one exported function");

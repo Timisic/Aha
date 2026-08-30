@@ -177,3 +177,16 @@ test("writePluginPipelineTrace creates the directory and writes a schema-valid J
     await rm(temp, { recursive: true, force: true });
   }
 });
+
+test("trace filenames retain Chinese titles and distinguish same-second runs without hashes", async () => {
+  const { buildPluginPipelineTrace, writePluginPipelineTrace } = await loadModule();
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-trace-name-"));
+  try {
+    const trace = buildPluginPipelineTrace({ sourcePath: "Folder/独处与实践.md", sourceTitle: "独处与实践", sourceText: "text", tier: "full", result: baseResult });
+    const first = writePluginPipelineTrace(trace, temp);
+    const second = writePluginPipelineTrace(trace, temp);
+    assert.match(path.basename(first), /^独处与实践__\d{8}-\d{6}\.json$/);
+    assert.notEqual(first, second);
+    assert.equal((await readdir(temp)).length, 2);
+  } finally { await rm(temp, { recursive: true, force: true }); }
+});

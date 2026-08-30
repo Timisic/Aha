@@ -8,3 +8,4 @@
 
 export * from "./session-store";
 export * from "./source-identity";
+export { buildPluginPipelineTrace, writePluginPipelineTrace, traceFileBaseName } from "./pipeline-trace";

@@ -1,4 +1,4 @@
-import type { AhaCandidate, AhaWrapperFailure, AhaWrapperResult } from "./schema";
+import type { AhaCandidate, AhaWrapperFailure, AhaWrapperResult, AhaTraceReference } from "./schema";
 import {
   renderGrillHandoff,
   seedLabelForAction,
@@ -36,6 +36,7 @@ export interface AhaSessionSource {
 export type AhaSessionRoundStatus = "running" | "success" | "failed";
 
 export interface AhaSessionRound {
+  trace?: AhaTraceReference;
   id: string;
   status: AhaSessionRoundStatus;
   generatedAt: string;
@@ -76,6 +77,8 @@ export interface RecordSuccessfulSessionRoundInput {
 }
 
 export interface RecordFailedSessionRoundInput {
+  trace?: AhaTraceReference;
+  warnings?: string[];
   generatedAt: Date;
   failure: AhaWrapperFailure;
   source: AhaSessionSourceInput;
@@ -199,6 +202,7 @@ export function recordSuccessfulSessionRound(store: AhaSessionStoreData, input: 
     sourceSnapshot: sourceSnapshot(input.source),
     summary: compactText(input.result.summary?.trim() || "Aha completed a memory search round.", MAX_SUMMARY_LENGTH),
     warnings: compactWarnings(input.result.warnings ?? []),
+    trace: normalizeTraceReference(input.result.trace),
     candidates,
     // Runtime Tier Fallback (issue #58): a successful round can still carry
     // a structured failure record (e.g. Full Tier's Relation Judge failing
@@ -224,7 +228,8 @@ export function recordFailedSessionRound(store: AhaSessionStoreData, input: Reco
     sourceTitle: input.source.title,
     sourceSnapshot: sourceSnapshot(input.source),
     summary: input.failure.message.trim() || "Aha wrapper failed.",
-    warnings: [],
+    warnings: compactWarnings(input.warnings ?? []),
+    trace: normalizeTraceReference(input.trace),
     candidates: [],
     error: compactFailure(input.failure),
   });
@@ -447,12 +452,19 @@ function normalizeRound(value: unknown): AhaSessionRound | null {
     generatedAt: value.generatedAt,
     sourcePath,
     sourceTitle,
+    trace: normalizeTraceReference(value.trace),
     sourceSnapshot: isRecord(value.sourceSnapshot) ? normalizeSourceSnapshot(value.sourceSnapshot, sourcePath) : { path: sourcePath },
     summary: typeof value.summary === "string" ? value.summary : undefined,
     warnings: Array.isArray(value.warnings) ? value.warnings.filter((warning): warning is string => typeof warning === "string") : [],
     candidates: Array.isArray(value.candidates) ? value.candidates.map(normalizeCandidate).filter((candidate): candidate is ReviewPanelCandidate => Boolean(candidate)) : [],
     error: isRecord(value.error) ? normalizeFailure(value.error) : undefined,
   };
+}
+
+function normalizeTraceReference(value: unknown): AhaTraceReference | undefined {
+  if (!isRecord(value) || typeof value.path !== "string" || !value.path.trim()) return undefined;
+  if (value.origin !== "plugin" && value.origin !== "batch") return undefined;
+  return { path: value.path, origin: value.origin };
 }
 
 function normalizeCandidate(value: unknown): ReviewPanelCandidate | null {

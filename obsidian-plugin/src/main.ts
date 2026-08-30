@@ -221,6 +221,8 @@ export default class AhaPlugin extends Plugin {
           generatedAt: new Date(),
           source,
           failure,
+          trace: validation.result.trace,
+          warnings: validation.result.warnings,
         });
         await this.saveSettings();
         await this.openReviewPanel(this.reviewPanelContextForSource(source));

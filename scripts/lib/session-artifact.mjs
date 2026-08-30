@@ -29,6 +29,10 @@ if (build.status !== 0) {
 
 const session = await import(pathToFileURL(artifactPath).href);
 
+export const buildPluginPipelineTrace = session.buildPluginPipelineTrace;
+export const writePluginPipelineTrace = session.writePluginPipelineTrace;
+export const traceFileBaseName = session.traceFileBaseName;
+
 // --- session-store ---
 
 export const createEmptySessionStore = session.createEmptySessionStore;

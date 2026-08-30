@@ -198,7 +198,7 @@ test("with traceDirectory set, a search round writes a schema-valid trace with p
     const { runTieredSearch } = await loadModule();
     const traceDirectory = path.join(temp, "traces");
     const settings = baseSettings({ qmdCommand: fakeQmd, traceDirectory });
-    await runTieredSearch(tieredSearchInput({ vaultRoot, settings }));
+    const outcome = await runTieredSearch(tieredSearchInput({ vaultRoot, settings }));
 
     const files = await readdir(traceDirectory);
     assert.equal(files.length, 1);
@@ -208,6 +208,18 @@ test("with traceDirectory set, a search round writes a schema-valid trace with p
     assert.equal(trace.origin, "plugin");
     assert.equal(trace.case.id, "Source.md");
     assert.equal(trace.steps.query_generation.generated_by, "rules");
+    assert.equal(outcome.result.trace.path, path.join(traceDirectory, files[0]));
+  });
+});
+
+test("QMD slug paths resolve to actual notes before source filtering and judging", async () => {
+  await withTestVault(async ({ vaultRoot, fakeQmd }) => {
+    await writeFile(path.join(vaultRoot, "Memory/Old Note.md"), "An old note with concrete practice and feedback experiences.");
+    await writeFile(fakeQmd, '#!/bin/sh\necho \'[{"file":"qmd://obsidian/Memory/Old-Note.md","score":1},{"file":"qmd://obsidian/Source.md","score":0.9}]\'\n');
+    const { runTieredSearch } = await loadModule();
+    const outcome = await runTieredSearch(tieredSearchInput({ vaultRoot, settings: baseSettings({ qmdCommand: fakeQmd }) }));
+    assert.equal(outcome.result.ok, true);
+    assert.deepEqual(outcome.result.candidates.map(c => c.notePath), ["Memory/Old Note.md"]);
   });
 });
 
@@ -219,6 +231,19 @@ test("with traceDirectory unset, a search round writes nothing (no filesystem wr
     await runTieredSearch(tieredSearchInput({ vaultRoot, settings }));
 
     await assert.rejects(readdir(traceDirectory), /ENOENT/);
+  });
+});
+
+test("trace write failure is visible but does not discard a successful search", async () => {
+  await withTestVault(async ({ vaultRoot, fakeQmd, temp }) => {
+    const { runTieredSearch } = await loadModule();
+    const traceDirectory = path.join(temp, "not-a-directory");
+    await writeFile(traceDirectory, "existing file");
+    const settings = baseSettings({ qmdCommand: fakeQmd, traceDirectory });
+    const outcome = await runTieredSearch(tieredSearchInput({ vaultRoot, settings }));
+    assert.equal(outcome.result.ok, true);
+    assert.ok(outcome.result.candidates.length > 0);
+    assert.ok(outcome.result.warnings.some(w => w.startsWith("Pipeline trace write failed:")));
   });
 });
 
