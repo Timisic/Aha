@@ -18,6 +18,7 @@ import {
   main,
   parseArgs,
   runBatch,
+  runOneNote,
 } from "../../../dev/run-batch-vault.mjs";
 
 async function makeVault() {
@@ -43,6 +44,24 @@ function fakeSuccessResult(sourcePath) {
     candidates: [{ notePath: "Memory/Old.md", relation: "supports", hit: "hit", why: "why", quotes: [] }],
   };
 }
+
+test("batch forwards the Obsidian command to the real core graph-expansion dependency", async () => {
+  const vaultRoot = await makeVault();
+  const pluginId = "aha-memory-surface-dev";
+  try {
+    await writeFile(path.join(vaultRoot, "note.md"), "A source note.");
+    await writeDataJson(vaultRoot, pluginId, {});
+    for (const configured of ["/custom/bin/obsidian", ""]) {
+      await runOneNote({ vaultRoot, pluginId }, {
+        settings: { obsidianCommand: configured },
+        runPipeline: async args => {
+          assert.equal(args.obsidianCommand, configured || "obsidian");
+          return fakeSuccessResult(args.sourcePath);
+        },
+      }, "note.md");
+    }
+  } finally { await rm(vaultRoot, { recursive: true, force: true }); }
+});
 
 test("batch honors traceDirectory and writes a trace for each completed round", async () => {
   const vaultRoot = await makeVault();

@@ -232,6 +232,7 @@ export async function runOneNote(options, config, notePath) {
     sourceText,
     sourceAbsolutePath: absolutePath,
     vaultRoot: options.vaultRoot,
+    obsidianCommand: config.settings?.obsidianCommand?.trim() || "obsidian",
     reviewPath: "Aha/Reviews/placeholder.md",
     id: notePath,
     displayName: "Aha",
@@ -366,8 +367,8 @@ export async function main() {
   }
 
   console.log(
-    "\nWARNING: Obsidian must be closed for this run (data.json is Obsidian's own save target;",
-    "an open Obsidian can overwrite what this script writes). Reload the plugin after this finishes.\n",
+    "\nWARNING: Disable the target Aha plugin during this run so it cannot overwrite data.json.",
+    "Keep Obsidian open for link/backlink queries; re-enable Aha after the batch finishes.\n",
   );
 
   const dataJsonPath = dataJsonPathFor(options.vaultRoot, options.pluginId);
