@@ -1,4 +1,6 @@
 import { App, ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, setIcon } from "obsidian";
+import { candidateHit } from "./core/candidate-hit";
+import { savedReviewActions } from "./review-feedback";
 import {
   handoffForRound,
   latestSuccessfulRound,
@@ -44,6 +46,8 @@ export class AhaReviewPanelView extends ItemView {
   private status = "";
   private stale = false;
   private fallbackWarning = "";
+  private traceStatus = "";
+  private pendingFeedback = new Set<string>();
   private pinned = false;
   private countEl?: HTMLElement;
   private copyButton?: HTMLButtonElement;
@@ -71,6 +75,7 @@ export class AhaReviewPanelView extends ItemView {
   }
 
   async refresh(): Promise<void> {
+    this.traceStatus = "";
     if (!this.context) {
       this.stale = false;
       this.renderEmpty("未选择 source note");
@@ -88,6 +93,9 @@ export class AhaReviewPanelView extends ItemView {
     }
 
     const latestRun = record.rounds.at(-1);
+    this.traceStatus = latestRun?.trace
+      ? `Pipeline trace saved: ${latestRun.trace.path}`
+      : latestRun?.warnings?.find(w => w.startsWith("Pipeline trace ")) ?? "";
     this.status = latestRun?.status ?? "";
     const latest = latestSuccessfulRound(record);
     if (!latest || latest.candidates.length === 0) {
@@ -118,6 +126,7 @@ export class AhaReviewPanelView extends ItemView {
     this.contentEl.empty();
     const root = this.contentEl.createDiv({ cls: "aha-review-panel" });
     this.renderHeader(root, { showPin: true });
+    this.renderTraceStatus(root);
     root.createDiv({ cls: "aha-review-panel-empty", text: message });
     if (!this.context) return;
 
@@ -158,6 +167,7 @@ export class AhaReviewPanelView extends ItemView {
     this.renderHeader(root, { showRun: true, showMissingMemorySeed: true, showPin: true });
     this.renderStaleCue(root);
     this.renderFallbackWarning(root);
+    this.renderTraceStatus(root);
 
     const table = root.createDiv({ cls: "aha-review-panel-table", attr: { role: "table" } });
     const headerRow = table.createDiv({ cls: "aha-review-panel-row aha-review-panel-head", attr: { role: "row" } });
@@ -189,6 +199,14 @@ export class AhaReviewPanelView extends ItemView {
     if (!this.context || !this.stale) return;
     const cue = root.createDiv({ cls: "aha-review-panel-stale" });
     cue.createSpan({ text: "源笔记已更新" });
+  }
+
+  private renderTraceStatus(root: HTMLElement): void {
+    if (!this.traceStatus) return;
+    const details = root.createEl("details", { cls: "aha-review-panel-hit" });
+    details.createEl("summary", { text: this.traceStatus.startsWith("Pipeline trace saved:") ? "Trace 已保存" : "Trace 保存失败" });
+    details.createDiv({ text: this.traceStatus });
+    if (this.traceStatus.startsWith("Pipeline trace write failed:")) details.open = true;
   }
 
   private renderFallbackWarning(root: HTMLElement): void {
@@ -276,11 +294,12 @@ export class AhaReviewPanelView extends ItemView {
     const cell = row.createDiv({ cls: "aha-review-panel-cell aha-review-panel-reason", attr: { role: "cell" } });
     cell.createDiv({ text: candidate.why || candidate.hit, cls: "aha-review-panel-reason-text" });
     this.renderSeedActions(cell, candidate);
-    if (!candidate.hit && candidate.quotes.length === 0) return;
+    const hit = candidateHit(candidate);
+    if (!hit) return;
 
     const details = cell.createEl("details", { cls: "aha-review-panel-hit" });
     details.createEl("summary", { text: "hit" });
-    details.createDiv({ text: candidate.hit || candidate.quotes[0] });
+    details.createDiv({ text: hit });
   }
 
   private renderSeedActions(cell: HTMLElement, candidate: ReviewPanelCandidate): void {
@@ -295,14 +314,43 @@ export class AhaReviewPanelView extends ItemView {
       text,
       cls: "aha-review-panel-seed-button",
       title: SEED_BUTTON_TITLE[action],
+      attr: { "data-action": action },
     });
-    button.addEventListener("click", () => {
-      void this.recordCandidateSeed(action, candidate);
+    this.updateSeedButton(button, action, candidate);
+    button.addEventListener("click", async () => {
+      if (!this.context || button.getAttribute("aria-pressed") === "true") return;
+      const recordKey = this.context.recordKey;
+      const pendingKey = `${recordKey}\n${candidate.notePath}`;
+      if (this.pendingFeedback.has(pendingKey)) return;
+      this.pendingFeedback.add(pendingKey);
+      parent.querySelectorAll("button").forEach(b => { b.disabled = true; });
+      button.setAttribute("aria-busy", "true");
+      try {
+        const saved = await this.recordCandidateSeed(action, candidate);
+        if (saved && this.context?.recordKey === recordKey) {
+          parent.querySelectorAll<HTMLButtonElement>("button[data-action]").forEach(b => {
+            this.updateSeedButton(b, b.dataset.action as typeof action, candidate);
+          });
+        }
+      } finally {
+        this.pendingFeedback.delete(pendingKey);
+        parent.querySelectorAll("button").forEach(b => { b.disabled = false; });
+        button.removeAttribute("aria-busy");
+      }
     });
   }
 
-  private async recordCandidateSeed(action: Exclude<ReviewBenchmarkSeedAction, "should_have_found">, candidate: ReviewPanelCandidate): Promise<void> {
-    if (!this.context) return;
+  private updateSeedButton(button: HTMLButtonElement, action: Exclude<ReviewBenchmarkSeedAction, "should_have_found">, candidate: ReviewPanelCandidate): void {
+    const record = this.context ? this.host.loadSessionRecord(this.context.recordKey) : null;
+    const marked = savedReviewActions(record?.feedback ?? [], candidate.notePath).has(action);
+    button.classList.toggle("is-marked", marked);
+    button.setAttribute("aria-pressed", String(marked));
+    button.setText(`${marked ? "✓ " : ""}${action === "reject_as_noise" ? "noise" : action}`);
+    button.title = marked ? "已标注并保存，重复点击不会再次记录" : SEED_BUTTON_TITLE[action];
+  }
+
+  private async recordCandidateSeed(action: Exclude<ReviewBenchmarkSeedAction, "should_have_found">, candidate: ReviewPanelCandidate): Promise<boolean> {
+    if (!this.context) return false;
     try {
       await this.host.recordSessionFeedback(this.context.recordKey, {
         action,
@@ -316,9 +364,11 @@ export class AhaReviewPanelView extends ItemView {
         this.updateCount();
       }
       new Notice(`已记录 ${action} 草稿 seed。`, 3000);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`Aha seed 写回失败：${message}`, 8000);
+      return false;
     }
   }
 

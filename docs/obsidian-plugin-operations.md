@@ -23,6 +23,27 @@
 - 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径（realpath 校验），避免把 vault 外文件内容带入 Relation Judge prompt。
 - 默认排除目录为 `templates`、`Aha/Reviews`（`DEFAULT_EXCLUDED_CANDIDATE_FOLDERS` in `core/candidates.ts`），可用设置里的 Excluded folders 或 Node 侧的 `AHA_EXCLUDED_FOLDERS` 扩展。
 - 目标候选数在设置 slider 与 wrapper CLI 层都限制在 15-20。
+- `hit` 是命中材料，不是文件定位符。Full Tier 的弱关系没有引句时允许 `hit: ""`；不得用 `notePath` 兜底。面板和 Handoff 也会隐藏旧 Session Record 中的路径型 hit，不修改历史反馈或选择。
+
+## Trace 与开发安装
+
+- Advanced → **Trace directory** 设置 JSON 保存目录；留空关闭。当前本机使用 `/Users/hong/Downloads/Pi/traces`，不在 Obsidian vault 内。文件含有限的源笔记摘录，应按私有资料处理。
+- 插件每轮返回结果后写 trace，面板显示可展开的保存路径。写入失败会显示警告，保留已经完成的搜索结果。进程退出或管线抛出未返回结果的异常仍可能没有完整 trace。
+- 文件名统一为 `标题__YYYYMMDD-HHmmss.json`（本机时区），同秒同名时追加 `-2`、`-3`，不再拼接路径 hash、毫秒数或 UUID。JSON 内的 `generated_at` 使用 ISO 时间。
+- 每个 Session Round 的 `trace: { path, origin }` 保存独立引用，不受 warning 数量截断影响；失败轮次也保留引用。`data.json` 仍只保存候选、标注与引用，不塞入完整 trace。Full Tier trace 保存完整结构化 query 与执行文本，并以 `q1`、`q2` 等区分同 kind 查询。
+- 历史改名工具：`node scripts/dev/rename-traces.mjs traces` 默认只预览；`--apply` 会先备份和保存映射，再改名，不重写 JSON 证据。运行中的插件应通过自身的 `saveSettings()` 更新 Session Store 引用，不能与插件并发覆盖 `data.json`。
+- `scripts/dev/run-batch-vault.mjs` 同样读取该设置并写入 trace，标记 `origin: "batch"`；界面触发的运行标记 `origin: "plugin"`。历史缺失的 trace 不能从 Session Store 还原为完整检索过程，不做伪造回填。
+- `npm run build` 只生成本仓库构建，不会安装到真实 vault。`npm run dev:install` 构建并安装到 `~/Obsidian Notes/.obsidian/plugins/aha-memory-surface-dev`，不覆盖 `data.json` 或正式插件。随后执行 `obsidian plugin:reload id=aha-memory-surface-dev`；其他 vault 可通过 `AHA_DEV_VAULT_ROOT` 指定。
+- 2026-08-30 排查：真实 vault 启用的 Dev 构建尚无 `surprise`，但 Git 提交 `83b72a3` 已包含该按钮。旧代码还把缺失 hit 回填为候选路径；批量入口只写 Session Store、不写 trace。这些分别通过真实界面检查、Judge/Handoff 回归和批量 trace 回归复现。当天 21:40、21:42 的界面搜索已有 trace，不能把历史缺口概括为插件全面停止写入。
+- 同日 trace 重放进一步发现 QMD 把空格/标点转换为连字符，导致 URI 对应的真实笔记在路径过滤时丢失。现在逐级解析完整路径，只接受唯一匹配，保留 realpath 的 vault 边界、歧义拒绝和源笔记排除；插件和批量共享该逻辑。同一份原始召回重放，池从 19 恢复到 40，新增 21 篇，源笔记仍被排除。这是路径修复结果，不是 query 优化效果。
+
+## 批量启动门槛
+
+- **批量笔记清单必须由用户确认，确认前只允许列单和 dry-run。** 本次没有启动正式批量，也没有擅自选择新笔记。
+- CLI 批量写入的是指定 plugin id 的 Session Store；必须与随后打开的插件一致（本机当前为 `aha-memory-surface-dev`）。执行期间停用该插件或关闭 Obsidian，避免后台插件覆盖批量结果；完成后重新启用/重载，再打开对应源笔记的 Aha Panel，无需手动导入。
+- 标注按钮直接保存到该源笔记的 Session Record，`surprise` 与 `accept/noise` 独立。完整 trace 留在配置目录，Panel 候选与反馈留在 `data.json`。生成模型的 relation 不是用户金标准，不能据此宣称准确率。
+- 已保存的按钮使用高亮与 `✓` 显示，并设置 `aria-pressed`；重新打开 Panel 或重载插件后从反馈恢复。`surprise` 独立高亮，`accept/noise` 取最近一次分类。重复点击当前高亮动作不会重复记录，保存中暂时禁用同一候选的反馈按钮；保存失败不会更新高亮。所有可点击控件使用手形光标。
+- 2026-08-30 用户已授权本次重跑 `个人复盘/2026月复盘/8月` 下除 `2026-08-01 离家回京独自一人没法从根本改变什么.md` 外的全部笔记；执行前按文件列表固定本次范围，不以旧结果是否存在跳过。
 
 ## 身份与幂等
 

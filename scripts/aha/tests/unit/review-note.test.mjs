@@ -10,6 +10,46 @@ const repoRoot = path.resolve(import.meta.dirname, "../../../..");
 const requireFromPlugin = createRequire(path.join(repoRoot, "obsidian-plugin/package.json"));
 const esbuild = requireFromPlugin("esbuild");
 
+test("saved button state restores surprise independently and follows the last classification", async () => {
+  const { savedReviewActions } = await loadTsModule("obsidian-plugin/src/review-feedback.ts");
+  const feedback = [
+    { action: "surprise", memory: "Memory/Old.md" },
+    { action: "accept", memory: "Memory/Old.md" },
+    { action: "reject_as_noise", memory: "Other.md" },
+  ];
+  assert.deepEqual([...savedReviewActions(feedback, "Memory/Old.md")].sort(), ["accept", "surprise"]);
+  const reopened = JSON.parse(JSON.stringify([...feedback, { action: "reject_as_noise", memory: "qmd://obsidian/Memory/Old.md" }]));
+  assert.deepEqual([...savedReviewActions(reopened, "Memory/Old.md")].sort(), ["reject_as_noise", "surprise"]);
+  reopened.push({ action: "should_have_found", memory: "Memory/Old.md" });
+  assert.deepEqual([...savedReviewActions(reopened, "Memory/Old.md")].sort(), ["should_have_found", "surprise"]);
+});
+
+test("handoff hides legacy path-only hits without changing stored review choices", async () => {
+  const { renderGrillHandoff } = await loadReviewNoteModule();
+  const candidate = { notePath: "Memory/Old.md", relation: "weak", hit: "Memory/Old.md", why: "没有直接作用于当前判断的引句。", quotes: [], selected: true };
+  const text = renderGrillHandoff("Source.md", "Source", [candidate]).join("\n");
+  assert.match(text, /\[\[Memory\/Old\]\]/);
+  assert.doesNotMatch(text, /hit: Memory\/Old\.md/);
+  assert.equal(candidate.hit, "Memory/Old.md");
+  assert.equal(candidate.selected, true);
+});
+
+test("candidate hit rejects locator variants but keeps quotes and ordinary percent text", async () => {
+  const { candidateHit } = await loadTsModule("obsidian-plugin/src/core/candidate-hit.ts");
+  for (const hit of ["Memory/Old.md", "[[Memory/Old]]", "qmd://obsidian/Memory/Old.md", "MEMORY/OLD"]) {
+    assert.equal(candidateHit({ notePath: "Memory/Old.md", hit, quotes: [] }), "");
+    assert.equal(candidateHit({ notePath: "Memory/Old.md", hit, quotes: ["An actual old judgment."] }), "An actual old judgment.");
+  }
+  assert.equal(candidateHit({ notePath: "Memory/Old.md", hit: "20% of the work is practice." }), "20% of the work is practice.");
+});
+
+test("empty hit is valid only for weak candidates, not a substitute for strong evidence", async () => {
+  const { validateAhaWrapperResult } = await loadTsModule("obsidian-plugin/src/schema.ts");
+  const candidate = { notePath: "Memory/Old.md", relation: "weak", hit: "", why: "There is no concrete quote linking this old note to the insight.", quotes: [] };
+  assert.equal(validateAhaWrapperResult({ ok: true, candidates: [candidate] }).ok, true);
+  assert.equal(validateAhaWrapperResult({ ok: true, candidates: [{ ...candidate, relation: "supports" }] }).ok, false);
+});
+
 test("renderGrillHandoff lists only selected candidates and stays quiet with none", async () => {
   const reviewNote = await loadReviewNoteModule();
   const candidates = [

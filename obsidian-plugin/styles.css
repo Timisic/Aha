@@ -3,6 +3,17 @@
   padding: 10px 12px 12px;
 }
 
+.aha-review-panel button:not(:disabled),
+.aha-review-panel a,
+.aha-review-panel summary,
+.aha-review-panel input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.aha-review-panel button:disabled {
+  cursor: wait;
+}
+
 .aha-review-panel h2 {
   margin: 0;
   font-size: var(--font-ui-medium);
@@ -250,6 +261,18 @@
 
 .aha-review-panel-seed-button:hover {
   background: var(--interactive-hover) !important;
+}
+
+.aha-review-panel-seed-button.is-marked,
+.aha-review-panel-seed-button.is-marked:hover {
+  background: var(--interactive-accent) !important;
+  color: var(--text-on-accent) !important;
+  font-weight: var(--font-semibold);
+}
+
+.aha-review-panel button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
 }
 
 .aha-review-panel-actions > .aha-review-panel-run,
