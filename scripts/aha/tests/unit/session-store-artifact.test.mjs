@@ -182,6 +182,40 @@ test("trace reference survives warning limits, JSON reload and later panel feedb
   assert.equal(reloaded.records[key].rounds[0].candidates.length, 1);
 });
 
+test("a backfilled rerun persists every displayed candidate and trace reference without clearing prior feedback", () => {
+  const store = createEmptySessionStore();
+  const source = fakeSource();
+  const first = fakeSuccessResult();
+  recordSuccessfulSessionRound(store, { generatedAt: new Date("2026-08-30T10:00:00.000Z"), result: first, source });
+  const key = sessionRecordKeyForSource(source.id, source.path);
+  appendSessionFeedback(store.records[key], {
+    action: "surprise",
+    createdAt: new Date("2026-08-30T10:05:00.000Z"),
+    sourcePath: source.path,
+    sourceTitle: source.title,
+    candidate: store.records[key].rounds[0].candidates[0],
+  });
+
+  const backfilled = fakeSuccessResult({
+    generatedAt: "2026-08-30T11:00:00.000Z",
+    trace: { path: "/private/traces/backfilled.json", origin: "plugin" },
+    candidates: [
+      first.candidates[0],
+      { ...first.candidates[0], notePath: "Memory/Weak.md", noteTitle: "Weak", relation: "weak", hit: "", quotes: [] },
+      { ...first.candidates[0], notePath: "Memory/Backfill.md", noteTitle: "Backfill", relation: "challenges" },
+    ],
+  });
+  recordSuccessfulSessionRound(store, { generatedAt: new Date(backfilled.generatedAt), result: backfilled, source });
+
+  const reloaded = normalizeSessionStore(JSON.parse(JSON.stringify(store)));
+  const record = reloaded.records[key];
+  const latest = record.rounds.find((round) => round.id === record.latestSuccessfulRoundId);
+  assert.deepEqual(latest.candidates.map((candidate) => candidate.notePath), ["Memory/Old.md", "Memory/Backfill.md", "Memory/Weak.md"]);
+  assert.deepEqual(latest.trace, backfilled.trace);
+  assert.equal(record.feedback.length, 1);
+  assert.equal(record.feedback[0].action, "surprise");
+});
+
 test("normalizeSessionStore discards a malformed value instead of throwing", () => {
   assert.deepEqual(normalizeSessionStore(null), createEmptySessionStore());
   assert.deepEqual(normalizeSessionStore({ schemaVersion: 2, records: {} }), createEmptySessionStore());

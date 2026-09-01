@@ -30,7 +30,8 @@
 //     the other fields. They are *also* converted into the new
 //     `qmdEnvironment` multi-line field for the new internalized pipeline
 //     (qmd-request.ts no longer reads the discrete fields at all).
-//   - New fields (excludedFolders, queryPromptOverride, traceDirectory) not
+//   - New fields (excludedFolders, queryPromptOverride, traceDirectory,
+//     relationJudgeBudget) not
 //     present in the old shape: set to their DEFAULT_SETTINGS value.
 
 import { DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
@@ -111,6 +112,7 @@ export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSetting
     deepseekApiKey: stringField(old.deepseekApiKey, DEFAULT_SETTINGS.deepseekApiKey),
     deepseekApiKeyEnv: stringField(old.deepseekApiKeyEnv, DEFAULT_SETTINGS.deepseekApiKeyEnv),
     targetCandidates: numberField(old.targetCandidates, DEFAULT_SETTINGS.targetCandidates),
+    relationJudgeBudget: numberField(old.relationJudgeBudget, DEFAULT_SETTINGS.relationJudgeBudget),
     qmdCommand: stringField(old.qmdCommand, DEFAULT_SETTINGS.qmdCommand),
     qmdIndex: stringField(old.qmdIndex, DEFAULT_SETTINGS.qmdIndex),
     qmdRerank: boolField(old.qmdRerank, DEFAULT_SETTINGS.qmdRerank),

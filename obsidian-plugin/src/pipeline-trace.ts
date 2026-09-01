@@ -7,6 +7,7 @@
 
 import type { AhaWrapperResult } from "./schema";
 import type { QmdQueryObject } from "./core/query-plan-deterministic";
+import type { RelationJudgeTrace } from "./core/orchestrator";
 import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -82,6 +83,36 @@ export interface PluginTracePooledCandidate {
   sources: Array<{ kind: string; command: string; rank: number; score: number | null }>;
 }
 
+export interface PluginTraceRelationJudgeBatch {
+  batch_index: number;
+  refill_source: "initial" | "weak_backfill";
+  pool_start_rank: number;
+  pool_end_rank: number;
+  candidate_paths: string[];
+  reviewed_count: number;
+  non_weak_count: number;
+  weak_count: number;
+  failed_count: number;
+  repaired_count: number;
+  call_count: number;
+  elapsed_ms: number;
+}
+
+export interface PluginTraceRelationJudgeBackfill {
+  target_non_weak_count: number;
+  budget: number;
+  pool_size: number;
+  reviewed_count: number;
+  non_weak_count: number;
+  weak_count: number;
+  failed_count: number;
+  repaired_count: number;
+  call_count: number;
+  elapsed_ms: number;
+  stop_reason: "target_reached" | "pool_exhausted" | "budget_exhausted";
+  batches: PluginTraceRelationJudgeBatch[];
+}
+
 export interface PluginPipelineTrace {
   generated_at: string;
   schema: typeof TRACE_SCHEMA;
@@ -104,6 +135,7 @@ export interface PluginPipelineTrace {
       fallback: null;
       error: null;
       ranked_ids: [];
+      backfill: PluginTraceRelationJudgeBackfill | null;
     };
     final_candidates: PluginTraceFinalCandidate[];
   };
@@ -140,6 +172,7 @@ export interface BuildPluginPipelineTraceInput {
     queryKinds: Set<string> | string[];
     sources: Array<{ kind: string; command: string; rank: number; score: number | null }>;
   }>;
+  relationJudgeTrace?: RelationJudgeTrace;
 }
 
 /**
@@ -225,6 +258,7 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
         fallback: null,
         error: null,
         ranked_ids: [],
+        backfill: input.relationJudgeTrace ? traceRelationJudgeBackfill(input.relationJudgeTrace) : null,
       },
       final_candidates: candidates.map((candidate, index) => ({
         rank: index + 1,
@@ -239,6 +273,36 @@ export function buildPluginPipelineTrace(input: BuildPluginPipelineTraceInput): 
     },
     gold_positions: null,
     diagnosis: null,
+  };
+}
+
+function traceRelationJudgeBackfill(value: RelationJudgeTrace): PluginTraceRelationJudgeBackfill {
+  return {
+    target_non_weak_count: value.targetNonWeakCount,
+    budget: value.budget,
+    pool_size: value.poolSize,
+    reviewed_count: value.reviewedCount,
+    non_weak_count: value.nonWeakCount,
+    weak_count: value.weakCount,
+    failed_count: value.failedCount,
+    repaired_count: value.repairedCount,
+    call_count: value.callCount,
+    elapsed_ms: value.elapsedMs,
+    stop_reason: value.stopReason,
+    batches: value.batches.map((batch) => ({
+      batch_index: batch.batchIndex,
+      refill_source: batch.refillSource,
+      pool_start_rank: batch.poolStartRank,
+      pool_end_rank: batch.poolEndRank,
+      candidate_paths: batch.candidatePaths,
+      reviewed_count: batch.reviewedCount,
+      non_weak_count: batch.nonWeakCount,
+      weak_count: batch.weakCount,
+      failed_count: batch.failedCount,
+      repaired_count: batch.repairedCount,
+      call_count: batch.callCount,
+      elapsed_ms: batch.elapsedMs,
+    })),
   };
 }
 

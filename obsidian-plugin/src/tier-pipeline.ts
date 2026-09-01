@@ -170,6 +170,7 @@ function writePluginTraceIfConfigured(
   queryPlan: QueryPlanTraceMetadata | undefined,
   qmdQueryResults?: BuildPluginPipelineTraceInput["qmdQueryResults"],
   pooledCandidates?: BuildPluginPipelineTraceInput["pooledCandidates"],
+  relationJudgeTrace?: BuildPluginPipelineTraceInput["relationJudgeTrace"],
 ): void {
   const traceDirectory = input.settings.traceDirectory?.trim();
   if (!traceDirectory) return;
@@ -182,6 +183,7 @@ function writePluginTraceIfConfigured(
     queryPlan,
     qmdQueryResults,
     pooledCandidates,
+    relationJudgeTrace,
   };
   try {
     const trace = buildPluginPipelineTrace(traceInput);
@@ -252,6 +254,7 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
       sourcePath: input.sourceFile.path,
       sourceText: input.sourceText,
       targetCandidates: settings.targetCandidates,
+      relationJudgeBudget: settings.relationJudgeBudget,
       excludedFolders: excludedFoldersFromSettings(settings.excludedFolders),
       queryPromptOverride: queryPromptOverrideFromSettings(settings.queryPromptOverride),
     },
@@ -272,6 +275,6 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
     error: null,
     promptVersion: fullResult.queryPlanPromptVersion,
     queries: fullResult.queryPlanQueries,
-  }, fullResult.qmdQueryResults, fullResult.pooledCandidates);
+  }, fullResult.qmdQueryResults, fullResult.pooledCandidates, fullResult.relationJudgeTrace);
   return outcome;
 }

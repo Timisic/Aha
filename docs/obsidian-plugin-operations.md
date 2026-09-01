@@ -22,7 +22,8 @@
 
 - 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径（realpath 校验），避免把 vault 外文件内容带入 Relation Judge prompt。
 - 默认排除目录为 `templates`、`Aha/Reviews`（`DEFAULT_EXCLUDED_CANDIDATE_FOLDERS` in `core/candidates.ts`），可用设置里的 Excluded folders 或 Node 侧的 `AHA_EXCLUDED_FOLDERS` 扩展。
-- 目标候选数在设置 slider 与 wrapper CLI 层都限制在 15-20。
+- Target candidates 表示希望得到的非 `weak` 候选数，设置 slider 范围为 15–20。Full Tier 首批按候选池顺序判断当前缺口数量，`weak` 或判断失败不满足目标，随后继续顺序补位。
+- Relation Judge budget 默认 40、设置范围 20–60，限制一轮最多判断的候选摘录数。达到非 weak 目标、候选池耗尽或预算耗尽即停止；不通过放宽关系或引句规则减少 `weak`。
 - `hit` 是命中材料，不是文件定位符。Full Tier 的弱关系没有引句时允许 `hit: ""`；不得用 `notePath` 兜底。面板和 Handoff 也会隐藏旧 Session Record 中的路径型 hit，不修改历史反馈或选择。
 
 ## Trace 与开发安装
@@ -30,7 +31,7 @@
 - Advanced → **Trace directory** 设置 JSON 保存目录；留空关闭。当前本机使用 `/Users/hong/Downloads/Pi/traces`，不在 Obsidian vault 内。文件含有限的源笔记摘录，应按私有资料处理。
 - 插件每轮返回结果后写 trace，面板显示可展开的保存路径。写入失败会显示警告，保留已经完成的搜索结果。进程退出或管线抛出未返回结果的异常仍可能没有完整 trace。
 - 文件名统一为 `标题__YYYYMMDD-HHmmss.json`（本机时区），同秒同名时追加 `-2`、`-3`，不再拼接路径 hash、毫秒数或 UUID。JSON 内的 `generated_at` 使用 ISO 时间。
-- 每个 Session Round 的 `trace: { path, origin }` 保存独立引用，不受 warning 数量截断影响；失败轮次也保留引用。`data.json` 仍只保存候选、标注与引用，不塞入完整 trace。Full Tier trace 保存完整结构化 query 与执行文本，并以 `q1`、`q2` 等区分同 kind 查询。
+- 每个 Session Round 的 `trace: { path, origin }` 保存独立引用，不受 warning 数量截断影响；失败轮次也保留引用。`data.json` 仍只保存候选、标注与引用，不塞入完整 trace。Full Tier trace 保存完整结构化 query 与执行文本，并以 `q1`、`q2` 等区分同 kind 查询；`steps.rerank.backfill` 另存每批判断、补位来源、停止原因、失败/修复数、API 调用次数和耗时。
 - 历史改名工具：`node scripts/dev/rename-traces.mjs traces` 默认只预览；`--apply` 会先备份和保存映射，再改名，不重写 JSON 证据。运行中的插件应通过自身的 `saveSettings()` 更新 Session Store 引用，不能与插件并发覆盖 `data.json`。
 - `scripts/dev/run-batch-vault.mjs` 同样读取该设置并写入 trace，标记 `origin: "batch"`；界面触发的运行标记 `origin: "plugin"`。历史缺失的 trace 不能从 Session Store 还原为完整检索过程，不做伪造回填。
 - `npm run build` 只生成本仓库构建，不会安装到真实 vault。`npm run dev:install` 构建并安装到 `~/Obsidian Notes/.obsidian/plugins/aha-memory-surface-dev`，不覆盖 `data.json` 或正式插件。随后执行 `obsidian plugin:reload id=aha-memory-surface-dev`；其他 vault 可通过 `AHA_DEV_VAULT_ROOT` 指定。

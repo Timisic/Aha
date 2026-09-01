@@ -69,6 +69,7 @@ test("carried fields keep their old values when present and well-typed", async (
     deepseekApiKey: "ds-custom",
     deepseekApiKeyEnv: "CUSTOM_DEEPSEEK_KEY",
     targetCandidates: 17,
+    relationJudgeBudget: 36,
     qmdCommand: "/opt/custom/qmd",
     qmdIndex: "custom-index",
     qmdRerank: true,
@@ -143,12 +144,13 @@ test("blank/absent qmdRemote* fields do not produce blank qmdEnvironment lines",
   assert.equal(migrated.qmdEnvironment, "QMD_REMOTE_EMBED_URL=https://embed.example/v1");
 });
 
-test("new fields (excludedFolders, queryPromptOverride, traceDirectory) default when absent from the old object", async () => {
+test("new fields (excludedFolders, queryPromptOverride, traceDirectory, relationJudgeBudget) default when absent from the old object", async () => {
   const { migrateAhaPluginSettings, DEFAULT_SETTINGS } = await loadModule();
   const migrated = migrateAhaPluginSettings({});
   assert.equal(migrated.excludedFolders, DEFAULT_SETTINGS.excludedFolders);
   assert.equal(migrated.queryPromptOverride, DEFAULT_SETTINGS.queryPromptOverride);
   assert.equal(migrated.traceDirectory, DEFAULT_SETTINGS.traceDirectory);
+  assert.equal(migrated.relationJudgeBudget, DEFAULT_SETTINGS.relationJudgeBudget);
   assert.equal(migrated.qmdEnvironment, DEFAULT_SETTINGS.qmdEnvironment);
 });
 
@@ -250,6 +252,7 @@ test("a copy of the real production settings object's key set migrates losslessl
   assert.equal(migrated.excludedFolders, DEFAULT_SETTINGS.excludedFolders);
   assert.equal(migrated.queryPromptOverride, DEFAULT_SETTINGS.queryPromptOverride);
   assert.equal(migrated.traceDirectory, DEFAULT_SETTINGS.traceDirectory);
+  assert.equal(migrated.relationJudgeBudget, DEFAULT_SETTINGS.relationJudgeBudget);
 });
 
 test("migrating an already-migrated object is a no-op (idempotency)", async () => {

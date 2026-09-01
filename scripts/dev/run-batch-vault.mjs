@@ -184,6 +184,7 @@ export async function loadPipelineConfig(dataJsonPath) {
     qmdDeps,
     llmConfig,
     targetCandidates: settings.targetCandidates || 20,
+    relationJudgeBudget: settings.relationJudgeBudget || 40,
     runPipeline: runFullPipeline,
   };
 }
@@ -238,6 +239,7 @@ export async function runOneNote(options, config, notePath) {
     displayName: "Aha",
     _resolved_insight_input: sourceText,
     targetCandidates: config.targetCandidates,
+    relationJudgeBudget: config.relationJudgeBudget,
     excludedFolders: config.excludedFolders,
   };
 
@@ -259,6 +261,7 @@ export async function runOneNote(options, config, notePath) {
         } : undefined,
         qmdQueryResults: result.qmdQueryResults,
         pooledCandidates: result.pooledCandidates,
+        relationJudgeTrace: result.relationJudgeTrace,
       });
       const tracePath = writePluginPipelineTrace(trace, traceDirectory);
       result.trace = { path: tracePath, origin: "batch" };

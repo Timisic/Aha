@@ -14,13 +14,13 @@ import { parseQmdEnvironment, probeQmdAvailable, runQmdEmbed, runQmdStatus, runQ
 // Settings convergence (issue #59). Field categories, recapped here so
 // display() and settings-migration.ts stay consistent with each other:
 //
-//   - Visible (four `new Setting(...)`-groups in display(), outside
+//   - Visible (five conceptual `new Setting(...)` groups in display(), outside
 //     Advanced): DeepSeek LLM group (base URL/model/key/key-env + test
 //     button, counted as ONE conceptual item -- the OpenAI provider option
 //     and its generic llm* fields were removed; DeepSeek is now the only
-//     supported API provider), review folder, target candidates, excluded
-//     folders.
-//   - Advanced (collapsed, three items -- query-plan prompt override lives
+//     supported API provider), target non-weak candidates, Relation Judge
+//     budget, and excluded folders.
+//   - Advanced (collapsed, four items -- query-plan prompt override lives
 //     here too, not in the visible section above; this note previously
 //     claimed otherwise): query-plan prompt override, qmd path override
 //     (qmdCommand -- confirmed by reading qmd-request.ts: this is the one
@@ -76,6 +76,8 @@ export interface AhaPluginSettings {
   obsidianCommand: string;
   wrapperRelativePath: string;
   targetCandidates: number;
+  /** Maximum candidate excerpts Relation Judge may review while backfilling weak results. */
+  relationJudgeBudget: number;
   useFixtureResult: boolean;
   /**
    * Hidden dev-only rollback switch (issue #58, now truly invisible per
@@ -142,6 +144,7 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   obsidianCommand: "obsidian",
   wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
   targetCandidates: 20,
+  relationJudgeBudget: 40,
   useFixtureResult: false,
   useLegacyWrapper: false,
   qmdEnvironment: "",
@@ -212,7 +215,7 @@ export class AhaSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Target candidates")
-      .setDesc("候选笔记数量上限。")
+      .setDesc("每轮希望得到的非 weak 候选数量。")
       .addSlider((slider) => slider
         .setLimits(15, 20, 1)
         .setValue(this.plugin.settings.targetCandidates)
@@ -222,9 +225,21 @@ export class AhaSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    new Setting(containerEl)
+      .setName("Relation Judge budget")
+      .setDesc("补位时最多判断的候选摘录数；达到目标、耗尽候选池或用完预算即停止。")
+      .addSlider((slider) => slider
+        .setLimits(20, 60, 1)
+        .setValue(this.plugin.settings.relationJudgeBudget)
+        .setDynamicTooltip()
+        .onChange(async (value) => {
+          this.plugin.settings.relationJudgeBudget = value;
+          await this.plugin.saveSettings();
+        }));
+
     this.textSetting("excludedFolders", "Excluded folders", "逗号分隔，排除这些文件夹的笔记。", { placeholder: DEFAULT_SETTINGS.excludedFolders });
 
-    // --- Advanced (collapsed, exactly two items) --------------------------
+    // --- Advanced (collapsed) ---------------------------------------------
     this.renderAdvancedSection(containerEl);
 
     // --- Health section (separate concern, not counted against the six

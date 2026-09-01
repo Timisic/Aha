@@ -71,6 +71,30 @@ function judgeSuccessJson(relation) {
   };
 }
 
+function judgeCandidateJson(notePath, relation, quote = "Evidence directly connects the old judgment to the current insight") {
+  return {
+    ok: true,
+    sourcePath: "Source.md",
+    generatedAt: null,
+    summary: "Judged one candidate.",
+    warnings: [],
+    error: null,
+    candidates: [
+      {
+        notePath,
+        noteTitle: path.basename(notePath, ".md"),
+        relation,
+        hit: relation === "weak" ? "" : quote,
+        why: relation === "weak"
+          ? "The excerpt does not directly act on the source judgment."
+          : "The quoted evidence directly acts on the source judgment.",
+        quotes: relation === "weak" ? [] : [quote],
+        selected: true,
+      },
+    ],
+  };
+}
+
 const vaultNotes = {
   "/vault/Memory/Feedback.md": "---\ntitle: Feedback\n---\nFeedback loops expose experience gaps and help judgment improve.\n",
 };
@@ -290,4 +314,139 @@ test("args.queryPromptOverride threads through to the query-plan LLM call and is
   assert.equal(result.ok, true);
   assert.equal(capturedInput, "CUSTOM ORCHESTRATOR OVERRIDE PROMPT");
   assert.equal(result.queryPlanPromptVersion, "aha-query-plan-custom-orchestratortest");
+});
+
+test("weak candidates trigger retrieval-order backfill until the non-weak target is reached", async () => {
+  const quote = "Evidence directly connects the old judgment to the current insight";
+  const rows = ["A", "B", "C", "D"].map((name, index) => ({
+    file: `Memory/${name}.md`,
+    title: name,
+    snippet: `${quote} ${name}`,
+    score: 1 - index / 10,
+  }));
+  for (const name of ["A", "B", "C", "D"]) {
+    vaultNotes[`/vault/Memory/${name}.md`] = `${quote} ${name}.`;
+  }
+  const deps = baseDeps({
+    httpScript: [
+      responsesEnvelope(validPlanJson),
+      responsesEnvelope(judgeCandidateJson("Memory/A.md", "weak")),
+      responsesEnvelope(judgeCandidateJson("Memory/B.md", "supports", quote)),
+      responsesEnvelope(judgeCandidateJson("Memory/C.md", "challenges", quote)),
+    ],
+    qmdRows: rows,
+  });
+
+  const result = await runFullPipeline(
+    { ...args, targetCandidates: 2, relationJudgeBudget: 4 },
+    llm,
+    deps,
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.notePath), [
+    "Memory/A.md",
+    "Memory/B.md",
+    "Memory/C.md",
+  ]);
+  assert.equal(result.candidates.filter((candidate) => candidate.relation !== "weak").length, 2);
+  assert.equal(result.relationJudgeTrace.stopReason, "target_reached");
+  assert.equal(result.relationJudgeTrace.callCount, 3);
+  assert.equal(result.relationJudgeTrace.reviewedCount, 3);
+  assert.equal(result.relationJudgeTrace.batches.length, 2);
+  assert.deepEqual(result.relationJudgeTrace.batches.map((batch) => batch.refillSource), ["initial", "weak_backfill"]);
+  assert.equal(result.relationJudgeTrace.batches[0].weakCount, 1);
+  assert.equal(result.relationJudgeTrace.batches[1].poolStartRank, 3);
+});
+
+test("backfill stops at the relation-judge budget and records the budget stop", async () => {
+  const quote = "Evidence directly connects the old judgment to the current insight";
+  const rows = ["A", "B", "C"].map((name, index) => ({
+    file: `Memory/${name}.md`, title: name, snippet: `${quote} ${name}`, score: 1 - index / 10,
+  }));
+  const deps = baseDeps({
+    httpScript: [
+      responsesEnvelope(validPlanJson),
+      responsesEnvelope(judgeCandidateJson("Memory/A.md", "weak")),
+      responsesEnvelope(judgeCandidateJson("Memory/B.md", "supports", quote)),
+    ],
+    qmdRows: rows,
+  });
+
+  const result = await runFullPipeline(
+    { ...args, targetCandidates: 2, relationJudgeBudget: 2 },
+    llm,
+    deps,
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.candidates.length, 2);
+  assert.equal(result.relationJudgeTrace.stopReason, "budget_exhausted");
+  assert.equal(result.relationJudgeTrace.callCount, 2);
+  assert.equal(result.relationJudgeTrace.nonWeakCount, 1);
+});
+
+test("backfill records pool exhaustion when too few non-weak candidates exist", async () => {
+  const quote = "Evidence directly connects the old judgment to the current insight";
+  vaultNotes["/vault/Memory/A.md"] = `${quote} A.`;
+  vaultNotes["/vault/Memory/B.md"] = `${quote} B.`;
+  const deps = baseDeps({
+    httpScript: [
+      responsesEnvelope(validPlanJson),
+      responsesEnvelope(judgeCandidateJson("Memory/A.md", "weak")),
+      responsesEnvelope(judgeCandidateJson("Memory/B.md", "supports", quote)),
+    ],
+    qmdRows: [
+      { file: "Memory/A.md", title: "A", snippet: `${quote} A`, score: 1 },
+      { file: "Memory/B.md", title: "B", snippet: `${quote} B`, score: 0.9 },
+    ],
+  });
+
+  const result = await runFullPipeline(
+    { ...args, targetCandidates: 3, relationJudgeBudget: 4 },
+    llm,
+    deps,
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.relationJudgeTrace.stopReason, "pool_exhausted");
+  assert.equal(result.relationJudgeTrace.poolSize, 2);
+  assert.equal(result.relationJudgeTrace.reviewedCount, 2);
+  assert.equal(result.relationJudgeTrace.nonWeakCount, 1);
+});
+
+test("partial judge failures remain separate from judged weak results while backfill recovers", async () => {
+  const quote = "Evidence directly connects the old judgment to the current insight";
+  const rows = ["A", "B", "C", "D"].map((name, index) => ({
+    file: `Memory/${name}.md`, title: name, snippet: `${quote} ${name}`, score: 1 - index / 10,
+  }));
+  for (const name of ["A", "B", "C", "D"]) {
+    vaultNotes[`/vault/Memory/${name}.md`] = `${quote} ${name}.`;
+  }
+  const deps = baseDeps({
+    httpScript: [
+      responsesEnvelope(validPlanJson),
+      { status: 401, bodyText: "unauthorized" },
+      responsesEnvelope(judgeCandidateJson("Memory/B.md", "weak")),
+      responsesEnvelope(judgeCandidateJson("Memory/C.md", "supports", quote)),
+      responsesEnvelope(judgeCandidateJson("Memory/D.md", "challenges", quote)),
+    ],
+    qmdRows: rows,
+  });
+
+  const result = await runFullPipeline(
+    { ...args, targetCandidates: 2, relationJudgeBudget: 4 },
+    llm,
+    deps,
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.relationJudgeTrace.stopReason, "target_reached");
+  assert.equal(result.relationJudgeTrace.reviewedCount, 4);
+  assert.equal(result.relationJudgeTrace.nonWeakCount, 2);
+  assert.equal(result.relationJudgeTrace.weakCount, 1);
+  assert.equal(result.relationJudgeTrace.failedCount, 1);
+  assert.equal(result.relationJudgeTrace.batches[0].weakCount, 1);
+  assert.equal(result.relationJudgeTrace.batches[0].failedCount, 1);
+  assert.ok(result.warnings.some((warning) => warning.includes("1 of 2 candidate(s) failed")));
 });

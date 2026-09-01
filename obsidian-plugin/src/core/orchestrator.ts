@@ -39,6 +39,8 @@ export interface OrchestratorArgs extends CandidateFilterArgs, DeterministicPlan
   sourcePath: string;
   sourceText: string;
   targetCandidates?: number;
+  /** Maximum candidate excerpts Relation Judge may review in one round. */
+  relationJudgeBudget?: number;
   excludedFolders?: readonly string[];
   vaultRootPrefix?: unknown;
   /**
@@ -101,6 +103,7 @@ export interface AhaResultSuccess {
   qmdQueryResults: QmdQueryOutcome[];
   /** Pool-merged candidates before Relation Judge, for trace diagnostics. */
   pooledCandidates: PooledCandidate[];
+  relationJudgeTrace: RelationJudgeTrace;
 }
 
 export interface AhaResultFailure {
@@ -119,27 +122,64 @@ export interface AhaResultFailure {
   qmdQueryResults: QmdQueryOutcome[];
   /** Pool-merged candidates before Relation Judge, for trace diagnostics. */
   pooledCandidates: PooledCandidate[];
+  relationJudgeTrace: RelationJudgeTrace;
 }
 
 export type AhaResult = AhaResultSuccess | AhaResultFailure;
 
 const DEFAULT_TARGET_CANDIDATES = 20;
+export const DEFAULT_RELATION_JUDGE_BUDGET = 40;
+
+export type RelationJudgeStopReason = "target_reached" | "pool_exhausted" | "budget_exhausted";
+
+export interface RelationJudgeBatchTrace {
+  batchIndex: number;
+  refillSource: "initial" | "weak_backfill";
+  poolStartRank: number;
+  poolEndRank: number;
+  candidatePaths: string[];
+  reviewedCount: number;
+  nonWeakCount: number;
+  weakCount: number;
+  failedCount: number;
+  repairedCount: number;
+  callCount: number;
+  elapsedMs: number;
+}
+
+export interface RelationJudgeTrace {
+  targetNonWeakCount: number;
+  budget: number;
+  poolSize: number;
+  reviewedCount: number;
+  nonWeakCount: number;
+  weakCount: number;
+  failedCount: number;
+  repairedCount: number;
+  callCount: number;
+  elapsedMs: number;
+  stopReason: RelationJudgeStopReason;
+  batches: RelationJudgeBatchTrace[];
+}
 
 /**
  * Runs the full Aha pipeline: LLM query planning (falling back to
  * deterministic rules on failure, #56/#57), QMD retrieval, candidate pool
  * merge/rank, candidate excerpt loading, and LLM Relation Judging — returning
  * the aha-result.schema.json shape on success or a structured failure. There
- * is no fake-success path: if Relation Judge fails, `ok` is false and `error`
- * is populated even though (weak, pre-judge) candidates are still attached
- * for diagnostics, matching the legacy wrapper's failure shape.
+ * Weak results are backfilled from the retrieval-ordered pool until the
+ * non-weak target, pool end, or review budget is reached. There is no
+ * fake-success path: if every attempted Relation Judge call fails, `ok` is
+ * false and `error` is populated even though weak candidates stay attached
+ * for diagnostics.
  */
 export async function runFullPipeline(
   args: OrchestratorArgs,
   llm: OrchestratorLlmConfig,
   deps: OrchestratorDeps,
 ): Promise<AhaResult> {
-  const targetCandidates = args.targetCandidates ?? DEFAULT_TARGET_CANDIDATES;
+  const targetCandidates = positiveInteger(args.targetCandidates, DEFAULT_TARGET_CANDIDATES);
+  const relationJudgeBudget = positiveInteger(args.relationJudgeBudget, DEFAULT_RELATION_JUDGE_BUDGET);
   const transportRequest = {
     baseUrl: llm.baseUrl,
     apiKey: llm.apiKey,
@@ -185,7 +225,7 @@ export async function runFullPipeline(
     },
     deps,
   );
-  const candidates = pooled.slice(0, targetCandidates).map(pipelineCandidate) as unknown as RelationJudgeCandidate[];
+  const candidates = pooled.map(pipelineCandidate) as unknown as RelationJudgeCandidate[];
 
   if (candidates.length === 0) {
     return {
@@ -212,67 +252,147 @@ export async function runFullPipeline(
       queryPlanQueries: planOutcome.queries,
       qmdQueryResults: queryResults,
       pooledCandidates: pooled,
+      relationJudgeTrace: emptyRelationJudgeTrace(targetCandidates, relationJudgeBudget, 0, "pool_exhausted"),
     };
   }
 
-  const candidateInputs: RelationJudgeCandidateInput[] = [];
   const excerptWarnings: string[] = [];
-  const substantiveCandidates: RelationJudgeCandidate[] = [];
-  for (const candidate of candidates) {
-    const excerpt = await readCandidateExcerpt(args, candidate, deps);
-    if (!excerpt) {
-      excerptWarnings.push(
-        `Could not read a vault-contained excerpt for ${candidate.notePath}; relation judging skipped this candidate.`,
-      );
-      continue;
+  const judgedCandidates: RelationJudgeCandidate[] = [];
+  const judgeWarnings: string[] = [];
+  const batches: RelationJudgeBatchTrace[] = [];
+  const judgeErrors: string[] = [];
+  let poolCursor = 0;
+  let reviewedCount = 0;
+  let nonWeakCount = 0;
+  let callCount = 0;
+  let failedCount = 0;
+  let repairedCount = 0;
+  let successfulJudgmentCount = 0;
+  const judgeStartedAt = Date.now();
+
+  while (
+    nonWeakCount < targetCandidates
+    && poolCursor < candidates.length
+    && reviewedCount < relationJudgeBudget
+  ) {
+    const batchIndex = batches.length + 1;
+    const poolStartRank = poolCursor + 1;
+    const desiredReviews = Math.min(
+      targetCandidates - nonWeakCount,
+      relationJudgeBudget - reviewedCount,
+    );
+    const batchCandidates: RelationJudgeCandidate[] = [];
+    const candidateInputs: RelationJudgeCandidateInput[] = [];
+
+    while (poolCursor < candidates.length && candidateInputs.length < desiredReviews) {
+      const candidate = candidates[poolCursor];
+      poolCursor += 1;
+      const excerpt = await readCandidateExcerpt(args, candidate, deps);
+      if (!excerpt) {
+        excerptWarnings.push(
+          `Could not read a vault-contained excerpt for ${candidate.notePath}; relation judging skipped this candidate.`,
+        );
+        continue;
+      }
+      if (!isSubstantiveExcerpt(excerpt)) {
+        excerptWarnings.push(
+          `Skipped ${candidate.notePath}: excerpt has no substantive text (template or empty note).`,
+        );
+        continue;
+      }
+      batchCandidates.push(candidate);
+      candidateInputs.push({
+        notePath: candidate.notePath,
+        noteTitle: candidate.noteTitle as string | undefined,
+        retrievalHit: candidate.hit as string | undefined,
+        retrievalWhy: candidate.why as string | undefined,
+        excerpt,
+      });
     }
-    if (!isSubstantiveExcerpt(excerpt)) {
-      excerptWarnings.push(
-        `Skipped ${candidate.notePath}: excerpt has no substantive text (template or empty note).`,
-      );
-      continue;
-    }
-    substantiveCandidates.push(candidate);
-    candidateInputs.push({
-      notePath: candidate.notePath,
-      noteTitle: candidate.noteTitle as string | undefined,
-      retrievalHit: candidate.hit as string | undefined,
-      retrievalWhy: candidate.why as string | undefined,
-      excerpt,
+
+    if (candidateInputs.length === 0) continue;
+
+    const batchStartedAt = Date.now();
+    const relationJudge = await judgeCandidateRelationsViaLlm(
+      {
+        sourcePath: args.sourcePath,
+        sourceText: args.sourceText,
+        candidates: batchCandidates,
+        candidateInputs,
+        generatedBy: "llm",
+      },
+      transportRequest,
+      deps,
+    );
+    const batchElapsedMs = Date.now() - batchStartedAt;
+    const batchFinalCandidates = relationJudge.candidates ?? batchCandidates;
+    const batchNonWeakCount = batchFinalCandidates.filter(isNonWeakCandidate).length;
+    const batchFailedCount = relationJudge.failedCount;
+
+    judgedCandidates.push(...batchFinalCandidates);
+    reviewedCount += candidateInputs.length;
+    nonWeakCount += batchNonWeakCount;
+    callCount += relationJudge.callCount;
+    failedCount += batchFailedCount;
+    repairedCount += relationJudge.repairedCount;
+    successfulJudgmentCount += candidateInputs.length - batchFailedCount;
+    judgeWarnings.push(...relationJudge.warnings);
+    if (!relationJudge.ok) judgeErrors.push(relationJudge.error);
+    batches.push({
+      batchIndex,
+      refillSource: batchIndex === 1 ? "initial" : "weak_backfill",
+      poolStartRank,
+      poolEndRank: poolCursor,
+      candidatePaths: batchCandidates.map((candidate) => candidate.notePath),
+      reviewedCount: candidateInputs.length,
+      nonWeakCount: batchNonWeakCount,
+      weakCount: Math.max(0, candidateInputs.length - batchNonWeakCount - batchFailedCount),
+      failedCount: batchFailedCount,
+      repairedCount: relationJudge.repairedCount,
+      callCount: relationJudge.callCount,
+      elapsedMs: batchElapsedMs,
     });
   }
 
-  const relationJudge = await judgeCandidateRelationsViaLlm(
-    {
-      sourcePath: args.sourcePath,
-      sourceText: args.sourceText,
-      candidates: substantiveCandidates,
-      candidateInputs,
-      generatedBy: "llm",
-    },
-    transportRequest,
-    deps,
-  );
-
-  const finalCandidates = (relationJudge.candidates ?? substantiveCandidates).map(stripInternalFields);
+  const stopReason: RelationJudgeStopReason = nonWeakCount >= targetCandidates
+    ? "target_reached"
+    : reviewedCount >= relationJudgeBudget
+      ? "budget_exhausted"
+      : "pool_exhausted";
+  const relationJudgeTrace: RelationJudgeTrace = {
+    targetNonWeakCount: targetCandidates,
+    budget: relationJudgeBudget,
+    poolSize: candidates.length,
+    reviewedCount,
+    nonWeakCount,
+    weakCount: Math.max(0, reviewedCount - nonWeakCount - failedCount),
+    failedCount,
+    repairedCount,
+    callCount,
+    elapsedMs: Date.now() - judgeStartedAt,
+    stopReason,
+    batches,
+  };
+  const finalCandidates = judgedCandidates.map(stripInternalFields);
   const plannerSummary = `LLM generated ${planOutcome.model_query_count} QMD query rewrites${
     planOutcome.fallback ? " (fallback rules used)" : ""
   }`;
-  const skippedCount = candidates.length - substantiveCandidates.length;
-  const summary = `${plannerSummary}; mixed retrieval returned ${candidates.length} reranked candidates${skippedCount > 0 ? ` (${skippedCount} empty/template skipped)` : ""}; Relation Judge reviewed ${relationJudge.reviewedCount} candidate excerpts.`;
+  const skippedCount = poolCursor - reviewedCount;
+  const summary = `${plannerSummary}; mixed retrieval returned ${candidates.length} pooled candidates${skippedCount > 0 ? ` (${skippedCount} empty/template skipped)` : ""}; Relation Judge reviewed ${reviewedCount} candidate excerpts in ${batches.length} batch(es), found ${nonWeakCount} non-weak candidate(s), and stopped because ${stopReason}.`;
+  const relationJudgeFailed = reviewedCount === 0 || successfulJudgmentCount === 0;
   const warnings = [
     planWarning,
-    relationJudge.ok
+    !relationJudgeFailed
       ? "Relation Judge ran on bounded candidate excerpts; strong relation labels require quote evidence from the excerpt."
-      : `Relation Judge unavailable; returning structured failure instead of treating weak candidates as success: ${relationJudge.error}`,
+      : `Relation Judge unavailable; returning structured failure instead of treating weak candidates as success: ${judgeErrors.join("; ") || "No candidate excerpts were readable."}`,
     ...excerptWarnings,
-    ...relationJudge.warnings,
+    ...judgeWarnings,
     ...queryWarnings,
     ...graphWarnings,
     ...queryErrors.map((error) => `Skipped failed query: ${error}`),
   ];
 
-  if (!relationJudge.ok) {
+  if (relationJudgeFailed) {
     return {
       ok: false,
       sourcePath: args.sourcePath,
@@ -281,8 +401,8 @@ export async function runFullPipeline(
       warnings,
       error: {
         message: "Aha Relation Judge failed.",
-        tool: relationJudge.tool ?? "llm",
-        details: relationJudge.error,
+        tool: reviewedCount === 0 ? "qmd" : "llm",
+        details: judgeErrors.join("; ") || "No candidate excerpts were readable, so Relation Judge did not run.",
       },
       candidates: finalCandidates,
       queryPlanGeneratedBy: planOutcome.generatedBy,
@@ -291,6 +411,7 @@ export async function runFullPipeline(
       queryPlanQueries: planOutcome.queries,
       qmdQueryResults: queryResults,
       pooledCandidates: pooled,
+      relationJudgeTrace,
     };
   }
 
@@ -308,6 +429,39 @@ export async function runFullPipeline(
     queryPlanQueries: planOutcome.queries,
     qmdQueryResults: queryResults,
     pooledCandidates: pooled,
+    relationJudgeTrace,
+  };
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
+}
+
+function isNonWeakCandidate(candidate: RelationJudgeCandidate): boolean {
+  return candidate.relation !== "weak";
+}
+
+function emptyRelationJudgeTrace(
+  targetNonWeakCount: number,
+  budget: number,
+  poolSize: number,
+  stopReason: RelationJudgeStopReason,
+): RelationJudgeTrace {
+  return {
+    targetNonWeakCount,
+    budget,
+    poolSize,
+    reviewedCount: 0,
+    nonWeakCount: 0,
+    weakCount: 0,
+    failedCount: 0,
+    repairedCount: 0,
+    callCount: 0,
+    elapsedMs: 0,
+    stopReason,
+    batches: [],
   };
 }
 

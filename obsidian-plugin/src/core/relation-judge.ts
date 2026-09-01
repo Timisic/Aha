@@ -354,10 +354,12 @@ export interface RelationJudgeRawSuccess {
   warnings: string[];
   summary?: string | null;
   repaired: boolean;
+  callCount: number;
 }
 export interface RelationJudgeRawFailure {
   ok: false;
   error: string;
+  callCount: number;
 }
 export type RelationJudgeRawResult = RelationJudgeRawSuccess | RelationJudgeRawFailure;
 
@@ -417,17 +419,25 @@ export async function judgeRelationsRawViaLlm(
   );
 
   const attempt = await callLlm(prompt);
-  if (!attempt.ok) return { ok: false, error: attempt.error };
+  if (!attempt.ok) return { ok: false, error: attempt.error, callCount: attempt.attempts };
 
   const expectedNotePath = input.candidateInputs.length === 1 ? String(input.candidateInputs[0].notePath ?? "") || undefined : undefined;
   let repaired = false;
   let validated = validatedRelationJudgeOutput(attempt.json, expectedNotePath);
   if (!validated.ok) {
     const repairAttempt = await callLlm(buildRelationJudgeRepairPrompt(prompt, validated.errors.join("; ")));
-    if (!repairAttempt.ok) return { ok: false, error: repairAttempt.error };
+    if (!repairAttempt.ok) return { ok: false, error: repairAttempt.error, callCount: attempt.attempts + repairAttempt.attempts };
     repaired = true;
     validated = validatedRelationJudgeOutput(repairAttempt.json, expectedNotePath);
-    if (!validated.ok) return { ok: false, error: validated.errors.join("; ") };
+    if (!validated.ok) return { ok: false, error: validated.errors.join("; "), callCount: attempt.attempts + repairAttempt.attempts };
+    return {
+      ok: true,
+      candidates: validated.value.candidates ?? [],
+      warnings: validated.value.warnings ?? [],
+      summary: validated.value.summary,
+      repaired,
+      callCount: attempt.attempts + repairAttempt.attempts,
+    };
   }
 
   return {
@@ -436,6 +446,7 @@ export async function judgeRelationsRawViaLlm(
     warnings: validated.value.warnings ?? [],
     summary: validated.value.summary,
     repaired,
+    callCount: attempt.attempts,
   };
 }
 
@@ -459,6 +470,9 @@ export interface RelationJudgeLlmSuccess {
   summary?: string | null;
   relation_judge_prompt_version: string;
   relation_judge_generated_by: string;
+  callCount: number;
+  failedCount: number;
+  repairedCount: number;
 }
 export interface RelationJudgeLlmFailure {
   ok: false;
@@ -470,6 +484,9 @@ export interface RelationJudgeLlmFailure {
   candidates: RelationJudgeCandidate[];
   relation_judge_prompt_version: string;
   relation_judge_generated_by?: string;
+  callCount: number;
+  failedCount: number;
+  repairedCount: number;
 }
 export type RelationJudgeLlmResult = RelationJudgeLlmSuccess | RelationJudgeLlmFailure;
 
@@ -501,6 +518,9 @@ export async function judgeCandidateRelationsViaLlm(
       error: "No candidate excerpts were readable, so Relation Judge did not run.",
       candidates: input.candidates,
       relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
+      callCount: 0,
+      failedCount: 0,
+      repairedCount: 0,
     };
   }
 
@@ -508,6 +528,8 @@ export async function judgeCandidateRelationsViaLlm(
   const allJudged: RelationJudgeCandidate[] = [];
   const allWarnings: string[] = [];
   let failedCount = 0;
+  let callCount = 0;
+  let repairedCount = 0;
 
   const results = await mapConcurrent(inputs, concurrency, async (candidateInput) => {
     return judgeRelationsRawViaLlm(
@@ -518,9 +540,13 @@ export async function judgeCandidateRelationsViaLlm(
   });
 
   for (const raw of results) {
+    callCount += raw.callCount;
     if (raw.ok) {
       allJudged.push(...raw.candidates);
-      if (raw.repaired) allWarnings.push("Relation Judge retried once after schema validation failed.");
+      if (raw.repaired) {
+        repairedCount += 1;
+        allWarnings.push("Relation Judge retried once after schema validation failed.");
+      }
       for (const w of raw.warnings) allWarnings.push(`Relation Judge: ${w}`);
     } else {
       failedCount += 1;
@@ -537,6 +563,9 @@ export async function judgeCandidateRelationsViaLlm(
       candidates: input.candidates,
       relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
       relation_judge_generated_by: generatedBy,
+      callCount,
+      failedCount,
+      repairedCount,
     };
   }
 
@@ -553,6 +582,9 @@ export async function judgeCandidateRelationsViaLlm(
     candidates: judged,
     relation_judge_prompt_version: RELATION_JUDGE_PROMPT_VERSION,
     relation_judge_generated_by: generatedBy,
+    callCount,
+    failedCount,
+    repairedCount,
   };
 }
 

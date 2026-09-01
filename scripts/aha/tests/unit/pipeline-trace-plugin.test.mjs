@@ -126,6 +126,42 @@ test("with a prompt override active, the trace records the custom content-hash v
   assert.equal(trace.steps.query_generation.prompt_version, "aha-query-plan-custom-deadbeefdeadbeef");
 });
 
+test("Full Tier trace records every judge batch, refill source, stop reason, calls, and elapsed time", async () => {
+  const { buildPluginPipelineTrace } = await loadModule();
+  const relationJudgeTrace = {
+    targetNonWeakCount: 2,
+    budget: 4,
+    poolSize: 4,
+    reviewedCount: 3,
+    nonWeakCount: 2,
+    weakCount: 1,
+    failedCount: 0,
+    repairedCount: 0,
+    callCount: 3,
+    elapsedMs: 125,
+    stopReason: "target_reached",
+    batches: [
+      { batchIndex: 1, refillSource: "initial", poolStartRank: 1, poolEndRank: 2, candidatePaths: ["Memory/A.md", "Memory/B.md"], reviewedCount: 2, nonWeakCount: 1, weakCount: 1, failedCount: 0, repairedCount: 0, callCount: 2, elapsedMs: 80 },
+      { batchIndex: 2, refillSource: "weak_backfill", poolStartRank: 3, poolEndRank: 3, candidatePaths: ["Memory/C.md"], reviewedCount: 1, nonWeakCount: 1, weakCount: 0, failedCount: 0, repairedCount: 0, callCount: 1, elapsedMs: 45 },
+    ],
+  };
+  const trace = buildPluginPipelineTrace({
+    sourcePath: "Source.md",
+    sourceTitle: "Source",
+    sourceText: "source text",
+    tier: "full",
+    result: baseResult,
+    queryPlan: { generatedBy: "llm", fallback: false, error: null, promptVersion: "aha-query-plan-v7" },
+    relationJudgeTrace,
+  });
+
+  assert.equal(trace.steps.rerank.backfill.stop_reason, "target_reached");
+  assert.equal(trace.steps.rerank.backfill.call_count, 3);
+  assert.equal(trace.steps.rerank.backfill.elapsed_ms, 125);
+  assert.deepEqual(trace.steps.rerank.backfill.batches.map((batch) => batch.refill_source), ["initial", "weak_backfill"]);
+  assert.deepEqual(trace.steps.rerank.backfill.batches[1].candidate_paths, ["Memory/C.md"]);
+});
+
 test("Recall Tier rounds (no queryPlan) record generated_by: rules and rerank: none", async () => {
   const { buildPluginPipelineTrace } = await loadModule();
   const trace = buildPluginPipelineTrace({
