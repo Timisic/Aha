@@ -7,11 +7,12 @@
 // real vault + qmd binary are available, skips with a clear message
 // otherwise, so `npm test` never costs money or needs local vault state.
 //
-// Uses a real note written into the real vault (so QMD's index has
+// Uses a temporary root-level note written into the real vault (so QMD's index has
 // something real to search against and path resolution behaves normally),
 // but writes to a throwaway plugin id's data.json
 // (aha-memory-surface-e2e-test) so it never touches the real dev/production
-// plugin state -- cleaned up in a finally block either way.
+// plugin state. The scratch note deliberately does not live under `Aha/`:
+// cleanup must not leave an empty product-named folder in the user's vault.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -30,7 +31,7 @@ const DEEPSEEK_API_KEY = process.env[DEFAULT_DEEPSEEK_API_KEY_ENV];
 // comfortable headroom above that.
 const E2E_TIMEOUT_MS = 480_000;
 const PLUGIN_ID = "aha-memory-surface-e2e-test";
-const SCRATCH_NOTE_PATH = "Aha/_batch-vault-runner-e2e-scratch.md";
+const SCRATCH_NOTE_PATH = "_aha-batch-vault-runner-e2e-scratch.md";
 
 function qmdAvailable(qmdCommand) {
   const probe = spawnSync(qmdCommand, ["--help"], { encoding: "utf-8" });
@@ -40,6 +41,15 @@ function qmdAvailable(qmdCommand) {
 async function vaultExists(vaultRoot) {
   try {
     await access(path.join(vaultRoot, ".obsidian"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pathExists(targetPath) {
+  try {
+    await access(targetPath);
     return true;
   } catch {
     return false;
@@ -61,9 +71,10 @@ if (!DEEPSEEK_API_KEY) {
     test("runs one real note through the batch vault runner end to end", { timeout: E2E_TIMEOUT_MS }, async () => {
       const scratchAbsPath = path.join(vaultRoot, SCRATCH_NOTE_PATH);
       const dataJsonPath = dataJsonPathFor(vaultRoot, PLUGIN_ID);
+      const legacyAhaDirectory = path.join(vaultRoot, "Aha");
+      const legacyAhaDirectoryExisted = await pathExists(legacyAhaDirectory);
 
       try {
-        await mkdir(path.dirname(scratchAbsPath), { recursive: true });
         await writeFile(
           scratchAbsPath,
           "# 批量跑测试笔记\n\n这是 batch vault runner 的端到端测试笔记，跑完可以删除。记录一次关于坚持写复盘的想法。",
@@ -101,6 +112,13 @@ if (!DEEPSEEK_API_KEY) {
       } finally {
         await rm(scratchAbsPath, { force: true });
         await rm(path.dirname(dataJsonPath), { recursive: true, force: true });
+        if (!legacyAhaDirectoryExisted) {
+          assert.equal(
+            await pathExists(legacyAhaDirectory),
+            false,
+            "the E2E test must not leave a vault-root Aha directory behind",
+          );
+        }
       }
     });
   }
