@@ -23,7 +23,7 @@ import { compactLine } from "./query-plan-deterministic";
 import { candidateHit } from "./candidate-hit";
 import { AHA_RESULT_SCHEMA, RELATIONS as VALID_RELATIONS, validateAhaResult } from "./result-validator";
 
-export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v7";
+export const RELATION_JUDGE_PROMPT_VERSION = "aha-relation-judge-v8";
 export const RELATION_JUDGE_SCHEMA_NAME = "aha_relation_judge";
 export const DEFAULT_RELATION_JUDGE_CHUNK_SIZE = 20;
 export const DEFAULT_RELATION_JUDGE_CONCURRENCY = 3;
@@ -56,24 +56,27 @@ export interface BuildRelationJudgePromptArgs {
 
 export function buildRelationJudgePrompt({ sourcePath, sourceText, candidateInputs }: BuildRelationJudgePromptArgs): string {
   return [
-    "Aha Relation Judge—根据 source 全文和候选 excerpt 判定一条旧笔记与当前 insight 的论证关系。",
+    "Aha 关系判断：比较当前材料与历史材料，判断两者在观点、经验或因果结构上的关系。",
     "",
-    "关系标签（每个强标签必须附带候选 excerpt 中的原文引句）：",
-    "- supports：旧证据强化当前判断。",
-    "- challenges：旧证据反驳、冲突或施加压力。",
-    "- bounds：旧证据标注判断的边界、限定条件或适用范围。",
+    "关系标签（每个强标签必须附带历史材料中的原文引句）：",
+    "- supports：历史经验强化当前判断。",
+    "- challenges：历史经验反驳、冲突或施加压力。",
+    "- bounds：历史经验标注判断的边界、限定条件或适用范围。",
     "- resembles：来自不同领域的结构同构模式。",
-    "- weak：候选 excerpt 中没有任何引句直接作用于 source 的判断——只在引句缺失时使用，与话题距离无关。",
+    "- weak：历史材料中没有任何引句直接作用于当前判断——只在引句缺失时使用，与话题距离无关。",
     "",
-    "反方向材料优先级高：旧的失败、冲突、对立经验只要作用于 source 的判断就应得到 challenges 或 bounds。",
-    "跨领域连接高价值：候选话题与 source 完全不同，但论证结构存在 challenges/bounds/resembles 关系时，话题距离是特征而非降级理由。",
+    "反方向材料优先级高：过去的失败、冲突、对立经验只要作用于当前判断，就应得到 challenges 或 bounds。",
+    "跨领域连接高价值：两个话题即使不同，只要论证结构存在 challenges、bounds 或 resembles 关系，话题距离就是特征而非降级理由。",
     "持久判断和教训优先于同话题的事件流水。",
     "",
-    "以 JSON 格式输出，每条候选包含以下字段：",
+    "以 JSON 格式输出，顶层固定为 {\"ok\": true, \"candidates\": [...]}，数组字段必须叫 candidates。每项历史材料包含以下字段：",
     "- relation：必填，上面五个关系标签之一（supports/challenges/bounds/resembles/weak），不要省略这个字段。",
-    "- hit：候选 excerpt 中的原文短引句；weak 且没有可用引句时返回空字符串，绝不能用文件路径或标题代替引句。",
-    "- why：用自然中文写，以具体观点或张力开头，点出旧判断和当前 insight 之间的具体连接。",
-    "- quotes：字符串数组（即使只有一条引句，也要写成 [\"引句\"] 而不是裸字符串）。支撑标签的 excerpt 原文引句。",
+    "- hit：历史材料中的原文短引句；weak 且没有可用引句时返回空字符串，绝不能用文件路径或标题代替引句。",
+    "- why：直接写给用户看的自然中文。开头就说具体经验、判断、矛盾或边界，再说明它怎样改变眼下的理解。",
+    "  不要出现“旧笔记”“这篇笔记”“候选”“摘录”“excerpt”“source”“当前 insight”等管线术语，也不要解释你正在比较材料。",
+    "  不套用固定句式，不要每次都写成“某材料说明……与当前判断形成……”。让措辞跟随内容，可以是提醒、转折、因果、反问或边界说明，控制在一到两句。",
+    "  英文词只在当前材料或历史材料中已经原样出现时使用；否则用自然中文表达，避免中英混杂。",
+    "- quotes：字符串数组（即使只有一条引句，也要写成 [\"引句\"] 而不是裸字符串）。支撑标签的历史材料原文引句。",
     "- notePath：保持传入的 notePath 值不变，必须原样返回。",
     "",
     `sourcePath: ${sourcePath}`,
@@ -90,10 +93,10 @@ export function buildRelationJudgeRepairPrompt(originalPrompt: string, validatio
   return [
     originalPrompt,
     "",
-    "Your previous JSON failed validation:",
+    "上一次 JSON 未通过校验：",
     validationError,
-    "Return the complete JSON object again. Repair every listed field; do not omit candidates.",
-    "Each why must be a concrete, sufficiently detailed bridge between the quoted old-note evidence and the current source insight.",
+    "请重新返回完整 JSON，修正所有列出的问题，不要遗漏任何项目。",
+    "每条 why 都要像给用户的简洁判断：直接说内容与张力，不暴露处理流程，不凭空加入英文，也不要套用同一种开头。",
   ].join("\n");
 }
 
@@ -110,6 +113,16 @@ export function normalizeStructuredResult(value: unknown): unknown {
   const normalized: Record<string, unknown> = { ...(value as Record<string, unknown>) };
   for (const key of ["sourcePath", "generatedAt", "summary", "warnings", "error", "candidates"]) {
     if (normalized[key] === null) delete normalized[key];
+  }
+  // Real DeepSeek JSON-mode responses sometimes omit the success flag or
+  // call the requested candidates array `pairs`. Relation Judge only asks
+  // for success payloads, so both observed shapes can be normalized safely.
+  if (!Array.isArray(normalized.candidates) && Array.isArray(normalized.pairs)) {
+    normalized.candidates = normalized.pairs;
+    delete normalized.pairs;
+  }
+  if (Array.isArray(normalized.candidates) && typeof normalized.ok !== "boolean") {
+    normalized.ok = true;
   }
   if (!Array.isArray(normalized.candidates) && typeof normalized.notePath === "string") {
     const candidate = { ...normalized };
@@ -397,10 +410,57 @@ function validatedRelationJudgeOutput(
   return { ok: true, value: parsed };
 }
 
+const USER_FACING_PIPELINE_TERMS = [
+  /旧笔记/giu,
+  /(?:这|那|该)篇笔记/giu,
+  /候选/giu,
+  /摘录/giu,
+  /当前\s*insight/giu,
+];
+
+/**
+ * Keeps `why` as user-facing judgment prose rather than a narration of the
+ * retrieval pipeline. English is allowed only when it already appears in the
+ * current material or the matched historical excerpt.
+ */
+export function relationJudgeWhyStyleErrors(
+  output: NormalizedRelationJudgeOutput,
+  input: { sourceText: unknown; candidateInputs: RelationJudgeCandidateInput[] },
+): string[] {
+  const errors: string[] = [];
+  const inputsByPath = new Map(input.candidateInputs.map((candidate) => [candidate.notePath, candidate]));
+  for (const candidate of output.candidates ?? []) {
+    const why = typeof candidate.why === "string" ? candidate.why.trim() : "";
+    if (!why) continue;
+    const matchedInput = inputsByPath.get(candidate.notePath)
+      ?? (input.candidateInputs.length === 1 ? input.candidateInputs[0] : undefined);
+    const material = `${String(input.sourceText ?? "")}\n${matchedInput?.excerpt ?? ""}`.toLowerCase();
+
+    const pipelineTerms = new Set<string>();
+    for (const pattern of USER_FACING_PIPELINE_TERMS) {
+      pattern.lastIndex = 0;
+      for (const match of why.matchAll(pattern)) pipelineTerms.add(match[0]);
+    }
+    const unexplainedEnglish = new Set(
+      why.match(/[A-Za-z][A-Za-z0-9_-]+/g)
+        ?.filter((word) => !material.includes(word.toLowerCase()))
+        ?? [],
+    );
+    if (pipelineTerms.size > 0) {
+      errors.push(`${candidate.notePath}: 用户可见说明仍含有管线术语：${[...pipelineTerms].join("、")}`);
+    }
+    if (unexplainedEnglish.size > 0) {
+      errors.push(`${candidate.notePath}: 用户可见说明加入了材料中没有的英文：${[...unexplainedEnglish].join("、")}`);
+    }
+  }
+  return errors;
+}
+
 /**
  * Low-level LLM round-trip: builds the prompt, calls llmJsonCall, validates
- * against AHA_RESULT_SCHEMA (result-validator.ts), and retries once with a
- * repair prompt on validation failure — mirroring
+ * against AHA_RESULT_SCHEMA (result-validator.ts), applies the user-facing
+ * prose check, and retries once with a repair prompt on schema or style
+ * validation failure — mirroring
  * generateRelationJudgeWithAgentAsync's openai branch plus
  * parseRelationJudgeOutput in scripts/aha/relation-judge.mjs. Returns the raw
  * judged candidates (not yet merged with retrieval candidates); callers that
@@ -422,31 +482,59 @@ export async function judgeRelationsRawViaLlm(
   if (!attempt.ok) return { ok: false, error: attempt.error, callCount: attempt.attempts };
 
   const expectedNotePath = input.candidateInputs.length === 1 ? String(input.candidateInputs[0].notePath ?? "") || undefined : undefined;
-  let repaired = false;
-  let validated = validatedRelationJudgeOutput(attempt.json, expectedNotePath);
-  if (!validated.ok) {
-    const repairAttempt = await callLlm(buildRelationJudgeRepairPrompt(prompt, validated.errors.join("; ")));
-    if (!repairAttempt.ok) return { ok: false, error: repairAttempt.error, callCount: attempt.attempts + repairAttempt.attempts };
-    repaired = true;
-    validated = validatedRelationJudgeOutput(repairAttempt.json, expectedNotePath);
-    if (!validated.ok) return { ok: false, error: validated.errors.join("; "), callCount: attempt.attempts + repairAttempt.attempts };
-    return {
-      ok: true,
-      candidates: validated.value.candidates ?? [],
-      warnings: validated.value.warnings ?? [],
-      summary: validated.value.summary,
-      repaired,
-      callCount: attempt.attempts + repairAttempt.attempts,
-    };
+  const initialValidation = validatedRelationJudgeOutput(attempt.json, expectedNotePath);
+  const initialStyleErrors = initialValidation.ok
+    ? relationJudgeWhyStyleErrors(initialValidation.value, input)
+    : [];
+  if (initialValidation.ok && initialStyleErrors.length === 0) {
+    return successfulRawResult(initialValidation.value, false, attempt.attempts);
   }
 
+  const repairReasons = initialValidation.ok ? initialStyleErrors : initialValidation.errors;
+  const repairAttempt = await callLlm(buildRelationJudgeRepairPrompt(prompt, repairReasons.join("; ")));
+  const totalCallCount = attempt.attempts + repairAttempt.attempts;
+  if (!repairAttempt.ok) {
+    if (initialValidation.ok) {
+      return successfulRawResult(initialValidation.value, false, totalCallCount, [
+        `Relation Judge style rewrite failed; kept the structurally valid first response: ${repairAttempt.error}`,
+      ]);
+    }
+    return { ok: false, error: repairAttempt.error, callCount: totalCallCount };
+  }
+
+  const repairedValidation = validatedRelationJudgeOutput(repairAttempt.json, expectedNotePath);
+  if (!repairedValidation.ok) {
+    if (initialValidation.ok) {
+      return successfulRawResult(initialValidation.value, false, totalCallCount, [
+        `Relation Judge style rewrite returned invalid JSON; kept the structurally valid first response: ${repairedValidation.errors.join("; ")}`,
+      ]);
+    }
+    return { ok: false, error: repairedValidation.errors.join("; "), callCount: totalCallCount };
+  }
+
+  const remainingStyleErrors = relationJudgeWhyStyleErrors(repairedValidation.value, input);
+  const repairWarnings = initialValidation.ok
+    ? ["Relation Judge retried once after style validation failed."]
+    : ["Relation Judge retried once after schema validation failed."];
+  if (remainingStyleErrors.length > 0) {
+    repairWarnings.push(`Relation Judge style validation remained imperfect after one rewrite: ${remainingStyleErrors.join("; ")}`);
+  }
+  return successfulRawResult(repairedValidation.value, true, totalCallCount, repairWarnings);
+}
+
+function successfulRawResult(
+  value: NormalizedRelationJudgeOutput,
+  repaired: boolean,
+  callCount: number,
+  extraWarnings: string[] = [],
+): RelationJudgeRawSuccess {
   return {
     ok: true,
-    candidates: validated.value.candidates ?? [],
-    warnings: validated.value.warnings ?? [],
-    summary: validated.value.summary,
+    candidates: value.candidates ?? [],
+    warnings: [...(value.warnings ?? []), ...extraWarnings],
+    summary: value.summary,
     repaired,
-    callCount: attempt.attempts,
+    callCount,
   };
 }
 
@@ -545,7 +633,6 @@ export async function judgeCandidateRelationsViaLlm(
       allJudged.push(...raw.candidates);
       if (raw.repaired) {
         repairedCount += 1;
-        allWarnings.push("Relation Judge retried once after schema validation failed.");
       }
       for (const w of raw.warnings) allWarnings.push(`Relation Judge: ${w}`);
     } else {

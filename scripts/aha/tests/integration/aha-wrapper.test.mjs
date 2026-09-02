@@ -406,7 +406,7 @@ async function startDeepSeekFixtureServer(requests, options = {}) {
               warnings: [],
               error: null,
               candidates: [
-                { notePath: "Memory/Candidate.md", noteTitle: "Candidate", relation: "supports", hit: "\"Safe vault evidence.\"", why: "The candidate includes quote-backed evidence for the source insight.", quotes: ["Safe vault evidence."], selected: true },
+                { notePath: "Memory/Candidate.md", noteTitle: "Candidate", relation: "supports", hit: "\"Safe vault evidence.\"", why: "这条安全证据直接支撑眼下的判断，也给出了可以复查的具体依据。", quotes: ["Safe vault evidence."], selected: true },
               ],
             };
       response.writeHead(200, { "Content-Type": "application/json" });
@@ -474,7 +474,7 @@ async function writePipelineHelpers({ codex, qmd, obsidian, relationJudge, outsi
           "  const prompt = args[args.length - 1] || '';",
           "  if (prompt.includes('SUPER_SECRET_SHOULD_NOT_LEAK')) { console.error('secret leaked into judge prompt'); process.exit(66); }",
           "  writeFileSync(outputFile, JSON.stringify({ ok: true, sourcePath: 'source.md', summary: 'judge ok', warnings: [], candidates: [",
-          "    { notePath: 'Memory/Candidate.md', noteTitle: 'Candidate', relation: 'supports', hit: '\"Safe vault evidence.\"', why: 'The candidate includes quote-backed evidence for the source insight.', quotes: ['Safe vault evidence.'], selected: true }",
+          "    { notePath: 'Memory/Candidate.md', noteTitle: 'Candidate', relation: 'supports', hit: '\"Safe vault evidence.\"', why: '这条安全证据直接支撑眼下的判断，也给出了可以复查的具体依据。', quotes: ['Safe vault evidence.'], selected: true }",
           "  ] }));",
           "  process.exit(0);",
           "}",

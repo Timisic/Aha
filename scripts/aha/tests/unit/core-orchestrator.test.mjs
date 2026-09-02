@@ -63,7 +63,7 @@ function judgeSuccessJson(relation) {
         noteTitle: "Feedback",
         relation,
         hit: "\"Feedback loops expose experience gaps\"",
-        why: "Feedback evidence connects the old note to the current source insight.",
+        why: "反馈证据揭示了经验缺口，因此能直接推动下一次判断修正。",
         quotes: relation === "weak" ? [] : ["Feedback loops expose experience gaps"],
         selected: true,
       },
@@ -86,8 +86,8 @@ function judgeCandidateJson(notePath, relation, quote = "Evidence directly conne
         relation,
         hit: relation === "weak" ? "" : quote,
         why: relation === "weak"
-          ? "The excerpt does not directly act on the source judgment."
-          : "The quoted evidence directly acts on the source judgment.",
+          ? "这里没有足够证据直接改变眼下的判断，因此只能保留为较弱联系。"
+          : "这条具体证据直接作用于眼下的判断，因此形成了清晰而可复查的联系。",
         quotes: relation === "weak" ? [] : [quote],
         selected: true,
       },

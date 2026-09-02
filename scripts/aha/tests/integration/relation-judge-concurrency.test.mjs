@@ -127,7 +127,7 @@ const server = createServer((req, res) => {
         noteTitle: candidate.noteTitle,
         relation: "supports",
         hit: candidate.excerpt.slice(0, 24),
-        why: "回显判定：" + candidate.noteTitle,
+        why: "反馈闭环揭示了经验缺口，因此能直接推动下一次判断修正。",
         quotes: [candidate.excerpt.slice(0, 24)],
         selected: true,
       })),

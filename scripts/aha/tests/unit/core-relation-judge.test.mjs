@@ -45,6 +45,7 @@ const {
   judgeCandidateRelationsViaLlm,
   judgeRelationsRawViaLlm,
   mergeJudgedCandidates,
+  normalizeStructuredResult,
   orderJudgedCandidates,
 } = core;
 
@@ -117,7 +118,7 @@ function judgeResultPayload(candidatePatch) {
         noteTitle: "Feedback",
         relation: "weak",
         hit: "\"Feedback loops expose experience gaps\"",
-        why: "Feedback evidence connects the old note to the current source insight.",
+        why: "反馈证据揭示了经验缺口，因此能直接推动下一次判断修正。",
         quotes: ["Feedback loops expose experience gaps"],
         selected: true,
         ...candidatePatch,
@@ -128,14 +129,105 @@ function judgeResultPayload(candidatePatch) {
 
 // --- basic prompt/version sanity ---
 
-test("RELATION_JUDGE_PROMPT_VERSION is aha-relation-judge-v7", () => {
-  assert.equal(RELATION_JUDGE_PROMPT_VERSION, "aha-relation-judge-v7");
+test("RELATION_JUDGE_PROMPT_VERSION is aha-relation-judge-v8", () => {
+  assert.equal(RELATION_JUDGE_PROMPT_VERSION, "aha-relation-judge-v8");
 });
 
 test("buildRelationJudgePrompt embeds sourcePath and candidateInputs JSON", () => {
   const prompt = buildRelationJudgePrompt({ sourcePath: "Source.md", sourceText: "insight text", candidateInputs });
   assert.match(prompt, /sourcePath: Source\.md/);
   assert.match(prompt, /"notePath": "Memory\/Feedback\.md"/);
+  assert.match(prompt, /不要出现“旧笔记”/);
+  assert.match(prompt, /英文词只在.*材料.*原样出现/);
+  assert.match(prompt, /顶层固定为.*ok.*candidates/);
+});
+
+test("normalizeStructuredResult accepts a candidates array when DeepSeek omits top-level ok", () => {
+  const normalized = normalizeStructuredResult({ candidates: judgeResultPayload({}).candidates });
+  assert.equal(normalized.ok, true);
+  assert.equal(normalized.candidates.length, 1);
+});
+
+test("normalizeStructuredResult maps the observed DeepSeek pairs alias to candidates", () => {
+  const normalized = normalizeStructuredResult({ ok: true, pairs: judgeResultPayload({}).candidates });
+  assert.equal(normalized.ok, true);
+  assert.equal(normalized.candidates.length, 1);
+  assert.equal(normalized.candidates[0].notePath, "Memory/Feedback.md");
+});
+
+test("stiff pipeline wording triggers one style repair and returns the natural rewrite", async () => {
+  let calls = 0;
+  const deps = {
+    httpPost: async (_url, _headers, body) => {
+      calls += 1;
+      const parsed = JSON.parse(body);
+      if (calls === 1) {
+        return responsesEnvelope(judgeResultPayload({
+          why: "旧笔记的 excerpt 说明，当前 insight 可以得到更直接而具体的支持。",
+        }));
+      }
+      assert.match(parsed.input, /用户可见说明仍含有管线术语/);
+      return responsesEnvelope(judgeResultPayload({
+        why: "反馈闭环会暴露经验缺口，因此沉默并不等于没有信息，反而能推动下一次修正。",
+      }));
+    },
+    sleep: async () => {},
+  };
+
+  const result = await judgeCandidateRelationsViaLlm({
+    sourcePath: "Source.md",
+    sourceText: "沉默有时也是一种反馈。",
+    candidates: retrievalCandidates,
+    candidateInputs,
+  }, transportRequest(), deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(calls, 2);
+  assert.equal(result.candidates[0].why, "反馈闭环会暴露经验缺口，因此沉默并不等于没有信息，反而能推动下一次修正。");
+  assert.ok(result.warnings.some((warning) => warning.includes("style validation")));
+});
+
+test("English used in why must already appear in the current or historical material", async () => {
+  let calls = 0;
+  const deps = {
+    httpPost: async () => {
+      calls += 1;
+      return responsesEnvelope(judgeResultPayload({
+        why: calls === 1
+          ? "这段经历形成了一个 feedback loop，可以用来修正眼下的判断。"
+          : "这段经历形成了反馈循环，可以用来修正眼下的判断。",
+      }));
+    },
+    sleep: async () => {},
+  };
+
+  const result = await judgeCandidateRelationsViaLlm({
+    sourcePath: "Source.md",
+    sourceText: "沉默有时也是一种反馈。",
+    candidates: retrievalCandidates,
+    candidateInputs: [{ ...candidateInputs[0], excerpt: "反复回应能让人发现经验缺口，并及时调整下一步。" }],
+  }, transportRequest(), deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(calls, 2);
+  assert.doesNotMatch(result.candidates[0].why, /feedback loop/i);
+});
+
+test("English explicitly present in the material does not trigger style repair", async () => {
+  const { deps, calls } = fakeDeps([responsesEnvelope(judgeResultPayload({
+    why: "这里的 feedback loop 会暴露经验缺口，因此能推动下一次修正。",
+  }))]);
+
+  const result = await judgeCandidateRelationsViaLlm({
+    sourcePath: "Source.md",
+    sourceText: "我想理解 feedback loop 如何帮助复盘。",
+    candidates: retrievalCandidates,
+    candidateInputs,
+  }, transportRequest(), deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.match(result.candidates[0].why, /feedback loop/);
 });
 
 // --- judgeCandidateRelationsViaLlm: success, failure, repair-retry ---
@@ -232,10 +324,10 @@ test("schema-invalid output retries once with a repair prompt, then succeeds", a
       calls += 1;
       const parsed = JSON.parse(body);
       if (calls === 1) {
-        assert.doesNotMatch(parsed.input, /previous JSON failed validation/i);
+        assert.doesNotMatch(parsed.input, /上一次 JSON 未通过校验/i);
         return responsesEnvelope(judgeResultPayload({ why: "太短" }));
       }
-      assert.match(parsed.input, /previous JSON failed validation/i);
+      assert.match(parsed.input, /上一次 JSON 未通过校验/i);
       return responsesEnvelope(judgeResultPayload({
         why: "旧笔记里的反馈闭环说明，沉默或缺少回应本身也可以成为修正当前判断的具体证据。",
       }));
@@ -277,7 +369,10 @@ test("a repair retry that still fails validation is a structured failure, not a 
 // --- judgeRelationsRawViaLlm: the chunk-friendly primitive ---
 
 test("judgeRelationsRawViaLlm returns raw (unmerged) candidates on success", async () => {
-  const { deps } = fakeDeps([responsesEnvelope(judgeResultPayload({ relation: "resembles" }))]);
+  const { deps } = fakeDeps([responsesEnvelope(judgeResultPayload({
+    relation: "resembles",
+    why: "反馈闭环会暴露经验缺口，因此沉默也可能成为推动下一次修正的信号。",
+  }))]);
   const raw = await judgeRelationsRawViaLlm({
     sourcePath: "Source.md",
     sourceText: "text",

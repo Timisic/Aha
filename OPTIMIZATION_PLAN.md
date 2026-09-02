@@ -1,6 +1,6 @@
 # Aha 召回优化计划
 
-状态：候选补位、trace 与 Session Store 验证已实施；query/Judge 优化和批量实验尚未执行。
+状态：候选补位、trace、Session Store 验证及 Relation Judge 用户可见措辞 v8 已实施；query 优化、Judge 语义校准和批量实验尚未执行。
 
 ## 目标与基线
 
@@ -36,4 +36,12 @@
 - 停止原因固定记录为 `target_reached`、`pool_exhausted` 或 `budget_exhausted`。
 - Full Tier trace 的 `steps.rerank.backfill` 记录每批候选范围、补位来源、非 weak/weak/失败/修复数量、API 调用次数及耗时。
 - 展示候选与 trace 引用继续写入 Session Store；重载和后续重跑不会清空既有用户反馈。
-- 本次没有改 query 或 Judge prompt，也没有执行任何批量实验；实验笔记清单仍需用户确认。
+- 候选补位提交本身没有改 query 或 Judge prompt；随后仅单独迭代用户可见措辞 v8。尚未执行任何批量实验，实验笔记清单仍需用户确认。
+
+## Relation Judge 措辞 v8（2026-09-01）
+
+- `why` 直接陈述具体经验、判断、矛盾或边界，不再复述“旧笔记 / 候选 / excerpt / source / 当前 insight”等管线术语。
+- 英文词只有在当前材料或历史材料中已经出现时才允许进入 `why`，避免无来源的中英混杂。
+- 第一次输出若仍含管线术语或无来源英文，会触发一次文风重写；这不改变 relation 标签和引句证据门槛。
+- 已用真实 DeepSeek 对单条和三条不同材料进行验证：输出分别形成支持、挑战和边界表达，措辞与开头不相同。
+- 本轮只优化用户可见措辞与真实输出兼容性；未改 query，也未声称完成 weak 语义误判校准或正式批量实验。

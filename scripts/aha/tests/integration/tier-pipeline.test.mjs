@@ -285,7 +285,7 @@ async function loadModuleWithLlmStub() {
             "    : { ok: true, sourcePath: 'Source.md', generatedAt: null, summary: 'judge ok', warnings: [], error: null,",
             "        candidates: JSON.parse(prompt.slice(prompt.lastIndexOf('candidates:') + 'candidates:'.length).trim()).map((c) => ({",
             "          notePath: c.notePath, noteTitle: c.noteTitle, relation: 'supports',",
-            "          hit: '\\\"' + String(c.excerpt || '').slice(0, 20) + '\\\"', why: 'Matches the source insight with concrete evidence.',",
+            "          hit: '\\\"' + String(c.excerpt || '').slice(0, 20) + '\\\"', why: '这段具体证据直接回应眼下的判断，因此值得优先纳入进一步思考。',",
             "          quotes: [String(c.excerpt || '').slice(0, 20)], selected: true,",
             "        })) };",
             "  return { status: 200, text: JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(output) } }] }) };",

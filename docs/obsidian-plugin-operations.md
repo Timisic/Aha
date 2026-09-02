@@ -24,6 +24,7 @@
 - 默认排除目录为 `templates`、`Aha/Reviews`（`DEFAULT_EXCLUDED_CANDIDATE_FOLDERS` in `core/candidates.ts`），可用设置里的 Excluded folders 或 Node 侧的 `AHA_EXCLUDED_FOLDERS` 扩展。
 - Target candidates 表示希望得到的非 `weak` 候选数，设置 slider 范围为 15–20。Full Tier 首批按候选池顺序判断当前缺口数量，`weak` 或判断失败不满足目标，随后继续顺序补位。
 - Relation Judge budget 默认 40、设置范围 20–60，限制一轮最多判断的候选摘录数。达到非 weak 目标、候选池耗尽或预算耗尽即停止；不通过放宽关系或引句规则减少 `weak`。
+- Relation Judge prompt v8 把 `why` 视为直接展示给用户的判断：先说具体内容与张力，不出现“旧笔记 / 候选 / excerpt / source / 当前 insight”等管线术语。材料中未出现的英文会触发一次文风重写；材料原本使用的英文可以保留。文风重写不改变 relation 或引句证据规则。
 - `hit` 是命中材料，不是文件定位符。Full Tier 的弱关系没有引句时允许 `hit: ""`；不得用 `notePath` 兜底。面板和 Handoff 也会隐藏旧 Session Record 中的路径型 hit，不修改历史反馈或选择。
 
 ## Trace 与开发安装

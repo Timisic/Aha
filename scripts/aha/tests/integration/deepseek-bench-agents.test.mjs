@@ -72,7 +72,7 @@ test("benchmark query and rerank agents use DeepSeek chat completions", async ()
     assert.deepEqual(reranked.candidates.map((item) => item.file), ["Memory/Feedback.md", "Memory/Noise.md"]);
     assert.deepEqual(reranked.candidates.map((item) => item.relation), ["supports", "challenges"]);
     assert.match(reranked.candidates[1].hit, /Noise candidate/);
-    assert.match(reranked.candidates[0].why, /feedback/i);
+    assert.match(reranked.candidates[0].why, /反馈/);
 
     const recordedRequests = await server.requests();
     assert.equal(recordedRequests.length, 2);
@@ -143,7 +143,7 @@ const server = createServer((req, res) => {
             noteTitle: "Noise",
             relation: "challenges",
             hit: "\\"Noise candidate excerpt\\"",
-            why: "Noise candidate challenges whether every feedback loop improves judgment.",
+            why: "噪声经验提醒人们，并非每一次反馈都会改善判断，有些回应反而会把注意力带偏。",
             quotes: ["Noise candidate excerpt"],
             selected: true
           },
@@ -152,7 +152,7 @@ const server = createServer((req, res) => {
             noteTitle: "Feedback",
             relation: "supports",
             hit: "\\"Feedback candidate excerpt\\"",
-            why: "Feedback candidate supports the current feedback loop improvement insight.",
+            why: "持续反馈能暴露经验缺口，因此可以帮助人们更快修正下一步行动。",
             quotes: ["Feedback candidate excerpt"],
             selected: true
           }

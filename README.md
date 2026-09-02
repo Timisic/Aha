@@ -91,7 +91,7 @@ cd obsidian-plugin && npm run verify       # 插件构建 + 测试
 
 ## 状态与边界
 
-已支持：Obsidian Plugin（触发、Review Panel、候选跳转、反馈按钮）、多路混合召回、引句校验的关系判断、按非 weak 目标顺序补位的分批 judge、判断预算与停止原因 trace、评测闭环与失败归因。
+已支持：Obsidian Plugin（触发、Review Panel、候选跳转、反馈按钮）、多路混合召回、引句校验且采用自然中文说明的关系判断、按非 weak 目标顺序补位的分批 judge、判断预算与停止原因 trace、评测闭环与失败归因。
 
 不做：自动修改 Obsidian 原文、自动沉淀总结、把候选自动写入知识库。
 

@@ -75,7 +75,7 @@ test("shared relation judge retries one schema-invalid non-thinking response", a
     adapter: async ({ prompt }) => {
       calls += 1;
       if (calls === 1) return resultPayload({ why: "太短" });
-      assert.match(prompt, /previous JSON failed validation/i);
+      assert.match(prompt, /上一次 JSON 未通过校验/i);
       return resultPayload({ why: "旧笔记里的反馈闭环说明，沉默或缺少回应本身也可以成为修正当前判断的具体证据。" });
     },
   });
@@ -115,7 +115,7 @@ function resultPayload(candidatePatch) {
         noteTitle: "Feedback",
         relation: "weak",
         hit: "\"Feedback loops expose experience gaps\"",
-        why: "Feedback evidence connects the old note to the current source insight.",
+        why: "反馈证据揭示了经验缺口，因此能直接推动下一次判断修正。",
         quotes: ["Feedback loops expose experience gaps"],
         selected: true,
         ...candidatePatch,
