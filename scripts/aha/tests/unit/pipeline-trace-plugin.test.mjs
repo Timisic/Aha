@@ -226,3 +226,130 @@ test("trace filenames retain Chinese titles and distinguish same-second runs wit
     assert.equal((await readdir(temp)).length, 2);
   } finally { await rm(temp, { recursive: true, force: true }); }
 });
+
+// --- recordPipelineTrace: the completion sequence both ends now share ---
+//
+// Config gating, build, write, trace back-fill onto the result, and failure
+// degradation used to be re-implemented at each call site (tier-pipeline.ts
+// and scripts/dev/run-batch-vault.mjs). These verify the guarantees once, at
+// the module's own interface.
+
+test("recordPipelineTrace writes the trace and makes the reference readable from the result", async () => {
+  const { recordPipelineTrace } = await loadModule();
+  const traceDirectory = await mkdtemp(path.join(tmpdir(), "aha-record-trace-"));
+  try {
+    const result = { ...baseResult, warnings: [] };
+    const outcome = recordPipelineTrace({
+      traceDirectory,
+      sourcePath: "Source.md",
+      sourceTitle: "Source",
+      sourceText: "The source note.",
+      tier: "recall",
+      result,
+    });
+
+    assert.equal(outcome.status, "written");
+    assert.equal(result.trace.path, outcome.tracePath);
+    assert.equal(result.trace.origin, "plugin");
+    assert.ok(result.warnings.some((warning) => warning.startsWith("Pipeline trace saved:")));
+    const written = JSON.parse(await readFile(result.trace.path, "utf-8"));
+    assert.equal(written.schema, "PipelineTrace");
+    assert.equal(written.case.id, "Source.md");
+  } finally {
+    await rm(traceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("recordPipelineTrace stamps a batch round's reference with the batch origin", async () => {
+  const { recordPipelineTrace } = await loadModule();
+  const traceDirectory = await mkdtemp(path.join(tmpdir(), "aha-record-trace-batch-"));
+  try {
+    const result = { ...baseResult, warnings: [] };
+    recordPipelineTrace({
+      traceDirectory,
+      origin: "batch",
+      sourcePath: "Source.md",
+      sourceTitle: "Source",
+      sourceText: "The source note.",
+      tier: "full",
+      result,
+    });
+
+    assert.equal(result.trace.origin, "batch");
+    assert.equal(JSON.parse(await readFile(result.trace.path, "utf-8")).origin, "batch");
+  } finally {
+    await rm(traceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("an unset traceDirectory disables tracing entirely -- no write, no warning, no trace reference", async () => {
+  const { recordPipelineTrace } = await loadModule();
+  for (const traceDirectory of ["", "   ", undefined, null]) {
+    const result = { ...baseResult, warnings: [] };
+    const outcome = recordPipelineTrace({
+      traceDirectory,
+      sourcePath: "Source.md",
+      sourceTitle: "Source",
+      sourceText: "The source note.",
+      tier: "recall",
+      result,
+    });
+    assert.equal(outcome.status, "disabled");
+    assert.equal(result.trace, undefined);
+    assert.deepEqual(result.warnings, []);
+  }
+});
+
+test("a write failure never discards the round: the result survives with a warning", async () => {
+  const { recordPipelineTrace } = await loadModule();
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-record-trace-fail-"));
+  try {
+    const traceDirectory = path.join(temp, "not-a-directory");
+    await writeFile(traceDirectory, "existing file");
+    const result = { ...baseResult, warnings: ["an earlier warning"] };
+    const outcome = recordPipelineTrace({
+      traceDirectory,
+      sourcePath: "Source.md",
+      sourceTitle: "Source",
+      sourceText: "The source note.",
+      tier: "recall",
+      result,
+    });
+
+    assert.equal(outcome.status, "failed");
+    assert.match(outcome.warning, /^Pipeline trace write failed:/);
+    assert.equal(result.ok, true, "a trace failure must not turn a successful round into a failure");
+    assert.equal(result.trace, undefined, "no reference is attached when nothing was written");
+    assert.deepEqual(result.warnings, ["an earlier warning", outcome.warning]);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("fullPipelineTraceFields maps a Full Tier result's four trace inputs, and records no query generation without a prompt version", async () => {
+  const { fullPipelineTraceFields, buildPluginPipelineTrace } = await loadModule();
+  const fullResult = {
+    ...baseResult,
+    queryPlanGeneratedBy: "llm",
+    queryPlanFallback: false,
+    queryPlanPromptVersion: "aha-query-plan-v6",
+    queryPlanQueries: [{ kind: "raw", command: "qmd query", text: "feedback" }],
+    qmdQueryResults: [{ query: { kind: "raw", command: "qmd query", text: "feedback" }, rows: [] }],
+    pooledCandidates: [],
+    relationJudgeTrace: undefined,
+  };
+
+  const fields = fullPipelineTraceFields(fullResult);
+  assert.equal(fields.queryPlan.promptVersion, "aha-query-plan-v6");
+  assert.equal(fields.queryPlan.generatedBy, "llm");
+  assert.equal(fields.queryPlan.error, null);
+  assert.equal(fields.qmdQueryResults.length, 1);
+
+  const trace = buildPluginPipelineTrace({
+    sourcePath: "Source.md", sourceTitle: "Source", sourceText: "x", tier: "full", result: fullResult, ...fields,
+  });
+  assert.equal(trace.steps.query_generation.prompt_version, "aha-query-plan-v6");
+
+  const bare = fullPipelineTraceFields({});
+  assert.equal(bare.queryPlan, undefined);
+});

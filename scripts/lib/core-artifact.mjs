@@ -10,6 +10,7 @@
 // core itself never touches process.env.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -105,6 +106,37 @@ export function isSourceCandidate(args, notePath, row) {
 
 export function isGeneratedReviewCandidate(args, notePath, row) {
   return core.isGeneratedReviewCandidate(args, notePath, row, coreNodeDeps.path);
+}
+
+// --- search-round-settings ---
+//
+// Core owns what a saved setting means; this binding owns only the Node half
+// of SearchRoundSettingsDeps (the SHA-256 behind the query-plan prompt
+// override's version), so bench and the batch vault runner read a Memory
+// Search Round's settings exactly the way the plugin does.
+
+const searchRoundSettingsDeps = {
+  sha256Hex: (value) => createHash("sha256").update(value).digest("hex"),
+};
+
+export const DEFAULT_TARGET_CANDIDATES = core.DEFAULT_TARGET_CANDIDATES;
+export const DEFAULT_RELATION_JUDGE_BUDGET = core.DEFAULT_RELATION_JUDGE_BUDGET;
+export const DEFAULT_EXCLUDED_FOLDERS_SETTING = core.DEFAULT_EXCLUDED_FOLDERS_SETTING;
+export const QUERY_PROMPT_OVERRIDE_VERSION_PREFIX = core.QUERY_PROMPT_OVERRIDE_VERSION_PREFIX;
+export const excludedFoldersFromSettings = core.excludedFoldersFromSettings;
+
+export function queryPromptOverrideFromSettings(raw) {
+  return core.queryPromptOverrideFromSettings(raw, searchRoundSettingsDeps);
+}
+
+export function searchRoundSettings(source) {
+  return core.searchRoundSettings(source, searchRoundSettingsDeps);
+}
+
+// --- memory-retrieval ---
+
+export function retrieveMemoryCandidates(args, queries, deps) {
+  return core.retrieveMemoryCandidates(args, queries, { ...coreVaultBoundaryDeps, ...deps });
 }
 
 // --- query-plan-deterministic (issue #56) ---

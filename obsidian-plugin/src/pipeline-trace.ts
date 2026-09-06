@@ -306,6 +306,93 @@ function traceRelationJudgeBackfill(value: RelationJudgeTrace): PluginTraceRelat
   };
 }
 
+/**
+ * The four trace inputs a Full Tier round's AhaResult (core/orchestrator.ts)
+ * carries: query-plan metadata, per-query QMD results, the pre-rerank pool
+ * and the Relation Judge backfill trace. Both the plugin's Full Tier branch
+ * and the batch vault runner map exactly these fields out of the same result
+ * object, so the mapping lives here rather than at each call site.
+ *
+ * `queryPlan` is present only when the result actually carries a prompt
+ * version, i.e. it came from the query-planning code path; a hand-built or
+ * fixture result without one records no query generation.
+ */
+export function fullPipelineTraceFields(result: FullPipelineTraceSource): FullPipelineTraceFields {
+  return {
+    queryPlan: result.queryPlanPromptVersion
+      ? {
+          generatedBy: result.queryPlanGeneratedBy ?? "rules",
+          fallback: result.queryPlanFallback ?? false,
+          error: null,
+          promptVersion: result.queryPlanPromptVersion,
+          queries: result.queryPlanQueries,
+        }
+      : undefined,
+    qmdQueryResults: result.qmdQueryResults,
+    pooledCandidates: result.pooledCandidates,
+    relationJudgeTrace: result.relationJudgeTrace,
+  };
+}
+
+export interface FullPipelineTraceSource {
+  queryPlanGeneratedBy?: "llm" | "rules";
+  queryPlanFallback?: boolean;
+  queryPlanPromptVersion?: string;
+  queryPlanQueries?: NonNullable<BuildPluginPipelineTraceInput["queryPlan"]>["queries"];
+  qmdQueryResults?: BuildPluginPipelineTraceInput["qmdQueryResults"];
+  pooledCandidates?: BuildPluginPipelineTraceInput["pooledCandidates"];
+  relationJudgeTrace?: RelationJudgeTrace;
+}
+
+export type FullPipelineTraceFields = Pick<
+  BuildPluginPipelineTraceInput,
+  "queryPlan" | "qmdQueryResults" | "pooledCandidates" | "relationJudgeTrace"
+>;
+
+export interface RecordPipelineTraceInput extends BuildPluginPipelineTraceInput {
+  /** Empty, whitespace-only, or absent disables tracing for this round entirely. */
+  traceDirectory: string | null | undefined;
+}
+
+export interface PipelineTraceOutcome {
+  status: "disabled" | "written" | "failed";
+  /** Set when status is "written"; the same path attached to the result. */
+  tracePath?: string;
+  /** Set when status is "failed"; already appended to result.warnings. */
+  warning?: string;
+}
+
+/**
+ * Completes one round's Pipeline Trace: config gating, build, write, trace
+ * reference back-fill onto the result, and warning capture -- the whole
+ * sequence, in the one order it is allowed to happen.
+ *
+ * Every caller (the plugin's tier-pipeline.ts and the batch vault runner)
+ * used to re-implement these four steps around buildPluginPipelineTrace and
+ * writePluginPipelineTrace; they only need the fields of the round now. A
+ * write failure is never allowed to discard an otherwise successful search:
+ * it becomes a warning on the result and a "failed" outcome, never a throw.
+ */
+export function recordPipelineTrace(input: RecordPipelineTraceInput): PipelineTraceOutcome {
+  const traceDirectory = input.traceDirectory?.trim();
+  if (!traceDirectory) return { status: "disabled" };
+
+  const { traceDirectory: _ignored, ...traceInput } = input;
+  void _ignored;
+  try {
+    const trace = buildPluginPipelineTrace(traceInput);
+    const tracePath = writePluginPipelineTrace(trace, traceDirectory);
+    input.result.trace = { path: tracePath, origin: trace.origin };
+    (input.result.warnings ??= []).push(`Pipeline trace saved: ${tracePath}`);
+    return { status: "written", tracePath };
+  } catch (error) {
+    const code = (error as { code?: string })?.code;
+    const warning = `Pipeline trace write failed: ${code || "unknown error"}; directory: ${traceDirectory}`;
+    (input.result.warnings ??= []).push(warning);
+    return { status: "failed", warning };
+  }
+}
+
 export function traceFileBaseName(title: string, generatedAt: string): string {
   const safe = Array.from(String(title).normalize("NFC").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-").replace(/\s+/g, " ").trim()).slice(0, 50).join("").replace(/[. ]+$/g, "") || "未命名";
   const date = new Date(generatedAt);

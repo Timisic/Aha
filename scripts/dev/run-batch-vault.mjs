@@ -25,11 +25,11 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { createQmdCliRunner } from "../lib/core-node-deps.mjs";
-import { runFullPipeline } from "../lib/core-artifact.mjs";
+import { runFullPipeline, searchRoundSettings } from "../lib/core-artifact.mjs";
 import { expandHome } from "../lib/vault-paths.mjs";
 import {
-  buildPluginPipelineTrace,
-  writePluginPipelineTrace,
+  fullPipelineTraceFields,
+  recordPipelineTrace,
   normalizeSessionStore,
   recordFailedSessionRound,
   recordSuccessfulSessionRound,
@@ -158,14 +158,18 @@ export async function loadPipelineConfig(dataJsonPath) {
   const model = isDeepSeek ? settings.deepseekModel : settings.llmModel;
   const protocol = isDeepSeek ? "chat-completions" : "responses";
 
-  const excludedFolders = (settings.excludedFolders || "templates")
-    .split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+  // Memory Search Round settings are interpreted by the same core module the
+  // plugin uses (core/search-round-settings.ts), so a batch round reads a
+  // saved setting exactly the way an in-Obsidian round does -- including a
+  // deliberately cleared "excluded folders" field and the query-plan prompt
+  // override, both of which this script used to get wrong on its own.
+  const round = searchRoundSettings(settings);
 
   const qmdDeps = createQmdCliRunner({
     qmdCommand: settings.qmdCommand || "qmd",
     qmdIndex: settings.qmdIndex || "obsidian",
     qmdRerank: settings.qmdRerank || false,
-    targetCandidates: settings.targetCandidates || 20,
+    targetCandidates: round.targetCandidates,
   });
 
   const llmConfig = {
@@ -180,11 +184,9 @@ export async function loadPipelineConfig(dataJsonPath) {
   return {
     data,
     settings,
-    excludedFolders,
+    round,
     qmdDeps,
     llmConfig,
-    targetCandidates: settings.targetCandidates || 20,
-    relationJudgeBudget: settings.relationJudgeBudget || 40,
     runPipeline: runFullPipeline,
   };
 }
@@ -238,40 +240,29 @@ export async function runOneNote(options, config, notePath) {
     id: notePath,
     displayName: "Aha",
     _resolved_insight_input: sourceText,
-    targetCandidates: config.targetCandidates,
-    relationJudgeBudget: config.relationJudgeBudget,
-    excludedFolders: config.excludedFolders,
+    targetCandidates: config.round?.targetCandidates,
+    relationJudgeBudget: config.round?.relationJudgeBudget,
+    excludedFolders: config.round?.excludedFolders,
+    queryPromptOverride: config.round?.queryPromptOverride,
   };
 
   const runPipeline = config.runPipeline ?? runFullPipeline;
   const result = await runPipeline(args, config.llmConfig, config.qmdDeps);
 
-  const traceDirectory = config.settings?.traceDirectory?.trim();
-  if (traceDirectory) {
-    try {
-      const trace = buildPluginPipelineTrace({
-        origin: "batch", sourcePath: notePath, sourceTitle: source.title, sourceText,
-        tier: "full", result,
-        queryPlan: result.queryPlanPromptVersion ? {
-          generatedBy: result.queryPlanGeneratedBy,
-          fallback: result.queryPlanFallback,
-          error: null,
-          promptVersion: result.queryPlanPromptVersion,
-          queries: result.queryPlanQueries,
-        } : undefined,
-        qmdQueryResults: result.qmdQueryResults,
-        pooledCandidates: result.pooledCandidates,
-        relationJudgeTrace: result.relationJudgeTrace,
-      });
-      const tracePath = writePluginPipelineTrace(trace, traceDirectory);
-      result.trace = { path: tracePath, origin: "batch" };
-      (result.warnings ??= []).push(`Pipeline trace saved: ${tracePath}`);
-    } catch (error) {
-      const warning = `Pipeline trace write failed: ${error.code || "unknown error"}; directory: ${traceDirectory}`;
-      (result.warnings ??= []).push(warning);
-      console.warn(warning);
-    }
-  }
+  // Gating, build, write, trace back-fill and failure degradation all live in
+  // the Pipeline Trace module (pipeline-trace.ts's recordPipelineTrace); the
+  // only batch-specific part left here is echoing a failure to the console.
+  const traceOutcome = recordPipelineTrace({
+    traceDirectory: config.settings?.traceDirectory,
+    origin: "batch",
+    sourcePath: notePath,
+    sourceTitle: source.title,
+    sourceText,
+    tier: "full",
+    result,
+    ...fullPipelineTraceFields(result),
+  });
+  if (traceOutcome.warning) console.warn(traceOutcome.warning);
 
   const dataJsonPath = dataJsonPathFor(options.vaultRoot, options.pluginId);
   if (result.ok) {

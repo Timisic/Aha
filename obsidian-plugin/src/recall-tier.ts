@@ -1,25 +1,24 @@
 // Recall Tier (issue #58; CONTEXT.md "Recall Tier"): the capability tier
 // used when the retrieval backend works but no LLM access is available.
-// Wires core's deterministic pieces together -- queryPlanFromFallbackRules
-// (no LLM query planning) -> the plugin's qmd CLI adapter + runQmdPlanQueries
-// -> mergeAndRankQueryResults/pipelineCandidate (pool merge/rank, no LLM) --
-// into a ranked, unjudged (`relation: "weak"`) candidate list. Review
-// feedback (accept/reject_as_noise/should_have_found) still works on these
-// candidates because review-panel.ts's feedback actions operate generically
-// on ReviewPanelCandidate regardless of how a candidate was produced.
+// Owns only what is tier-specific -- deterministic query planning
+// (queryPlanFromFallbackRules, no LLM) and how the round is reported --
+// and delegates the retrieval itself to core's Memory Retrieval module
+// (core/memory-retrieval.ts), the same one Full Tier uses. The result is a
+// ranked, unjudged (`relation: "weak"`) candidate list. Review feedback
+// (accept/reject_as_noise/should_have_found) still works on these candidates
+// because review-panel.ts's feedback actions operate generically on
+// ReviewPanelCandidate regardless of how a candidate was produced.
 
 import {
-  DEFAULT_EXCLUDED_CANDIDATE_FOLDERS,
+  DEFAULT_TARGET_CANDIDATES,
   formatTierHeader,
-  mergeAndRankQueryResults,
   pipelineCandidate,
   queryPlanFromFallbackRules,
-  runQmdPlanQueries,
+  retrieveMemoryCandidates,
   type CandidateFilterArgs,
   type DeterministicPlanArgs,
+  type MemoryRetrievalDeps,
   type PipelineCandidateShape,
-  type QmdDeps,
-  type VaultBoundaryDeps,
 } from "./core";
 import type { AhaCandidate, AhaWrapperResult } from "./schema";
 
@@ -30,8 +29,6 @@ export interface RecallTierArgs extends CandidateFilterArgs, DeterministicPlanAr
   vaultRootPrefix?: unknown;
 }
 
-const DEFAULT_TARGET_CANDIDATES = 20;
-
 function stripRawLocations(candidate: PipelineCandidateShape): AhaCandidate {
   const { _rawLocations, ...rest } = candidate;
   void _rawLocations;
@@ -39,32 +36,26 @@ function stripRawLocations(candidate: PipelineCandidateShape): AhaCandidate {
 }
 
 /**
- * Runs the Recall Tier pipeline: deterministic multi-query plan, qmd
- * retrieval per query, pool merge/rank -- exactly the deterministic half of
- * runFullPipeline (core/orchestrator.ts), stopping before LLM query planning
- * and Relation Judge. Never throws: per-query qmd failures are already
- * caught by runQmdPlanQueries and surfaced as warnings, so a partial or even
- * total retrieval failure still resolves to an honest ok:true result with
- * whatever candidates (possibly zero) survived -- Recall Tier is not an
- * error state.
+ * Runs the Recall Tier pipeline: deterministic multi-query plan, then the
+ * shared Memory Retrieval round (qmd retrieval, graph expansion when the
+ * injected deps provide it, pool merge/rank) -- exactly the deterministic
+ * half of runFullPipeline (core/orchestrator.ts), stopping before LLM query
+ * planning and Relation Judge. Never throws: per-query qmd failures and
+ * graph-expansion failures are already caught inside the retrieval module
+ * and surfaced as warnings, so a partial or even total retrieval failure
+ * still resolves to an honest ok:true result with whatever candidates
+ * (possibly zero) survived -- Recall Tier is not an error state.
  */
 export async function runRecallTier(
   args: RecallTierArgs,
-  deps: QmdDeps & VaultBoundaryDeps,
+  deps: MemoryRetrievalDeps,
 ): Promise<AhaWrapperResult> {
   const targetCandidates = args.targetCandidates ?? DEFAULT_TARGET_CANDIDATES;
   const plan = queryPlanFromFallbackRules(args);
-  const { queryResults, warnings: queryWarnings, errors: queryErrors } = await runQmdPlanQueries(plan.queries, deps);
-  const pooled = await mergeAndRankQueryResults(
-    args,
-    queryResults,
-    {
-      excludedFolders: args.excludedFolders ?? DEFAULT_EXCLUDED_CANDIDATE_FOLDERS,
-      vaultRootPrefix: args.vaultRootPrefix,
-    },
-    deps,
-  );
-  const candidates = pooled.slice(0, targetCandidates).map((candidate) => stripRawLocations(pipelineCandidate(candidate)));
+  const retrieval = await retrieveMemoryCandidates(args, plan.queries, deps);
+  const candidates = retrieval.pooled
+    .slice(0, targetCandidates)
+    .map((candidate) => stripRawLocations(pipelineCandidate(candidate)));
 
   const header = formatTierHeader("recall", "no LLM configured");
   const summary = `${header}. Deterministic multi-query retrieval plus graph expansion ranked ${candidates.length} candidate(s) by retrieval prior; relation judging did not run, and review feedback is still collected as seed material.`;
@@ -74,7 +65,10 @@ export async function runRecallTier(
     sourcePath: args.sourcePath,
     generatedAt: new Date().toISOString(),
     summary,
-    warnings: [...queryWarnings, ...queryErrors.map((error) => `Skipped failed query: ${error}`)],
+    warnings: [
+      ...retrieval.warnings,
+      ...retrieval.errors.map((error) => `Skipped failed query: ${error}`),
+    ],
     candidates,
   };
 }

@@ -19,13 +19,18 @@ import {
   DEFAULT_LLM_TIMEOUT_MS,
   decideCapabilityTier,
   runFullPipeline,
+  searchRoundSettings,
+  excludedFoldersFromSettings as coreExcludedFoldersFromSettings,
+  queryPromptOverrideFromSettings as coreQueryPromptOverrideFromSettings,
   type CandidateFilterArgs,
   type DeterministicPlanArgs,
   type OrchestratorDeps,
+  type QueryPlanPromptOverride,
+  type SearchRoundSettings,
 } from "./core";
 import { resolveLlmRequestProfile, requestUrlHttpPost } from "./llm-request";
 import { buildNeighborhoodTierResult, collectNeighbors, type NeighborhoodMetadataCacheLike, type NeighborhoodSourceLike } from "./neighborhood-tier";
-import { buildPluginPipelineTrace, writePluginPipelineTrace, type BuildPluginPipelineTraceInput } from "./pipeline-trace";
+import { fullPipelineTraceFields, recordPipelineTrace, type FullPipelineTraceFields } from "./pipeline-trace";
 import { createQmdRequestDeps, probeQmdAvailable } from "./qmd-request";
 import { runRecallTier } from "./recall-tier";
 import type { AhaPluginSettings } from "./settings";
@@ -78,47 +83,37 @@ function getNodeRequire(): NodeRequire {
 }
 
 /**
- * Parses the visible "Excluded folders" settings field (issue #59): comma
- * or newline separated vault-relative folder paths. Absorbs the old
- * bench-side AHA_EXCLUDED_FOLDERS environment-variable convention into a
- * plugin settings field -- this has nothing to do with a real environment
- * variable in the plugin (the plugin never read process.env.AHA_EXCLUDED_FOLDERS
- * for the internalized path). Returns an array even when empty (an
- * intentionally cleared field means "exclude nothing via this mechanism";
- * the always-on isGeneratedReviewCandidate check in core/pool.ts still
- * unconditionally excludes the review folder regardless of this list).
+ * Node's SHA-256, the plugin-side half of core's SearchRoundSettingsDeps:
+ * core/search-round-settings.ts owns *what* the prompt-override version
+ * looks like, this owns *how* a hash is computed in this runtime.
  */
-export function excludedFoldersFromSettings(raw: string): readonly string[] {
-  return String(raw ?? "")
-    .split(/[,\n]/)
-    .map((value) => value.trim())
-    .filter(Boolean);
+function searchRoundSettingsDeps(): { sha256Hex(value: string): string } {
+  return {
+    sha256Hex: (value) => {
+      const crypto = getNodeRequire()("crypto") as typeof import("crypto");
+      return crypto.createHash("sha256").update(value).digest("hex");
+    },
+  };
 }
 
 /**
- * Computes the query-plan prompt-override parameter for
- * generateQueryPlanViaLlm (core/query-plan-llm.ts's additive optional
- * parameter, issue #59): undefined when settings.queryPromptOverride is
- * empty/whitespace-only (preserving the built-in prompt/version exactly),
- * otherwise `{ text, version }` with version computed as a content hash of
- * the override text using Node's `crypto` via getNodeRequire() -- core
- * itself must stay free of node imports, so the hash is computed here and
- * injected as a plain string, per the issue's resolved-ambiguity guidance.
- *
- * Version format: `aha-query-plan-custom-<16 lowercase hex chars>`, where
- * the hex chars are the first 16 characters of the override text's SHA-256
- * hex digest. 16 hex chars (64 bits) is ample to distinguish override
- * revisions in a Pipeline Trace without the version string becoming
- * unwieldy; the "aha-query-plan-custom-" prefix keeps it visually
- * distinguishable from the built-in QUERY_PLAN_PROMPT_VERSION
- * ("aha-query-plan-v6") at a glance.
+ * Reads the plugin's saved settings as Memory Search Round settings, through
+ * the same core module the batch vault runner uses -- so a round started from
+ * either side interprets excluded folders, candidate counts and the
+ * query-plan prompt override identically.
  */
-export function queryPromptOverrideFromSettings(raw: string): { text: string; version: string } | undefined {
-  const text = String(raw ?? "").trim();
-  if (!text) return undefined;
-  const crypto = getNodeRequire()("crypto") as typeof import("crypto");
-  const hash = crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
-  return { text, version: `aha-query-plan-custom-${hash}` };
+export function searchRoundSettingsFor(settings: AhaPluginSettings): SearchRoundSettings {
+  return searchRoundSettings(settings, searchRoundSettingsDeps());
+}
+
+/** Thin binding of core's rule (see core/search-round-settings.ts). */
+export function excludedFoldersFromSettings(raw: string): readonly string[] {
+  return coreExcludedFoldersFromSettings(raw);
+}
+
+/** Thin binding of core's rule, with this runtime's hash injected. */
+export function queryPromptOverrideFromSettings(raw: string): QueryPlanPromptOverride | undefined {
+  return coreQueryPromptOverrideFromSettings(raw, searchRoundSettingsDeps());
 }
 
 function filterArgsFor(input: TieredSearchInput): CandidateFilterArgs {
@@ -139,7 +134,7 @@ function planArgsFor(input: TieredSearchInput): DeterministicPlanArgs {
   };
 }
 
-async function recallOutcome(input: TieredSearchInput): Promise<TieredOutcome> {
+async function recallOutcome(input: TieredSearchInput, round: SearchRoundSettings): Promise<TieredOutcome> {
   const qmdDeps = createQmdRequestDeps(input.settings);
   const vaultBoundaryDeps = createVaultBoundaryDeps();
   const result = await runRecallTier(
@@ -147,53 +142,39 @@ async function recallOutcome(input: TieredSearchInput): Promise<TieredOutcome> {
       ...filterArgsFor(input),
       ...planArgsFor(input),
       sourcePath: input.sourceFile.path,
-      targetCandidates: input.settings.targetCandidates,
-      excludedFolders: excludedFoldersFromSettings(input.settings.excludedFolders),
+      targetCandidates: round.targetCandidates,
+      excludedFolders: round.excludedFolders,
     },
-    { ...qmdDeps, ...vaultBoundaryDeps },
+    // Recall Tier gets the same in-memory graph-expansion dep as Full Tier:
+    // both go through core's Memory Retrieval module, so link/backlink
+    // neighbors reach Recall rounds too -- which is what its own summary has
+    // always told users happened.
+    { ...qmdDeps, ...vaultBoundaryDeps, listGraphNeighbors: listGraphNeighborsFor(input) },
   );
   return { tier: "recall", result };
 }
 
-interface QueryPlanTraceMetadata {
-  generatedBy: "llm" | "rules";
-  fallback: boolean;
-  error: string | null;
-  promptVersion: string;
-  queries?: NonNullable<BuildPluginPipelineTraceInput["queryPlan"]>["queries"];
-}
-
-/** Writes a plugin-origin Pipeline Trace only when settings.traceDirectory is a non-empty string; otherwise does nothing (no filesystem access at all). */
+/**
+ * Hands one round to the Pipeline Trace module (pipeline-trace.ts's
+ * recordPipelineTrace), which owns the whole completion sequence: gating on
+ * settings.traceDirectory, building, writing, attaching the trace reference
+ * to the result, and turning a write failure into a warning rather than a
+ * lost search round.
+ */
 function writePluginTraceIfConfigured(
   input: TieredSearchInput,
   outcome: TieredOutcome,
-  queryPlan: QueryPlanTraceMetadata | undefined,
-  qmdQueryResults?: BuildPluginPipelineTraceInput["qmdQueryResults"],
-  pooledCandidates?: BuildPluginPipelineTraceInput["pooledCandidates"],
-  relationJudgeTrace?: BuildPluginPipelineTraceInput["relationJudgeTrace"],
+  fields: FullPipelineTraceFields = {},
 ): void {
-  const traceDirectory = input.settings.traceDirectory?.trim();
-  if (!traceDirectory) return;
-  const traceInput: BuildPluginPipelineTraceInput = {
+  recordPipelineTrace({
+    traceDirectory: input.settings.traceDirectory,
     sourcePath: input.sourceFile.path,
     sourceTitle: input.sourceFile.basename,
     sourceText: input.sourceText,
     tier: outcome.tier,
     result: outcome.result,
-    queryPlan,
-    qmdQueryResults,
-    pooledCandidates,
-    relationJudgeTrace,
-  };
-  try {
-    const trace = buildPluginPipelineTrace(traceInput);
-    const tracePath = writePluginPipelineTrace(trace, traceDirectory);
-    outcome.result.trace = { path: tracePath, origin: "plugin" };
-    (outcome.result.warnings ??= []).push(`Pipeline trace saved: ${tracePath}`);
-  } catch (error) {
-    const code = (error as { code?: string })?.code;
-    (outcome.result.warnings ??= []).push(`Pipeline trace write failed: ${code || "unknown error"}; directory: ${traceDirectory}`);
-  }
+    ...fields,
+  });
 }
 
 /**
@@ -204,6 +185,7 @@ function writePluginTraceIfConfigured(
  */
 export async function runTieredSearch(input: TieredSearchInput): Promise<TieredOutcome> {
   const { settings } = input;
+  const round = searchRoundSettingsFor(settings);
   const qmdAvailable = await probeQmdAvailable(settings);
   const llmProfile = resolveLlmRequestProfile(settings, settings.llmProvider);
   const tier = decideCapabilityTier({ qmdAvailable, llmConfigured: llmProfile.ok });
@@ -214,17 +196,17 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
       result: buildNeighborhoodTierResult({
         sourceFile: input.sourceFile,
         metadataCache: input.metadataCache,
-        targetCandidates: settings.targetCandidates,
-        excludedFolders: excludedFoldersFromSettings(settings.excludedFolders),
+        targetCandidates: round.targetCandidates,
+        excludedFolders: round.excludedFolders,
       }),
     };
-    writePluginTraceIfConfigured(input, outcome, undefined);
+    writePluginTraceIfConfigured(input, outcome);
     return outcome;
   }
 
   if (tier === "recall") {
-    const outcome = await recallOutcome(input);
-    writePluginTraceIfConfigured(input, outcome, undefined);
+    const outcome = await recallOutcome(input, round);
+    writePluginTraceIfConfigured(input, outcome);
     return outcome;
   }
 
@@ -233,8 +215,8 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
     // llmProfile.ok value as llmConfigured, so tier === "full" implies
     // llmProfile.ok === true. Kept as a TS narrowing guard and a defensive
     // fallback in case that invariant is ever broken by a future edit.
-    const outcome = await recallOutcome(input);
-    writePluginTraceIfConfigured(input, outcome, undefined);
+    const outcome = await recallOutcome(input, round);
+    writePluginTraceIfConfigured(input, outcome);
     return outcome;
   }
 
@@ -253,10 +235,10 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
       ...planArgsFor(input),
       sourcePath: input.sourceFile.path,
       sourceText: input.sourceText,
-      targetCandidates: settings.targetCandidates,
-      relationJudgeBudget: settings.relationJudgeBudget,
-      excludedFolders: excludedFoldersFromSettings(settings.excludedFolders),
-      queryPromptOverride: queryPromptOverrideFromSettings(settings.queryPromptOverride),
+      targetCandidates: round.targetCandidates,
+      relationJudgeBudget: round.relationJudgeBudget,
+      excludedFolders: round.excludedFolders,
+      queryPromptOverride: round.queryPromptOverride,
     },
     {
       baseUrl: llmProfile.request.baseUrl,
@@ -269,12 +251,6 @@ export async function runTieredSearch(input: TieredSearchInput): Promise<TieredO
     orchestratorDeps,
   );
   const outcome = shapeFullTierResult(fullResult);
-  writePluginTraceIfConfigured(input, outcome, {
-    generatedBy: fullResult.queryPlanGeneratedBy,
-    fallback: fullResult.queryPlanFallback,
-    error: null,
-    promptVersion: fullResult.queryPlanPromptVersion,
-    queries: fullResult.queryPlanQueries,
-  }, fullResult.qmdQueryResults, fullResult.pooledCandidates, fullResult.relationJudgeTrace);
+  writePluginTraceIfConfigured(input, outcome, fullPipelineTraceFields(fullResult));
   return outcome;
 }

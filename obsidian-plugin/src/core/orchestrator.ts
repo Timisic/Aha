@@ -13,22 +13,27 @@
 // reads, realpath) flows through injected deps.
 
 import {
-  DEFAULT_EXCLUDED_CANDIDATE_FOLDERS,
   type CandidateFilterArgs,
   type VaultBoundaryDeps,
   isObsidianQmdUri,
   qmdUriVaultPath,
   resolveVaultContainedPath,
 } from "./candidates";
-import { type GraphExpansionDeps, graphExpansionRows } from "./graph-expansion";
+import { type GraphExpansionDeps } from "./graph-expansion";
 import { type LlmProtocol, type LlmThinking, type LlmTransportDeps } from "./llm-transport";
+import { retrieveMemoryCandidates } from "./memory-retrieval";
 import { excerptNoteMarkdown, isSubstantiveExcerpt } from "./note-excerpt";
-import { mergeAndRankQueryResults, pipelineCandidate } from "./pool";
-import { type QmdDeps, runQmdPlanQueries } from "./qmd";
+import { pipelineCandidate } from "./pool";
+import { type QmdDeps } from "./qmd";
 import { type DeterministicPlanArgs, type PlanQuery, compactLine } from "./query-plan-deterministic";
 import { generateQueryPlanViaLlm, type QueryPlanPromptOverride } from "./query-plan-llm";
 import type { PooledCandidate } from "./pool";
 import type { QmdQueryOutcome } from "./qmd";
+import {
+  DEFAULT_RELATION_JUDGE_BUDGET,
+  DEFAULT_TARGET_CANDIDATES,
+  positiveInteger,
+} from "./search-round-settings";
 import {
   type RelationJudgeCandidate,
   type RelationJudgeCandidateInput,
@@ -127,9 +132,6 @@ export interface AhaResultFailure {
 
 export type AhaResult = AhaResultSuccess | AhaResultFailure;
 
-const DEFAULT_TARGET_CANDIDATES = 20;
-export const DEFAULT_RELATION_JUDGE_BUDGET = 40;
-
 export type RelationJudgeStopReason = "target_reached" | "pool_exhausted" | "budget_exhausted";
 
 export interface RelationJudgeBatchTrace {
@@ -194,37 +196,12 @@ export async function runFullPipeline(
     planOutcome.fallback ? ` after fallback: ${planOutcome.error}` : ""
   }.`;
 
-  const { queryResults, warnings: queryWarnings, errors: queryErrors } = await runQmdPlanQueries(
-    planOutcome.queries,
-    deps,
-  );
-
-  const graphWarnings: string[] = [];
-  if (deps.listGraphNeighbors) {
-    try {
-      const graphOutcome = await deps.listGraphNeighbors(args.sourcePath);
-      graphWarnings.push(...graphOutcome.warnings);
-      const rows = graphExpansionRows(args.sourcePath, graphOutcome.neighbors);
-      if (rows.length > 0) {
-        queryResults.push({
-          query: { kind: "obsidian_graph", command: "obsidian links/backlinks" },
-          rows,
-        });
-      }
-    } catch (error) {
-      graphWarnings.push(`Obsidian graph expansion failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  const pooled = await mergeAndRankQueryResults(
-    args,
+  const {
     queryResults,
-    {
-      excludedFolders: args.excludedFolders ?? DEFAULT_EXCLUDED_CANDIDATE_FOLDERS,
-      vaultRootPrefix: args.vaultRootPrefix,
-    },
-    deps,
-  );
+    pooled,
+    warnings: retrievalWarnings,
+    errors: queryErrors,
+  } = await retrieveMemoryCandidates(args, planOutcome.queries, deps);
   const candidates = pooled.map(pipelineCandidate) as unknown as RelationJudgeCandidate[];
 
   if (candidates.length === 0) {
@@ -235,7 +212,7 @@ export async function runFullPipeline(
       summary: "Aha mixed retrieval returned no usable candidates.",
       warnings: [
         planWarning,
-        ...graphWarnings,
+        ...retrievalWarnings,
         ...queryErrors.map((error) => `Skipped failed query: ${error}`),
       ],
       error: {
@@ -387,8 +364,7 @@ export async function runFullPipeline(
       : `Relation Judge unavailable; returning structured failure instead of treating weak candidates as success: ${judgeErrors.join("; ") || "No candidate excerpts were readable."}`,
     ...excerptWarnings,
     ...judgeWarnings,
-    ...queryWarnings,
-    ...graphWarnings,
+    ...retrievalWarnings,
     ...queryErrors.map((error) => `Skipped failed query: ${error}`),
   ];
 
@@ -431,12 +407,6 @@ export async function runFullPipeline(
     pooledCandidates: pooled,
     relationJudgeTrace,
   };
-}
-
-function positiveInteger(value: number | undefined, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : fallback;
 }
 
 function isNonWeakCandidate(candidate: RelationJudgeCandidate): boolean {

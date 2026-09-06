@@ -30,6 +30,8 @@ if (build.status !== 0) {
 const session = await import(pathToFileURL(artifactPath).href);
 
 export const buildPluginPipelineTrace = session.buildPluginPipelineTrace;
+export const fullPipelineTraceFields = session.fullPipelineTraceFields;
+export const recordPipelineTrace = session.recordPipelineTrace;
 export const writePluginPipelineTrace = session.writePluginPipelineTrace;
 export const traceFileBaseName = session.traceFileBaseName;
 

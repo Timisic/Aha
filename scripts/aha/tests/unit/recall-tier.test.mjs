@@ -108,3 +108,46 @@ test("a failing qmd query becomes a warning, not a fake failure -- zero candidat
   assert.equal(result.candidates.length, 0);
   assert.ok(result.warnings.some((warning) => warning.includes("Skipped failed query")));
 });
+
+test("Recall Tier surfaces graph neighbors, which its summary has always claimed -- with no LLM call", async () => {
+  const recallTier = await recallTierModule();
+  const deps = {
+    ...vaultBoundaryDeps(),
+    runQmdQuery: async () => "[]",
+    listGraphNeighbors: async () => ({
+      neighbors: [{ notePath: "Memory/Linked.md", kind: "backlink" }],
+      warnings: [],
+    }),
+    // Any LLM transport call would blow up here: Recall Tier must reach
+    // graph-expanded candidates purely deterministically.
+    httpPost: () => {
+      throw new Error("Recall Tier must never call an LLM");
+    },
+  };
+
+  const result = await recallTier.runRecallTier({ ...baseArgs, excludedFolders: [] }, deps);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.notePath), ["Memory/Linked.md"]);
+  assert.equal(result.candidates[0].relation, "weak");
+  assert.match(result.summary, /graph expansion/);
+});
+
+test("a graph-expansion failure keeps Recall Tier an honest ok:true round with a warning", async () => {
+  const recallTier = await recallTierModule();
+  const deps = {
+    ...vaultBoundaryDeps(),
+    runQmdQuery: async () => JSON.stringify([
+      { file: "Memory/A.md", title: "A", snippet: "Old judgment about feedback loops.", score: 0.9 },
+    ]),
+    listGraphNeighbors: async () => {
+      throw new Error("obsidian CLI missing");
+    },
+  };
+
+  const result = await recallTier.runRecallTier({ ...baseArgs, excludedFolders: [] }, deps);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.notePath), ["Memory/A.md"]);
+  assert.ok(result.warnings.some((warning) => warning.includes("Obsidian graph expansion failed")));
+});
