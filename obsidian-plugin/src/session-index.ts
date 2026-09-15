@@ -7,6 +7,8 @@
 // `obsidian` types are fine; esbuild elides them).
 
 export * from "./session-store";
+export * from "./saved-thoughts";
+export * from "./thought-note";
 export * from "./source-identity";
 export {
   buildPluginPipelineTrace,

@@ -18,11 +18,14 @@ import { decideQmdBinaryLight, decideIndexCoverageLight, decideQmdEndpointsLight
 import { validateAhaWrapperResult, type AhaWrapperResult } from "./schema";
 import { sourceIdentityForFile } from "./source-identity";
 import { AHA_COMMANDS } from "./commands";
+import { savedThoughts, updateSavedThought, type SavedThought } from "./saved-thoughts";
+import { applyThoughtNoteWrite, thoughtNoteBlock, type ThoughtNoteWrite } from "./thought-note";
 import { runTieredSearch } from "./tier-pipeline";
 import { createVaultReadNote } from "./vault-read";
 import { CURRENT_SETTINGS_SCHEMA_VERSION, migrateAhaPluginSettings, shouldShowSimplificationNotice } from "./settings-migration";
 import {
   appendSessionFeedback,
+  latestSuccessfulRound,
   createEmptySessionStore,
   normalizeSessionStore,
   recordFailedSessionRound,
@@ -56,6 +59,7 @@ export default class AhaPlugin extends Plugin {
   private statusBar?: HTMLElement;
   private activeRun?: { startedAt: number; sourcePath: string };
   private timerId?: number;
+  private feedbackWrite: Promise<void> = Promise.resolve();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -150,11 +154,13 @@ export default class AhaPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData({
+    const operation = this.feedbackWrite.then(() => this.saveData({
       settings: this.settings,
       sessionStore: this.sessionStore,
       schemaVersion: this.schemaVersion,
-    });
+    }));
+    this.feedbackWrite = operation.catch(() => {});
+    await operation;
   }
 
   private async checkReadiness(): Promise<void> {
@@ -316,10 +322,92 @@ export default class AhaPlugin extends Plugin {
   }
 
   async recordSessionFeedback(recordKey: string, input: AhaSessionFeedbackInput): Promise<void> {
-    const record = this.sessionStore.records[recordKey];
-    if (!record) throw new Error("No Aha Session Record exists for this source note.");
-    appendSessionFeedback(record, input);
-    await this.saveSettings();
+    // Capture source text at save time; old records never acquire invented context.
+    if (input.action === "surprise") {
+      const file = this.app.vault.getAbstractFileByPath(input.sourcePath);
+      if (file instanceof TFile) {
+        const text = await this.app.vault.cachedRead(file);
+        input = { ...input, sourceExcerpt: text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").slice(0, 3500) };
+      }
+    }
+    const snapshot = input;
+    await this.writeFeedback(recordKey, record => {
+      if (snapshot.action === "surprise" && record.feedback.some(item => item.action === "surprise" && item.memory === snapshot.candidate?.notePath)) return;
+      appendSessionFeedback(record, snapshot);
+    });
+  }
+
+  listSavedThoughts(): SavedThought[] {
+    return savedThoughts(this.sessionStore);
+  }
+
+  async saveThought(recordKey: string, feedbackId: string, note: string): Promise<void> {
+    const operation = this.feedbackWrite.then(async () => {
+      const record = this.sessionStore.records[recordKey];
+      if (!record) throw new Error("当前笔记的记录不存在，文字已保留。");
+      const entry = savedThoughts(this.sessionStore).find(item => item.recordKey === recordKey && item.feedbackId === feedbackId);
+      if (!entry?.feedback.memory) throw new Error("这条 Surprise 不存在，文字已保留。");
+      const feedback = entry.feedback;
+      // Use the source associated with this result, never whichever tab is active.
+      const sourcePath = feedback.noteWrite?.path ?? record.source.path;
+      const file = this.app.vault.getAbstractFileByPath(sourcePath);
+      if (!(file instanceof TFile) || file.extension !== "md") throw new Error("当前笔记不存在或已移动，请先打开原笔记；文字已保留。");
+      // Reconcile an interrupted save before accepting another edit. This is a
+      // write-ahead journal: a failed data.json write cannot cause a duplicate.
+      if (feedback.noteWrite?.status === "pending") {
+        await this.app.vault.process(file, content => applyThoughtNoteWrite(content, feedback.noteWrite!));
+      }
+      const write: ThoughtNoteWrite = {
+        path: sourcePath,
+        block: thoughtNoteBlock(feedback.memory!, note),
+        previousBlock: feedback.noteWrite?.block,
+        status: "pending",
+      };
+      // Check conflicts before persisting intent, and again inside vault.process.
+      applyThoughtNoteWrite(await this.app.vault.read(file), write);
+      const next = structuredClone(record);
+      const nextEntry = savedThoughts({ schemaVersion: 1, records: { [recordKey]: next } }).find(item => item.feedbackId === feedbackId)!;
+      nextEntry.feedback.id = feedbackId;
+      nextEntry.feedback.noteWrite = write;
+      await this.persistFeedbackRecord(record, next);
+      await this.app.vault.process(file, content => applyThoughtNoteWrite(content, write));
+      const completed = structuredClone(record);
+      updateSavedThought(completed, feedbackId, note, new Date());
+      const completedEntry = completed.feedback.find(item => item.id === feedbackId)!;
+      completedEntry.noteWrite = { path: sourcePath, block: write.block, status: "saved" };
+      await this.persistFeedbackRecord(record, completed);
+    });
+    this.feedbackWrite = operation.catch(() => {});
+    return operation;
+  }
+
+  private async persistFeedbackRecord(record: AhaSessionRecord, next: AhaSessionRecord): Promise<void> {
+    await this.saveData({
+      settings: this.settings,
+      schemaVersion: this.schemaVersion,
+      sessionStore: { ...this.sessionStore, records: { ...this.sessionStore.records, [record.key]: next } },
+    });
+    record.feedback = next.feedback;
+    record.updatedAt = next.updatedAt;
+  }
+
+  private writeFeedback(recordKey: string, mutate: (record: AhaSessionRecord) => void): Promise<void> {
+    const operation = this.feedbackWrite.then(async () => {
+      const record = this.sessionStore.records[recordKey];
+      if (!record) throw new Error("No Aha Session Record exists for this source note.");
+      const next = structuredClone(record);
+      mutate(next);
+      // Commit the in-memory feedback only after persistence succeeds. A failed
+      // save must remain retryable and must not show a successful Surprise mark.
+      const added = next.feedback.length > record.feedback.length ? next.feedback.at(-1) : undefined;
+      await this.persistFeedbackRecord(record, next);
+      if (added?.action === "reject_as_noise") {
+        const candidate = latestSuccessfulRound(record)?.candidates.find(item => item.notePath === added.memory);
+        if (candidate) candidate.selected = false;
+      }
+    });
+    this.feedbackWrite = operation.catch(() => {});
+    return operation;
   }
 
   async runAhaForSourcePath(sourcePath: string): Promise<void> {

@@ -7,6 +7,7 @@ import {
   type ReviewPanelCandidate,
 } from "./review-note";
 import { sourceIdentityAllowsPathDrift, sourceReviewIndexKey } from "./source-identity";
+import { normalizeThoughtNoteWrite, type ThoughtNoteWrite } from "./thought-note";
 
 export interface AhaSessionStoreData {
   schemaVersion: 1;
@@ -98,6 +99,7 @@ export interface AhaSessionStaleState {
 }
 
 export interface AhaSessionFeedbackInput {
+  sourceExcerpt?: string;
   action: ReviewBenchmarkSeedAction;
   createdAt: Date;
   sourcePath: string;
@@ -108,6 +110,11 @@ export interface AhaSessionFeedbackInput {
 }
 
 export interface AhaSessionFeedback {
+  noteWrite?: ThoughtNoteWrite;
+  id?: string;
+  updatedAt?: string;
+  /** Source text captured when saved, not an inferred claim or model output. */
+  sourceExcerpt?: string;
   action: ReviewBenchmarkSeedAction;
   status: "draft";
   seedLabel: ReviewBenchmarkSeedLabel;
@@ -282,6 +289,7 @@ export function syncSessionSelections(record: AhaSessionRecord, selectedByIndex:
 
 export function appendSessionFeedback(record: AhaSessionRecord, input: AhaSessionFeedbackInput): AhaSessionFeedback {
   const feedback: AhaSessionFeedback = {
+    id: crypto.randomUUID(),
     action: input.action,
     status: "draft",
     seedLabel: seedLabelForAction(input.action),
@@ -293,6 +301,7 @@ export function appendSessionFeedback(record: AhaSessionRecord, input: AhaSessio
     hit: input.candidate?.hit,
     why: input.candidate?.why,
     note: input.note?.trim() || undefined,
+    sourceExcerpt: input.sourceExcerpt,
   };
   record.feedback = [...record.feedback, feedback];
   if (input.action === "reject_as_noise" && input.candidate?.notePath) {
@@ -494,6 +503,10 @@ function normalizeSourceSnapshot(value: Record<string, unknown>, fallbackPath: s
 function normalizeFeedback(value: unknown): AhaSessionFeedback | null {
   if (!isRecord(value) || typeof value.action !== "string" || typeof value.createdAt !== "string") return null;
   return {
+    noteWrite: normalizeThoughtNoteWrite(value.noteWrite),
+    id: typeof value.id === "string" ? value.id : undefined,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+    sourceExcerpt: typeof value.sourceExcerpt === "string" ? value.sourceExcerpt : undefined,
     action: value.action as ReviewBenchmarkSeedAction,
     status: "draft",
     seedLabel: typeof value.seedLabel === "string" ? value.seedLabel as ReviewBenchmarkSeedLabel : seedLabelForAction(value.action as ReviewBenchmarkSeedAction),

@@ -53,7 +53,7 @@
 .aha-review-panel-actions {
   align-items: flex-start;
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   grid-area: actions;
   gap: 4px;
   justify-content: flex-end;
@@ -300,4 +300,147 @@
 .aha-review-panel-actions > .aha-review-panel-icon-button:hover {
   background: var(--background-modifier-hover) !important;
   color: var(--text-normal) !important;
+}
+
+.aha-thought-editor {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.aha-thought-label {
+  display: block;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+}
+
+.aha-thought-input,
+.aha-saved-search {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: var(--font-ui-small);
+}
+
+.aha-thought-input {
+  margin-top: 6px;
+  min-height: 96px;
+  padding: 8px 10px;
+  resize: vertical;
+  line-height: 1.6;
+  font-weight: var(--font-normal);
+}
+
+.aha-thought-input::placeholder,
+.aha-saved-search::placeholder {
+  color: var(--text-muted);
+}
+
+.aha-thought-actions,
+.aha-saved-actions,
+.aha-saved-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aha-thought-actions,
+.aha-saved-actions {
+  margin-top: 8px;
+}
+
+.aha-thought-status,
+.aha-saved-meta,
+.aha-saved-caption {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-normal);
+}
+
+.aha-review-panel .aha-thought-actions button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.aha-saved-header {
+  margin-bottom: 16px;
+}
+
+.aha-saved-header h2 {
+  flex: 1;
+}
+
+.aha-saved-search {
+  margin-bottom: 8px;
+}
+
+.aha-saved-entry {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.aha-saved-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  font-size: var(--font-ui-small);
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+.aha-saved-links a {
+  color: var(--text-normal);
+  text-decoration: none;
+}
+
+.aha-saved-links a:hover {
+  color: var(--text-accent);
+  text-decoration: underline;
+}
+
+.aha-saved-links span {
+  color: var(--text-muted);
+}
+
+.aha-saved-thought {
+  margin: 12px 0;
+  font-size: var(--font-ui-medium);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 72ch;
+}
+
+.aha-saved-thought.is-empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.aha-saved-context {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.6;
+}
+
+.aha-saved-caption {
+  margin: 12px 0 4px;
+}
+
+.aha-saved-prose,
+.aha-saved-context blockquote {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.aha-saved-context blockquote {
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
 }

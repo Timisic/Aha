@@ -28,6 +28,8 @@ function exportedFunctionNames(fileName) {
 test("session-artifact.mjs re-exports the shared session, identity, and trace functions", () => {
   const expected = [
     ...exportedFunctionNames("session-store.ts"),
+    ...exportedFunctionNames("saved-thoughts.ts"),
+    ...exportedFunctionNames("thought-note.ts"),
     ...exportedFunctionNames("source-identity.ts"),
     ...exportedFunctionNames("pipeline-trace.ts"),
   ].sort();

@@ -49,6 +49,13 @@ export const handoffForRound = session.handoffForRound;
 export const staleStateForRound = session.staleStateForRound;
 export const syncSessionSelections = session.syncSessionSelections;
 export const appendSessionFeedback = session.appendSessionFeedback;
+export const savedThoughts = session.savedThoughts;
+export const updateSavedThought = session.updateSavedThought;
+export const savedThoughtMarkdown = session.savedThoughtMarkdown;
+export const savedThoughtText = session.savedThoughtText;
+export const thoughtNoteBlock = session.thoughtNoteBlock;
+export const applyThoughtNoteWrite = session.applyThoughtNoteWrite;
+export const normalizeThoughtNoteWrite = session.normalizeThoughtNoteWrite;
 
 // --- source-identity ---
 
