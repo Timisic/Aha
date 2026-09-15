@@ -353,7 +353,6 @@
 }
 
 .aha-thought-status,
-.aha-saved-meta,
 .aha-saved-caption {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
@@ -388,22 +387,31 @@
   align-items: baseline;
   gap: 4px 8px;
   font-size: var(--font-ui-small);
-  margin-top: 5px;
   overflow-wrap: anywhere;
 }
 
 .aha-saved-links a {
-  color: var(--text-normal);
+  color: var(--text-accent);
+  color: color-mix(in srgb, var(--text-accent) 80%, var(--text-normal));
   text-decoration: none;
 }
 
 .aha-saved-links a:hover {
   color: var(--text-accent);
+  color: color-mix(in srgb, var(--text-accent) 80%, var(--text-normal));
   text-decoration: underline;
 }
 
 .aha-saved-links span {
   color: var(--text-muted);
+}
+
+.aha-saved-date {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .aha-saved-thought {

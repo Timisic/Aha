@@ -1,7 +1,7 @@
 import { App, ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { candidateHit } from "./core/candidate-hit";
 import { savedReviewActions } from "./review-feedback";
-import { savedThoughtMarkdown, savedThoughtText, type SavedThought } from "./saved-thoughts";
+import { savedThoughtText, type SavedThought } from "./saved-thoughts";
 import { renderThoughtEditor } from "./thought-editor";
 import {
   handoffForRound,
@@ -439,9 +439,6 @@ export class AhaReviewPanelView extends ItemView {
   private renderSavedEntry(parent: HTMLElement, entry: SavedThought): void {
     const item = { ...entry.feedback, note: savedThoughtText(entry.feedback) };
     const article = parent.createEl("article", { cls: "aha-saved-entry" });
-    const meta = article.createDiv({ cls: "aha-saved-meta" });
-    const date = new Date(item.createdAt);
-    meta.createEl("time", { text: Number.isNaN(date.getTime()) ? item.createdAt : date.toLocaleDateString("zh-CN"), attr: { datetime: item.createdAt } });
     const links = article.createDiv({ cls: "aha-saved-links" });
     this.renderSavedLink(links, item.sourcePath, item.sourceTitle);
     links.createSpan({ text: "×", attr: { "aria-label": "关联" } });
@@ -469,22 +466,23 @@ export class AhaReviewPanelView extends ItemView {
       edit.hidden = true;
       renderThoughtEditor(editor, entry, this.thoughtDrafts, async (target, note) => {
         await this.host.saveThought(target.recordKey, target.feedbackId, note);
-        // This snapshot also feeds search and copy without refreshing the list.
+        // Keep search in sync without refreshing the list.
         target.feedback.note = note.trim() || undefined;
         thought.setText(target.feedback.note || "还没有写下想法");
         thought.classList.toggle("is-empty", !target.feedback.note);
       }).focus();
     });
-    const copy = actions.createEl("button", { text: "复制 Markdown", cls: "aha-review-panel-seed-button" });
-    copy.addEventListener("click", async () => {
-      try {
-        const latest = this.host.listSavedThoughts().find(value => value.recordKey === entry.recordKey && value.feedbackId === entry.feedbackId) ?? entry;
-        await navigator.clipboard.writeText(savedThoughtMarkdown(latest));
-        new Notice("已复制想法与出处。", 2000);
-      } catch {
-        new Notice("复制失败，请重试。", 3000);
-      }
-    });
+    const date = new Date(item.createdAt);
+    if (!Number.isNaN(date.getTime())) {
+      const label = date.toLocaleDateString("zh-CN", {
+        ...(date.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}),
+        month: "long", day: "numeric",
+      });
+      actions.createEl("time", {
+        cls: "aha-saved-date", text: `标记于 ${label}`,
+        attr: { datetime: item.createdAt, title: `首次标记 Surprise：${date.toLocaleString("zh-CN")}` },
+      });
+    }
     if (this.thoughtDrafts.has(JSON.stringify([entry.recordKey, entry.feedbackId]))) edit.click();
   }
 
