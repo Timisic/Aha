@@ -10,10 +10,9 @@ import {
 } from "obsidian";
 import { firstWikiLinkTarget, linkTargetBase } from "./wikilink";
 import { AHA_REVIEW_PANEL_VIEW_TYPE, AhaReviewPanelView, type AhaReviewPanelContext } from "./review-panel";
-import { canRunExternalProcesses, runAhaWrapper } from "./process";
 import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
 import { testProviderConnection } from "./llm-request";
-import { probeQmdAvailable, runQmdStatus, parseQmdEnvironment } from "./qmd-request";
+import { canRunExternalProcesses, probeQmdAvailable, runQmdStatus, parseQmdEnvironment } from "./qmd-request";
 import { decideQmdBinaryLight, decideIndexCoverageLight, decideQmdEndpointsLight, decideLlmConnectivityLight } from "./health-checks";
 import { validateAhaWrapperResult, type AhaWrapperResult } from "./schema";
 import { sourceIdentityForFile } from "./source-identity";
@@ -122,17 +121,7 @@ export default class AhaPlugin extends Plugin {
   // *notice* fires at most once per upgrade, guarded by schemaVersion: only
   // when the stored data predates CURRENT_SETTINGS_SCHEMA_VERSION (absent or
   // older) does this run migrateAhaPluginSettings against the raw old data
-  // and bump/persist schemaVersion. On every subsequent load (schemaVersion
-  // already current), a plain DEFAULT_SETTINGS merge is used instead --
-  // deliberately NOT re-running migrateAhaPluginSettings on every load, even
-  // though that function is itself pure/idempotent (see
-  // settings-migration.ts's own idempotency guarantee and test coverage):
-  // migrateAhaPluginSettings intentionally still carries the six legacy
-  // qmdRemote* fields forward verbatim (for process.ts's frozen legacy
-  // wrapper), so re-running it after schema-version bump would silently
-  // resurrect a qmdEnvironment value from those stale fields even after a
-  // user explicitly cleared the qmdEnvironment field by hand -- the version
-  // guard is what prevents that regression.
+  // and persist the new schema version. Session records are normalized separately.
   async loadSettings(): Promise<void> {
     const data = (await this.loadData()) as Partial<AhaPluginData> | null;
     const storedVersion = data?.schemaVersion;
@@ -204,19 +193,7 @@ export default class AhaPlugin extends Plugin {
     new Notice(`Aha search started: ${sourceFile.path}`, 8000);
 
     try {
-      const payload = this.settings.useLegacyWrapper
-        ? await runAhaWrapper(this.settings, {
-            // No Review Note file is generated any more, so there is no
-            // meaningful expected path here; the empty string just leaves
-            // isGeneratedReviewCandidate's exact-path check inert (falsy
-            // guard) and relies on the Aha/Reviews folder-level exclusion in
-            // DEFAULT_EXCLUDED_CANDIDATE_FOLDERS instead.
-            reviewPath: "",
-            sourceAbsolutePath: this.absolutePathForFile(sourceFile),
-            sourcePath: sourceFile.path,
-            vaultRoot: this.vaultRoot(),
-          })
-        : (await this.runTieredSearchForFile(sourceFile, startedAt)).result;
+      const payload = (await this.runTieredSearchForFile(sourceFile, startedAt)).result;
       const validation = validateAhaWrapperResult(payload);
       if (!validation.ok || !validation.result) {
         throw new Error(`Malformed Aha result: ${validation.errors.join("; ")}`);

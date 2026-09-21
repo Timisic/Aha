@@ -1,7 +1,7 @@
 // Capability Tier orchestration entry point (issue #58). Wires the readiness
 // pre-check, decideCapabilityTier, and the three tiers (Neighborhood/Recall/
 // Full, with Full's Runtime Tier Fallback) into one call main.ts's
-// searchFromCurrentNote can use in place of the legacy runAhaWrapper.
+// searchFromCurrentNote uses for every round.
 //
 // The readiness pre-check re-probes qmd and re-resolves the LLM profile
 // fresh on every call (no caching anywhere in this module or its deps), so

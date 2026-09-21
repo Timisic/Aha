@@ -4,7 +4,7 @@ This directory keeps executable project scripts grouped by workflow.
 
 ## Layout
 
-The orchestration logic itself (query plan, QMD retrieval, pool merge/rerank, Relation Judge) lives in `obsidian-plugin/src/core/`, not here — see [ADR 0005](../docs/adr/0005-share-compiled-core-between-plugin-and-bench.md). Everything under `scripts/` either consumes that compiled core (`lib/core-artifact.mjs`) for bench/CLI use, or is legacy machinery kept as a rollback path.
+The orchestration logic itself (query plan, QMD retrieval, pool merge/rerank, Relation Judge) lives in `obsidian-plugin/src/core/`, not here — see [ADR 0005](../docs/adr/0005-share-compiled-core-between-plugin-and-bench.md). Bench and CLI entry points consume that compiled core through `lib/core-artifact.mjs`. The old plugin wrapper has been removed; the bench HTTP/proxy helpers remain in use.
 
 ```text
 scripts/
@@ -24,13 +24,9 @@ scripts/
     core-node-deps.mjs        # Node bindings (fetch, spawn, fs) injected into core's dependency seam.
     *.mjs                     # Other shared benchmark scoring, trace, and path helpers.
   aha/
-    run-insight-search.mjs    # Legacy CLI wrapper. DeepSeek runs now delegate to core-artifact.mjs; kept
-                               # as the plugin's hidden `useLegacyWrapper` rollback switch and bench's
-                               # process bridge. Codex CLI (an alternate LLM provider for this path) has
-                               # been removed entirely -- DeepSeek is the sole provider.
-    query-plan.mjs            # Thin shell around core's query-plan generation, used by the legacy wrapper/bench.
+    query-plan.mjs            # Thin shell around core's query-plan generation, used by bench.
     relation-judge.mjs        # Thin shell around core's quote-backed relation judging.
-    tests/{unit,integration,e2e}/ # wrapper/retrieval/judge/scoring tests, tiered by what they touch.
+    tests/{unit,integration,e2e}/ # retrieval/judge/scoring tests, tiered by what they touch.
   debug-pipeline.mjs         # CLI harness for running the full core pipeline outside Obsidian.
   dev/install-dev-plugin.mjs # Installs a side-by-side dev-channel plugin build into the vault.
   dev/run-batch-vault.mjs    # Batch-runs the real pipeline over many real notes, writing results into the dev plugin's data.json session store (see BATCH-VAULT-RUNNER-PLAN.md).

@@ -9,9 +9,8 @@
 // The validation logic is still ported into
 // obsidian-plugin/src/core/result-validator.ts as the single source of truth
 // for the NEW core-based Relation Judge / orchestrator path (issue #57); this
-// file remains the pre-existing, independent implementation the frozen
-// legacy wrapper (scripts/aha/run-insight-search.mjs) and the plugin's own
-// schema.ts already depended on before this migration. A dedicated test
+// file remains the independent schema.ts validator to avoid bundling the
+// Node build loader into Obsidian. A dedicated test
 // (core-result-validator.test.mjs) deep-equals this file's schema against the
 // core literal so the two cannot silently drift.
 import schema from "../aha-result.schema.json" with { type: "json" };

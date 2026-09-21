@@ -6,6 +6,8 @@
 
 | 文档 | 内容 |
 |---|---|
+| [qmd-setup.md](./qmd-setup.md) | 首次安装、索引注册、嵌入与健康检查；适用于代理执行 |
+| [migration-closeout.md](./migration-closeout.md) | #52 / #53 / #60 / #61 的收尾范围、保留项和验收证据 |
 | [product.md](./product.md) | 产品定义：用户、目的、设计原则、反面参照 |
 | [../CONTEXT.md](../CONTEXT.md) | 领域术语表：insight/judgment 工作流、检索、评测各环节的统一语言 |
 | [obsidian-plugin-operations.md](./obsidian-plugin-operations.md) | 插件运行细节：失败可见性与降级、传输与重试、候选边界、会话身份 |
@@ -25,4 +27,4 @@
 
 ## 归档（`archive/`）
 
-历史材料，只读不维护，不代表当前架构：最初的 Pi Extension PRD 与方案（`prd.md`、`initial.md`）、已交付的三份 PRD（`aha-obsidian-plugin-mvp-prd.md`、`aha-obsidian-plugin-full-prd.md`、`aha-review-panel-mvp-prd.md`）、已完成的 issue 清单（`aha-review-issues.md`、`aha-review-panel-issues.md`、`aha-pipeline-trace-issues.md`）、插件就绪清单与实现快照（`obsidian-plugin-readiness.md`、`obsidian-plugin-mvp-implementation-snapshot-2026-06-28.md`）、MVP 期手工 smoke 清单（`obsidian-plugin-smoke.md`）、已落地的 sprint 决策记录（`sprint-weak-noise-and-trace.md`）、trajectory 调试说明（`trajectory-debugging.md`）、已完成的管线内化迁移进度记录（`PROGRESS.md`，#54–#61，#61 遗留 wrapper/codex 清理未做但下一阶段工作另行跟踪）。
+历史材料，只读不维护，不代表当前架构：最初的 Pi Extension PRD 与方案（`prd.md`、`initial.md`）、已交付的三份 PRD（`aha-obsidian-plugin-mvp-prd.md`、`aha-obsidian-plugin-full-prd.md`、`aha-review-panel-mvp-prd.md`）、已完成的 issue 清单（`aha-review-issues.md`、`aha-review-panel-issues.md`、`aha-pipeline-trace-issues.md`）、插件就绪清单与实现快照（`obsidian-plugin-readiness.md`、`obsidian-plugin-mvp-implementation-snapshot-2026-06-28.md`）、MVP 期手工 smoke 清单（`obsidian-plugin-smoke.md`）、已落地的 sprint 决策记录（`sprint-weak-noise-and-trace.md`）、trajectory 调试说明（`trajectory-debugging.md`）、已完成的管线内化迁移进度记录（`PROGRESS.md`，#54–#61，最终收尾见 migration-closeout.md）。

@@ -1,18 +1,4 @@
-// Plugin-side qmd CLI subprocess adapter (issue #58). Implements
-// core/qmd.ts's QmdDeps by spawning the configured qmd binary directly from
-// the plugin's own desktop Node runtime -- this is still "no external Node
-// process" in the issue's sense: the thing eliminated is the
-// `node run-insight-search.mjs` wrapper-script subprocess, not qmd itself.
-// Spawning the qmd binary is the same category of local-tool subprocess
-// process.ts already uses for readiness checks (see checkLocalCommand /
-// execFileText there); this module ports that same bounded-spawn safety
-// pattern (closed stdin, timeout with SIGTERM/SIGKILL, output-size bounding)
-// rather than importing process.ts's wrapper-specific functions, and mirrors
-// buildQmdCommandArgv's exact argv shape from scripts/lib/core-node-deps.mjs
-// (the Node/bench-side equivalent) so retrieval behavior matches.
-//
-// process.ts stays untouched: this is a new sibling file, not an edit to the
-// frozen legacy wrapper rollback path.
+// Desktop QMD CLI adapter: bounded subprocesses, without a wrapper process.
 
 import type { QmdDeps, QmdQueryLike } from "./core";
 import type { AhaPluginSettings } from "./settings";
@@ -33,6 +19,14 @@ interface BoundedCommandOptions {
   timeoutMs: number;
 }
 
+export function canRunExternalProcesses(): boolean {
+  try {
+    return typeof getNodeRequire() === "function";
+  } catch {
+    return false;
+  }
+}
+
 function getNodeRequire(): NodeRequire {
   const globalRequire = (globalThis as { require?: NodeRequire }).require;
   if (typeof globalRequire === "function") return globalRequire;
@@ -45,7 +39,7 @@ function getNodeRequire(): NodeRequire {
  * Bounded async spawn: closed stdin, a hard timeout that SIGTERMs then
  * SIGKILLs the child, and output-size bounding on stdout/stderr. Mirrors the
  * spawn-safety properties of scripts/lib/core-node-deps.mjs's
- * runCommandBounded and this plugin's own process.ts execFileText.
+ * runCommandBounded.
  */
 function runBoundedCommand(command: string, args: string[], options: BoundedCommandOptions): Promise<BoundedCommandResult> {
   const childProcess = getNodeRequire()("child_process") as typeof import("child_process");
@@ -142,11 +136,7 @@ export function parseQmdEnvironment(raw: string): Record<string, string> {
 
 /**
  * Builds the qmd subprocess env: inherits the plugin's own process.env, then
- * overlays whatever KEY=VALUE pairs settings.qmdEnvironment parses to
- * (issue #59; replaces the old 6 discrete qmdRemote* fields this function
- * used to read one by one -- see process.ts's still-frozen
- * wrapperChildEnv/qmdRemoteEnvironment for the legacy wrapper's own
- * unrelated copy of that old convention).
+ * overlays the KEY=VALUE pairs parsed from settings.qmdEnvironment.
  */
 // macOS GUI apps (Obsidian included) inherit a minimal PATH that typically
 // excludes Homebrew, npm-global, and nvm/fnm-managed Node. Augment PATH
@@ -197,7 +187,6 @@ export async function probeQmdAvailable(settings: AhaPluginSettings): Promise<bo
   const command = settings.qmdCommand?.trim() || "qmd";
   try {
     const result = await runBoundedCommand(command, ["--version"], {
-      cwd: settings.ahaWorkspace?.trim() || undefined,
       env: qmdChildEnv(settings),
       timeoutMs: READINESS_PROBE_TIMEOUT_MS,
     });
@@ -255,7 +244,6 @@ export function createQmdRequestDeps(settings: AhaPluginSettings): QmdDeps {
       const command = settings.qmdCommand?.trim() || "qmd";
       const args = buildQmdCommandArgv(query, settings);
       const result = await runBoundedCommand(command, args, {
-        cwd: settings.ahaWorkspace?.trim() || undefined,
         env: qmdChildEnv(settings),
         timeoutMs,
       });
@@ -287,7 +275,6 @@ async function runQmdSubcommand(settings: AhaPluginSettings, args: string[], tim
   const command = settings.qmdCommand?.trim() || "qmd";
   try {
     const result = await runBoundedCommand(command, args, {
-      cwd: settings.ahaWorkspace?.trim() || undefined,
       env: qmdChildEnv(settings),
       timeoutMs,
     });

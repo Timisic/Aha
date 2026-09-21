@@ -74,9 +74,8 @@ export function defaultQueryGenerationOptions(overrides = {}) {
   };
 }
 
-// Generic-adapter query-plan orchestration (bench/legacy entry point used
-// directly by scripts/aha/run-insight-search.mjs, the frozen legacy wrapper,
-// and covered by scripts/aha/tests/unit/query-plan.test.mjs). The adapter callback
+// Bench query-plan orchestration, covered by tests/unit/query-plan.test.mjs.
+// The adapter callback
 // stays provider-agnostic here; prompt construction and normalization come
 // from core.
 export async function generateQueryPlanWithAdapter({

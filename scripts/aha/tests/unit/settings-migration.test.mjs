@@ -5,7 +5,7 @@
 // settings.ts, which imports `obsidian` (App/Notice/PluginSettingTab/Setting)
 // plus llm-request.ts (requestUrl) transitively -- so this bundles both
 // files together behind a minimal obsidian stub, the same pattern
-// process-bridge.test.mjs established for process.ts.
+// used throughout the plugin tests.
 
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -73,8 +73,6 @@ test("carried fields keep their old values when present and well-typed", async (
     qmdCommand: "/opt/custom/qmd",
     qmdIndex: "custom-index",
     qmdRerank: true,
-    useFixtureResult: true,
-    useLegacyWrapper: true,
   };
 
   const migrated = migrateAhaPluginSettings(old);
@@ -84,7 +82,7 @@ test("carried fields keep their old values when present and well-typed", async (
   }
 });
 
-test("dead-field group resets to DEFAULT_SETTINGS regardless of old stored value", async () => {
+test("retired wrapper fields are discarded while the provider is normalized", async () => {
   const { migrateAhaPluginSettings, DEFAULT_SETTINGS } = await loadModule();
   const old = {
     llmProvider: "openai",
@@ -94,6 +92,8 @@ test("dead-field group resets to DEFAULT_SETTINGS regardless of old stored value
     obsidianCommand: "/old/obsidian",
     qmdRunner: "cli",
     qmdSdkModule: "/old/sdk-module.js",
+    useLegacyWrapper: true,
+    useFixtureResult: true,
   };
 
   const migrated = migrateAhaPluginSettings(old);
@@ -104,7 +104,7 @@ test("dead-field group resets to DEFAULT_SETTINGS regardless of old stored value
   }
 });
 
-test("the six qmdRemote* fields are carried verbatim AND converted into qmdEnvironment", async () => {
+test("legacy endpoints move into qmdEnvironment and their old fields are discarded", async () => {
   const { migrateAhaPluginSettings } = await loadModule();
   const old = {
     qmdRemoteEmbedUrl: "https://embed.example/v1",
@@ -117,13 +117,7 @@ test("the six qmdRemote* fields are carried verbatim AND converted into qmdEnvir
 
   const migrated = migrateAhaPluginSettings(old);
 
-  // Carried verbatim (process.ts's frozen legacy wrapper still reads these).
-  assert.equal(migrated.qmdRemoteEmbedUrl, "https://embed.example/v1");
-  assert.equal(migrated.qmdRemoteEmbedModel, "embed-model");
-  assert.equal(migrated.qmdRemoteGenerateUrl, "https://generate.example/v1");
-  assert.equal(migrated.qmdRemoteGenerateModel, "generate-model");
-  assert.equal(migrated.qmdRemoteRerankUrl, "https://rerank.example/v1");
-  assert.equal(migrated.qmdRemoteRerankModel, "rerank-model");
+  for (const key of Object.keys(old)) assert.equal(Object.hasOwn(migrated, key), false);
 
   // Converted into the new qmdEnvironment multi-line field, using the exact
   // env-var names qmdChildEnv already used.
@@ -214,7 +208,7 @@ test("a copy of the real production settings object's key set migrates losslessl
   assert.equal(migrated.qmdCommand, "/usr/local/bin/qmd");
   assert.equal(migrated.qmdIndex, "obsidian");
   assert.equal(migrated.qmdRerank, true);
-  assert.equal(migrated.useFixtureResult, false);
+  assert.equal(migrated.useFixtureResult, undefined);
 
   // Dead-field group dropped (reset to defaults, not the fixture's values).
   // llmProvider: an old stored "openai" value is no longer valid (OpenAI
@@ -246,7 +240,7 @@ test("a copy of the real production settings object's key set migrates losslessl
   // Endpoint-to-environment conversion.
   assert.match(migrated.qmdEnvironment, /QMD_REMOTE_EMBED_URL=https:\/\/prod-embed\.example\/v1/);
   assert.match(migrated.qmdEnvironment, /QMD_REMOTE_RERANK_MODEL=prod-rerank-model/);
-  assert.equal(migrated.qmdRemoteEmbedUrl, "https://prod-embed.example/v1");
+  assert.equal(migrated.qmdRemoteEmbedUrl, undefined);
 
   // New fields land at defaults (not present in the old object).
   assert.equal(migrated.excludedFolders, DEFAULT_SETTINGS.excludedFolders);
@@ -324,4 +318,15 @@ test("a simulated two-load sequence shows the notice on the first load only", as
   simulateLoad();
 
   assert.equal(noticeCount, 1);
+});
+
+// A schema-3 user may have intentionally cleared this field after migration.
+test("cleanup preserves a deliberately empty QMD environment and requests a schema-3 upgrade", async () => {
+  const { migrateAhaPluginSettings, shouldShowSimplificationNotice } = await loadModule();
+  const old = { qmdEnvironment: "", qmdRemoteEmbedUrl: "https://stale.example", useLegacyWrapper: true };
+  const migrated = migrateAhaPluginSettings(old);
+  assert.equal(migrated.qmdEnvironment, "");
+  assert.equal(Object.hasOwn(migrated, "useLegacyWrapper"), false);
+  assert.equal(Object.hasOwn(migrated, "qmdRemoteEmbedUrl"), false);
+  assert.equal(shouldShowSimplificationNotice(3), true);
 });

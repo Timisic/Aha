@@ -2,7 +2,7 @@
 
 面向开发与排障的运行约束说明。产品定位与架构见根目录 [README](../README.md)。
 
-主路径：插件在进程内直接调用 `src/core/`，不再 spawn wrapper 子进程。遗留 wrapper 仅在 `useLegacyWrapper`（隐藏开关，默认关）下才会被启动；Codex CLI（曾经的另一个 LLM provider 选项）已整体移除，DeepSeek 是唯一 provider。
+主路径：插件在进程内直接调用 `src/core/`，不再 spawn wrapper 子进程。旧 wrapper 和隐藏回退开关已移除；Codex CLI（曾经的另一个 LLM provider 选项）已整体移除，DeepSeek 是唯一 provider。
 
 ## 失败可见性与降级
 
@@ -14,9 +14,9 @@
 
 - LLM 走 DeepSeek Chat Completions JSON mode，经 Obsidian `requestUrl` 发出（Chromium 网络栈，自动遵循系统代理）。重试最多 3 次，只对网络错误与 408/429/5xx 重试，失败信息带尝试次数。请求显式传 `thinking: { type: "disabled" }`。
 - QMD 由插件自身的桌面 Node runtime 直接 spawn qmd 二进制：关闭 stdin、超时后 SIGTERM/SIGKILL、限制 stdout/stderr 大小。
-- LLM 生成的多条 QMD plan query 逐条执行，避免争用 QMD/SQLite runtime；单条默认 30 秒超时。SDK runner 默认关闭 QMD 内部 rerank，CLI fallback 传 `-C 20`。某条 QMD 慢或卡住作为 warning 保留，不会自动降级到 `qmd vsearch`。
+- LLM 生成的多条 QMD plan query 逐条执行，避免争用 QMD/SQLite runtime；单条默认 30 秒超时。QMD CLI 默认关闭内部 rerank，并传 `-C 20`。某条 QMD 慢或卡住作为 warning 保留，不会自动降级到 `qmd vsearch`。
 - Query planner 生成 3-5 条改写查询后，runtime 额外追加 1 条由原 source note 确定性构造的 `source_fallback` 查询；模型改写不能挤掉这条原文兜底。
-- 只有遗留 wrapper 路径才需要 Node 可执行文件：Obsidian 桌面 App 的 PATH 可能没有 Node，插件会优先用设置里的 Node command，其次探测常见安装路径。该路径的 HTTPS 请求走受控 curl transport（代理写入权限 `0600` 的临时 config，无代理时 `--noproxy '*'`），共享解析在 `scripts/lib/https-proxy.mjs`。
+- Node 侧评测的 query-plan / relation-judge 命令仍使用带代理支持的 curl transport（`scripts/lib/openai-json-agent.mjs`、`https-proxy.mjs`）；它们有现存调用，因此保留。插件不调用这条传输路径。
 
 ## 候选边界与过滤
 
@@ -58,4 +58,6 @@
 
 - DeepSeek 是唯一 API provider（OpenAI 已移除）：默认 `baseUrl=https://api.deepseek.com`、`model=deepseek-v4-pro`。设置页的 `Test DeepSeek` 会发一个最小 JSON 请求，同时验证网络、鉴权、endpoint 与 model ID。
 - 直接填写的 API key 保存在当前 vault 的 Obsidian 插件数据中；留空则读取 `DEEPSEEK_API_KEY`。不要把 `.obsidian/plugins/.../data.json` 提交到仓库。
-- QMD 默认走 SDK runner；`qmdCommand` 保留用于 SDK module 推导和 CLI fallback。QMD 的 index 是按名字独立的 sqlite 文件，重建 Obsidian 索引需显式 `qmd update --index obsidian && qmd embed --index obsidian`。
+- QMD 只走 CLI；`qmdCommand` 指定可执行文件。QMD 的 index 是按名字独立的 sqlite 文件，重建 Obsidian 索引需显式 `qmd update --index obsidian && qmd embed --index obsidian`。
+
+首次安装或修复 QMD，按 [QMD 安装与验收](./qmd-setup.md) 执行。清理范围与验收证据见 [迁移收尾](./migration-closeout.md)。

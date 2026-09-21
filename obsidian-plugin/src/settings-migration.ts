@@ -1,39 +1,3 @@
-// Settings migration (issue #59): a pure function from the old (32-field,
-// pre-#59) settings object shape to the new AhaPluginSettings shape. No I/O,
-// no `this.app`/`this.plugin` access -- takes a plain old-settings-shaped
-// object and returns a plain new-settings-shaped object, so it is directly
-// unit-testable and safely idempotent (migrating an already-migrated object
-// is a no-op).
-//
-// Field categories (see the issue's resolved ambiguity #1, recapped in
-// settings.ts's module comment):
-//   - Carried: still-migratable fields keep their old value when present and
-//     of the right type, falling back to DEFAULT_SETTINGS otherwise.
-//   - Dead-field group (llmProvider, ahaWorkspace, wrapperRelativePath,
-//     nodeCommand, obsidianCommand, qmdRunner, qmdSdkModule): always reset
-//     to DEFAULT_SETTINGS regardless of the old object's stored value. These
-//     fields stay in the AhaPluginSettings *interface* (process.ts's frozen
-//     legacy-wrapper rollback path still reads them), but migration does not
-//     carry old values forward into them -- that is what "dropped" means for
-//     this migration function specifically. llmProvider joined this group
-//     when the OpenAI provider option was removed: an old stored value of
-//     "openai" is no longer valid, so it is always reset to "deepseek"
-//     rather than carried forward. llmBaseUrl/llmModel/llmApiKey/
-//     llmApiKeyEnv (the old generic/OpenAI-shaped fields) were dropped from
-//     the interface entirely, not just this migration.
-//   - qmdRemote* (six per-endpoint fields): carried verbatim into their own
-//     (now UI-invisible) fields -- process.ts's frozen wrapperChildEnv /
-//     qmdRemoteEnvironment still reads them directly for the legacy
-//     wrapper's rollback path, so resetting them to empty on migration would
-//     silently break a configured legacy-wrapper remote endpoint, the exact
-//     failure mode the dead-field-group resolution was written to avoid for
-//     the other fields. They are *also* converted into the new
-//     `qmdEnvironment` multi-line field for the new internalized pipeline
-//     (qmd-request.ts no longer reads the discrete fields at all).
-//   - New fields (excludedFolders, queryPromptOverride, traceDirectory,
-//     relationJudgeBudget) not
-//     present in the old shape: set to their DEFAULT_SETTINGS value.
-
 import { DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
 
 function stringField(value: unknown, fallback: string): string {
@@ -48,15 +12,8 @@ function numberField(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-/**
- * The exact env-var names qmdChildEnv (qmd-request.ts) and wrapperChildEnv
- * (process.ts) already use for these six endpoints -- kept as a literal
- * lookup here (not imported) because qmd-request.ts's own
- * `parseQmdEnvironment` is the *parsing* half of this convention, not the
- * naming source of truth; the naming lives wherever it was first
- * established (process.ts's wrapperChildEnv, pre-#58).
- */
-const QMD_REMOTE_FIELD_ENV_NAMES: ReadonlyArray<[keyof AhaPluginSettings, string]> = [
+// Legacy input names; endpoint values migrate into qmdEnvironment before removal.
+const QMD_REMOTE_FIELD_ENV_NAMES: ReadonlyArray<[string, string]> = [
   ["qmdRemoteEmbedUrl", "QMD_REMOTE_EMBED_URL"],
   ["qmdRemoteEmbedModel", "QMD_REMOTE_EMBED_MODEL"],
   ["qmdRemoteGenerateUrl", "QMD_REMOTE_GENERATE_URL"],
@@ -81,28 +38,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Pure migration: old-settings-shaped object in, new AhaPluginSettings out.
- * Safe on `undefined`/`null`/non-object input (treated as an empty old
- * object, so every field falls back to DEFAULT_SETTINGS). Safe to call on an
- * already-new-shape object: every carried/qmdRemote* field round-trips
- * unchanged, and `qmdEnvironment` is left as-is whenever it is already a
- * non-empty string (only re-derived from the legacy qmdRemote* fields when
- * qmdEnvironment itself is absent/empty), so repeated migration is a no-op.
- */
+/** Pure, idempotent migration. Existing modern QMD environment values win. */
 export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSettings {
   const old = isPlainObject(oldSettings) ? oldSettings : {};
 
-  const qmdRemoteEmbedUrl = stringField(old.qmdRemoteEmbedUrl, DEFAULT_SETTINGS.qmdRemoteEmbedUrl);
-  const qmdRemoteEmbedModel = stringField(old.qmdRemoteEmbedModel, DEFAULT_SETTINGS.qmdRemoteEmbedModel);
-  const qmdRemoteGenerateUrl = stringField(old.qmdRemoteGenerateUrl, DEFAULT_SETTINGS.qmdRemoteGenerateUrl);
-  const qmdRemoteGenerateModel = stringField(old.qmdRemoteGenerateModel, DEFAULT_SETTINGS.qmdRemoteGenerateModel);
-  const qmdRemoteRerankUrl = stringField(old.qmdRemoteRerankUrl, DEFAULT_SETTINGS.qmdRemoteRerankUrl);
-  const qmdRemoteRerankModel = stringField(old.qmdRemoteRerankModel, DEFAULT_SETTINGS.qmdRemoteRerankModel);
-
-  const existingQmdEnvironment = typeof old.qmdEnvironment === "string" ? old.qmdEnvironment : "";
-  const qmdEnvironment = existingQmdEnvironment.trim()
-    ? existingQmdEnvironment
+  const qmdEnvironment = typeof old.qmdEnvironment === "string"
+    ? old.qmdEnvironment
     : qmdEnvironmentFromLegacyRemoteFields(old);
 
   return {
@@ -116,25 +57,9 @@ export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSetting
     qmdCommand: stringField(old.qmdCommand, DEFAULT_SETTINGS.qmdCommand),
     qmdIndex: stringField(old.qmdIndex, DEFAULT_SETTINGS.qmdIndex),
     qmdRerank: boolField(old.qmdRerank, DEFAULT_SETTINGS.qmdRerank),
-    useFixtureResult: boolField(old.useFixtureResult, DEFAULT_SETTINGS.useFixtureResult),
-    useLegacyWrapper: boolField(old.useLegacyWrapper, DEFAULT_SETTINGS.useLegacyWrapper),
 
-    // --- dead-field group: reset to DEFAULT_SETTINGS regardless of old value ---
+    // Only DeepSeek is supported; discard any old provider selection.
     llmProvider: DEFAULT_SETTINGS.llmProvider,
-    ahaWorkspace: DEFAULT_SETTINGS.ahaWorkspace,
-    wrapperRelativePath: DEFAULT_SETTINGS.wrapperRelativePath,
-    nodeCommand: DEFAULT_SETTINGS.nodeCommand,
-    obsidianCommand: DEFAULT_SETTINGS.obsidianCommand,
-    qmdRunner: DEFAULT_SETTINGS.qmdRunner,
-    qmdSdkModule: DEFAULT_SETTINGS.qmdSdkModule,
-
-    // --- qmdRemote* fields: carried verbatim (legacy wrapper still reads them) ---
-    qmdRemoteEmbedUrl,
-    qmdRemoteEmbedModel,
-    qmdRemoteGenerateUrl,
-    qmdRemoteGenerateModel,
-    qmdRemoteRerankUrl,
-    qmdRemoteRerankModel,
 
     // --- converted / new fields ---
     qmdEnvironment,
@@ -144,16 +69,8 @@ export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSetting
   };
 }
 
-// Bumped to 3 (from 2) when the OpenAI provider was removed: a user who
-// upgraded through the #59 release already has schemaVersion 2 with
-// llmProvider possibly still "openai" (the old DEFAULT_SETTINGS value).
-// Without this bump, shouldShowSimplificationNotice(2, 2) would return
-// false, the migration below (which resets llmProvider to "deepseek" via
-// the dead-field-reset group) would never run, and the stored "openai"
-// would win the plain {...DEFAULT_SETTINGS, ...data.settings} merge in
-// main.ts's loadSettings -- silently downgrading every such user to Recall
-// Tier with no in-app way to fix it (the provider dropdown is gone too).
-export const CURRENT_SETTINGS_SCHEMA_VERSION = 3;
+// Version 4 removes wrapper settings from persisted data on the next load.
+export const CURRENT_SETTINGS_SCHEMA_VERSION = 4;
 
 /**
  * Pure trigger logic for the one-time "settings simplified" notice (issue

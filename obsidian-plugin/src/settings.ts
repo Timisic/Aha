@@ -11,47 +11,9 @@ import {
 } from "./health-checks";
 import { parseQmdEnvironment, probeQmdAvailable, runQmdEmbed, runQmdStatus, runQmdUpdate } from "./qmd-request";
 
-// Settings convergence (issue #59). Field categories, recapped here so
-// display() and settings-migration.ts stay consistent with each other:
-//
-//   - Visible (five conceptual `new Setting(...)` groups in display(), outside
-//     Advanced): DeepSeek LLM group (base URL/model/key/key-env + test
-//     button, counted as ONE conceptual item -- the OpenAI provider option
-//     and its generic llm* fields were removed; DeepSeek is now the only
-//     supported API provider), target non-weak candidates, Relation Judge
-//     budget, and excluded folders.
-//   - Advanced (collapsed, four items -- query-plan prompt override lives
-//     here too, not in the visible section above; this note previously
-//     claimed otherwise): query-plan prompt override, qmd path override
-//     (qmdCommand -- confirmed by reading qmd-request.ts: this is the one
-//     field controlling both the CLI fallback command and SDK-module
-//     inference path, so it is the "qmd path override" the issue means), and
-//     the single multi-line qmd environment field (qmdEnvironment, replacing
-//     the six discrete qmdRemote* fields in the UI).
-//   - Hidden developer settings (no UI row at all, data.json-only):
-//     useFixtureResult, useLegacyWrapper.
-//   - Truly invisible / dead-but-still-functional (no UI row, data.json-only,
-//     NOT carried forward by migration): llmProvider (fixed to "deepseek",
-//     the only supported value), ahaWorkspace, wrapperRelativePath,
-//     nodeCommand, obsidianCommand, qmdRunner, qmdSdkModule. These stay in
-//     the TS interface/DEFAULT_SETTINGS only because process.ts's frozen
-//     runAhaWrapper/runReadinessCheck (the #58 legacy-wrapper rollback path)
-//     hard-require them.
-//   - Invisible but still alive for BOTH the legacy and internalized paths
-//     (no UI row, but carried forward by migration): qmdIndex, qmdRerank,
-//     and the six qmdRemote* fields (process.ts's frozen wrapperChildEnv
-//     still reads the qmdRemote* fields directly for the legacy wrapper's
-//     remote-endpoint config; qmdRerank still gates qmd-request.ts's
-//     `--no-rerank` flag for the internalized path). qmdIndex in particular
-//     lost its old "QMD index" settings-page row here even though it is
-//     load-bearing for both paths and for the health section's `qmd status
-//     --index <qmdIndex>` probe -- the issue's acceptance criterion pins
-//     Advanced to *exactly* qmd path + qmd environment, and qmdIndex is not
-//     named in either the visible-six or advanced-two lists, so this is a
-//     deliberate, spec-driven scope decision (flagged in the #59 report) to
-//     drop its UI row rather than invent a place for it.
+// Product settings are shared by the plugin and batch runner. Legacy wrapper
+// fields are accepted only by settings-migration.ts, then discarded.
 export interface AhaPluginSettings {
-  ahaWorkspace: string;
   /**
    * Fixed to "deepseek" (the only supported API provider). No settings-page
    * row.
@@ -61,32 +23,12 @@ export interface AhaPluginSettings {
   deepseekModel: string;
   deepseekApiKey: string;
   deepseekApiKeyEnv: string;
-  nodeCommand: string;
-  qmdRunner: string;
   qmdCommand: string;
   qmdIndex: string;
-  qmdSdkModule: string;
   qmdRerank: boolean;
-  qmdRemoteEmbedUrl: string;
-  qmdRemoteEmbedModel: string;
-  qmdRemoteGenerateUrl: string;
-  qmdRemoteGenerateModel: string;
-  qmdRemoteRerankUrl: string;
-  qmdRemoteRerankModel: string;
-  obsidianCommand: string;
-  wrapperRelativePath: string;
   targetCandidates: number;
   /** Maximum candidate excerpts Relation Judge may review while backfilling weak results. */
   relationJudgeBudget: number;
-  useFixtureResult: boolean;
-  /**
-   * Hidden dev-only rollback switch (issue #58, now truly invisible per
-   * #59): when true, searchFromCurrentNote calls the frozen legacy
-   * runAhaWrapper exactly as before instead of the internalized Capability
-   * Tier pipeline. Default off. No settings-page row; only reachable via
-   * this data.json field.
-   */
-  useLegacyWrapper: boolean;
   /**
    * Advanced (issue #59): multi-line `KEY=VALUE` lines injected verbatim
    * into the qmd subprocess environment, replacing the six discrete
@@ -123,30 +65,16 @@ export interface AhaPluginSettings {
 }
 
 export const DEFAULT_SETTINGS: AhaPluginSettings = {
-  ahaWorkspace: "",
   llmProvider: "deepseek",
   deepseekBaseUrl: "https://api.deepseek.com",
   deepseekModel: "deepseek-v4-pro",
   deepseekApiKey: "",
   deepseekApiKeyEnv: "DEEPSEEK_API_KEY",
-  nodeCommand: "",
-  qmdRunner: "sdk",
   qmdCommand: "qmd",
   qmdIndex: "obsidian",
-  qmdSdkModule: "",
   qmdRerank: false,
-  qmdRemoteEmbedUrl: "",
-  qmdRemoteEmbedModel: "",
-  qmdRemoteGenerateUrl: "",
-  qmdRemoteGenerateModel: "",
-  qmdRemoteRerankUrl: "",
-  qmdRemoteRerankModel: "",
-  obsidianCommand: "obsidian",
-  wrapperRelativePath: "scripts/aha/run-insight-search.mjs",
   targetCandidates: 20,
   relationJudgeBudget: 40,
-  useFixtureResult: false,
-  useLegacyWrapper: false,
   qmdEnvironment: "",
   excludedFolders: "templates",
   queryPromptOverride: "",

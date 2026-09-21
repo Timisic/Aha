@@ -38,7 +38,6 @@ async function loadModule() {
 
 function baseSettings(overrides = {}) {
   return {
-    ahaWorkspace: "",
     qmdCommand: "qmd",
     qmdIndex: "obsidian",
     qmdRerank: false,

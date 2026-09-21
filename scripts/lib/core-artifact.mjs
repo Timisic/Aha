@@ -20,7 +20,6 @@ import {
   coreVaultBoundaryDeps,
   createObsidianGraphNeighborsRunner,
   createQmdCliRunner,
-  createQmdSdkRunner,
 } from "./core-node-deps.mjs";
 import { DEFAULT_VAULT_ROOT } from "./vault-paths.mjs";
 
@@ -242,7 +241,7 @@ export function judgeCandidateRelationsViaLlm(input, transportRequest) {
 
 export function runFullPipeline(args, llm, partialDeps) {
   const qmdRunnerConfig = { ...args, sensitiveEnvName: args.llmApiKeyEnv };
-  const qmdRunner = args.qmdRunner === "cli" ? createQmdCliRunner(qmdRunnerConfig) : createQmdSdkRunner(qmdRunnerConfig);
+  const qmdRunner = createQmdCliRunner(qmdRunnerConfig);
   return core.runFullPipeline(args, llm, {
     ...coreLlmTransportDeps,
     ...coreVaultBoundaryDeps,

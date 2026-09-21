@@ -32,24 +32,15 @@ Aha 的召回天然产生这种距离：写下想法的当下，它把数月甚�
 
 ## 架构
 
-Aha 是一个 Obsidian 插件：触发搜索、展示候选、记录反馈都在插件里完成。检索与判断的逻辑单独封装成一个模块（`core`），评测脚本复用的是同一份逻辑，不是另外写一套。
+Aha 在 Obsidian 内完成搜索、阅读和反馈。共享核心（`core`）通过 QMD 和笔记链接找回旧笔记，由大模型解释它们与当前想法的关系，并校验原文引句。
 
-```text
-┌─ Obsidian 插件 ──────────────────┐
-│  触发搜索 · Review Panel · 反馈   │
-└────────────┬─────────────────────┘
-             │
-┌─ core（检索与判断）───────────────┐
-│  生成查询 · 检索 · 候选排序        │
-│  判断每条旧笔记的关系（引句校验）  │
-└────────────┬─────────────────────┘
-             │
-┌─ scripts（评测）──────────────────┐
-│  复用同一份 core 逻辑跑评测         │
-└────────────────────────────────────┘
+```mermaid
+flowchart LR
+    Plugin[Obsidian 插件] --> Core["共享 core：召回与关系判断"]
+    Bench[评测脚本] --> Core
 ```
 
-检索层组合多路信号：模型生成的多条结构化查询、不依赖模型措辞的确定性兜底查询、源笔记的链接网络、检索结果的进一步反链扩展。
+插件和评测脚本调用同一份核心逻辑。
 
 ## 仓库结构
 
@@ -66,26 +57,20 @@ docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
 
 文档入口见 [docs/README.md](./docs/README.md)；插件运行细节（失败可见性、代理与重试、候选安全）见 [docs/obsidian-plugin-operations.md](./docs/obsidian-plugin-operations.md)。
 
-## 评估：个人记忆空间怎么衡量"找得准"
+## 评估：有没有带来 Surprise
 
-个人笔记库没有标准答案，同一条旧笔记对不同 insight 的关系不同，"该召回什么"只有笔记的主人知道。Aha 把评估设计纳入到日常的 Review 行为中：
+**Surprise 是 Aha 的核心产品指标：每轮阅读中，有多少条旧笔记带来了意料之外、又对当前思考有价值的连接。** 比如，一段早已忘记的经历，恰好为眼前的判断补上了一个反例或适用边界。
 
-1. **反馈即标注**：在 Review Panel 里对候选点 `accept` / `noise` / `should_have_found`，动作存进插件 Session Store（`data.json`），人工确认后进入私有评测集（`gold.must` / `nice` / `noise`，本地文件不入库）。
-2. **围绕TOP10计分**：@10——`Must Recall@10`、`Useful Precision@10`、`nDCG@10`、`Negative Rate@10`。
-3. **失败归因**：每个 case 自动归因到 query / retrieval / rerank / relation / 标注 / 输入表示六类，诊断指标（`Expanded Pool Recall@20`、`Dropped Must Count`）区分"没找到"和"找到了但排丢了"——决定下一步优化哪一层。
+这个价值由笔记的主人确认。在 Review Panel 中读过原文后，点击 `surprise` 留下标记，也可以记下这次连接带来的想法。Aha 保存这些反馈，供日后回看。
 
-```bash
-node scripts/bench/run-pipeline-bench.mjs                 # 全量评测
-node scripts/bench/run-pipeline-bench.mjs --only aha-002  # 单 case 快速迭代
-node scripts/bench/summarize-report.mjs bench/reports/latest/pipeline.json
-```
+评估围绕每轮由用户标记的 Surprise 数量展开；比较不同方案时，保持相近的阅读预算。标记反映的是用户当下感受到的价值，不能直接证明长期判断能力的改善。
 
-每个 case 产出结构化 PipelineTrace（查询、逐路召回、池、重排、gold 位置、归因），细节见 [bench/README.md](./bench/README.md)。
+检索与排序的过程诊断留在 [评测文档](./bench/README.md)，用于定位问题。
 
 ## 开发与验证
 
 ```bash
-node --test scripts/aha/tests/**/*.test.mjs   # wrapper/检索/judge/评分单测 (unit/integration/e2e)
+node --test scripts/aha/tests/**/*.test.mjs   # 检索/judge/评分单测 (unit/integration/e2e)
 cd obsidian-plugin && npm run verify       # 插件构建 + 测试
 ```
 
@@ -95,4 +80,4 @@ cd obsidian-plugin && npm run verify       # 插件构建 + 测试
 
 不做：自动修改 Obsidian 原文、自动沉淀总结、把候选自动写入知识库。
 
-边界：自用驱动的深度产品实验，评估基于真实个人 review 行为；检索层的 must 入池率已通过确定性手段做到 ~97%，top-10 排序质量仍在通过反馈判例持续校准。
+边界：自用驱动的深度产品实验，以真实阅读中的 Surprise 反馈检验产品价值，尚未验证对长期思考与判断的影响。
