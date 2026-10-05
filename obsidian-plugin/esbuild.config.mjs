@@ -1,11 +1,12 @@
 import esbuild from "esbuild";
+import { buildArtifact } from "./build-artifact.mjs";
 
 const mode = process.argv[2] ?? "";
 
 if (mode === "core") {
   // Standalone shared-core artifact (ADR 0005). Not committed; bench/verify
   // entry points rebuild it before importing.
-  await esbuild.build({
+  await buildArtifact({
     banner: {
       js: "/* Aha shared core artifact. Generated from src/core/index.ts. Do not commit. */",
     },
@@ -24,7 +25,7 @@ if (mode === "core") {
   // Standalone session-store Node artifact (BATCH-VAULT-RUNNER-PLAN.md). Not
   // committed; the batch vault runner rebuilds it before importing, same as
   // the "core" target above.
-  await esbuild.build({
+  await buildArtifact({
     banner: {
       js: "/* Aha session-store artifact. Generated from src/session-index.ts. Do not commit. */",
     },
