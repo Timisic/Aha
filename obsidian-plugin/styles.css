@@ -521,3 +521,127 @@
 .aha-quick-link-path { margin-left: 6px; color: var(--text-muted); font-weight: normal; }
 .aha-quick-links-message { padding: 6px 8px 10px; }
 .aha-quick-links-footer { padding: 6px 8px 2px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+
+.aha-settings {
+  container-type: inline-size;
+}
+
+.aha-settings .setting-item {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  padding: 12px 0;
+}
+
+.aha-settings h3 {
+  margin: 24px 0 4px;
+  font-size: var(--font-ui-medium);
+}
+
+.aha-settings-disclosure {
+  margin: 4px 0 8px;
+}
+
+.aha-settings-disclosure > summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  padding: 8px 0;
+}
+
+.aha-settings-disclosure[open] > summary,
+.aha-settings-disclosure > summary:hover {
+  color: var(--text-normal);
+}
+
+.aha-settings-disclosure > summary:focus-visible,
+.aha-health-fix:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 3px;
+}
+
+.aha-settings .aha-settings-multiline {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aha-settings-multiline .setting-item-control {
+  justify-content: stretch;
+}
+
+.aha-settings-multiline textarea {
+  min-width: 0;
+  resize: vertical;
+  width: 100%;
+}
+
+.aha-settings-note,
+.aha-embed-status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.aha-embed-status {
+  margin-top: 8px;
+}
+
+.aha-settings-note {
+  margin: 8px 0 16px;
+}
+
+.aha-health-light {
+  padding: 10px 0;
+}
+
+.aha-health-light strong {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+}
+
+.aha-health-state {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-right: 8px;
+}
+
+.aha-settings .is-error {
+  color: var(--text-error);
+}
+
+.aha-health-fix {
+  cursor: pointer;
+  display: block;
+  font-size: var(--font-ui-smaller);
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  user-select: all;
+  white-space: pre-wrap;
+}
+
+@container (max-width: 480px) {
+  .aha-settings .setting-item {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .aha-settings .setting-item-info {
+    margin-right: 0;
+    width: 100%;
+  }
+
+  .aha-settings .setting-item-control {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .aha-settings .setting-item-control input:not([type="range"]) {
+    max-width: 100%;
+  }
+}
