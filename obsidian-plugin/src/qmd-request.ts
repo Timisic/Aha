@@ -1,6 +1,6 @@
 // Desktop QMD CLI adapter: bounded subprocesses, without a wrapper process.
 
-import type { QmdDeps, QmdQueryLike } from "./core";
+import { extractQmdRows, type QmdDeps, type QmdQueryLike, type QmdRow } from "./core";
 import type { AhaPluginSettings } from "./settings";
 
 const READINESS_PROBE_TIMEOUT_MS = 8_000;
@@ -17,6 +17,7 @@ interface BoundedCommandOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
+  signal?: AbortSignal;
 }
 
 export function canRunExternalProcesses(): boolean {
@@ -42,6 +43,7 @@ function getNodeRequire(): NodeRequire {
  * runCommandBounded.
  */
 function runBoundedCommand(command: string, args: string[], options: BoundedCommandOptions): Promise<BoundedCommandResult> {
+  if (options.signal?.aborted) return Promise.reject(new Error("QMD request cancelled."));
   const childProcess = getNodeRequire()("child_process") as typeof import("child_process");
 
   return new Promise((resolve, reject) => {
@@ -62,6 +64,7 @@ function runBoundedCommand(command: string, args: string[], options: BoundedComm
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       child.kill("SIGTERM");
       const killTimer = setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
@@ -69,9 +72,13 @@ function runBoundedCommand(command: string, args: string[], options: BoundedComm
       killTimer.unref?.();
       reject(error);
     };
+    const abort = () => fail(new Error("QMD request cancelled."));
     const timer = setTimeout(() => {
       fail(new Error(`${command} timed out after ${options.timeoutMs}ms.`));
     }, options.timeoutMs);
+
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
 
     child.stdout.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
@@ -95,12 +102,14 @@ function runBoundedCommand(command: string, args: string[], options: BoundedComm
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       reject(error);
     });
     child.on("close", (code: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       resolve({ code, stdout, stderr });
     });
   });
@@ -194,6 +203,30 @@ export async function probeQmdAvailable(settings: AhaPluginSettings): Promise<bo
   } catch {
     return false;
   }
+}
+
+export async function runQmdQuickRecall(settings: AhaPluginSettings, query: string, signal: AbortSignal): Promise<QmdRow[]> {
+  const text = query.replace(/\s+/g, " ").trim();
+  if (!text) return [];
+  const command = settings.qmdCommand?.trim() || "qmd";
+  const result = await runBoundedCommand(command, [
+    "query", `vec: ${text}`, "-c", settings.qmdIndex, "--index", settings.qmdIndex,
+    "-n", "8", "-C", "8", "--no-rerank", "--full-path", "--format", "json",
+  ], { env: qmdChildEnv(settings), timeoutMs: 8_000, signal });
+  if (result.code !== 0) throw new Error(firstLine(result.stderr || result.stdout) || `QMD exited ${result.code}`);
+  const rows: unknown = extractQmdRows(result.stdout);
+  if (!Array.isArray(rows)) throw new Error("QMD returned invalid results.");
+  return rows.filter((row): row is QmdRow => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+    const location = row.file ?? row.path ?? row.uri;
+    if (typeof location !== "string" || !location.trim()) return false;
+    if (/^qmd:\/\//i.test(location)) {
+      try { decodeURIComponent(location); } catch { return false; }
+    }
+    return (row.title === undefined || typeof row.title === "string") &&
+      (row.snippet === undefined || typeof row.snippet === "string") &&
+      (row.score === undefined || (typeof row.score === "number" && Number.isFinite(row.score)));
+  });
 }
 
 function qmdCandidateLimit(targetCandidates: number): number {

@@ -17,6 +17,7 @@ import { decideQmdBinaryLight, decideIndexCoverageLight, decideQmdEndpointsLight
 import { validateAhaWrapperResult, type AhaWrapperResult } from "./schema";
 import { sourceIdentityForFile } from "./source-identity";
 import { AHA_COMMANDS } from "./commands";
+import { QuickLinks } from "./quick-links";
 import { savedThoughts, updateSavedThought, type SavedThought } from "./saved-thoughts";
 import { applyThoughtNoteWrite, thoughtNoteBlock, type ThoughtNoteWrite } from "./thought-note";
 import { runTieredSearch } from "./tier-pipeline";
@@ -66,6 +67,16 @@ export default class AhaPlugin extends Plugin {
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText("Aha idle");
     this.registerView(AHA_REVIEW_PANEL_VIEW_TYPE, (leaf) => new AhaReviewPanelView(leaf, this));
+
+    const quickLinks = new QuickLinks(this.app, () => this.settings);
+    this.registerEditorExtension(quickLinks.extension);
+    this.register(() => quickLinks.close());
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => quickLinks.close()));
+    this.registerEvent(this.app.workspace.on("file-open", () => quickLinks.close()));
+    this.addCommand({
+      ...AHA_COMMANDS.insertRelatedLinks,
+      editorCallback: (editor, info) => quickLinks.open(editor, info.file),
+    });
 
     this.addCommand({
       id: AHA_COMMANDS.checkReadiness.id,

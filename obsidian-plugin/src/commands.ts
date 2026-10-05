@@ -1,4 +1,8 @@
 export const AHA_COMMANDS = {
+  insertRelatedLinks: {
+    id: "aha-insert-related-links",
+    name: "Insert related links",
+  },
   checkReadiness: {
     id: "aha-readiness-check",
     name: "Check Readiness",

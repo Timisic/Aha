@@ -14,7 +14,6 @@ import {
   normalizeNoteIdentity,
   notePathForObsidian,
   sameNotePath,
-  slugPath,
 } from "./note-identity";
 
 export interface CandidateRecord {
@@ -165,17 +164,28 @@ export async function qmdUriVaultPath(args: CandidateFilterArgs, value: string, 
   if (exact) return exact;
   if (!args.vaultRoot || !deps.listDirectory || !isSafeVaultRelativePath(notePath, deps)) return "";
   let current = args.vaultRoot;
-  for (const segment of deps.posixNormalize(notePath).split("/")) {
+  const segments = deps.posixNormalize(notePath).split("/");
+  for (const [index, segment] of segments.entries()) {
     const entries = await deps.listDirectory(current).catch((): string[] => []);
     // Prefer literal identity; otherwise require a unique full component
     // match. Never fall back to a basename from a different folder.
-    const matches = entries.includes(segment) ? [segment] : entries.filter(name => slugPath(name) === slugPath(segment));
+    const matches = entries.includes(segment) ? [segment] : entries.filter(name => qmdPhysicalComponent(name, index === segments.length - 1).toLowerCase() === segment.toLowerCase());
     if (matches.length !== 1) return "";
     current = deps.path.resolve(current, matches[0]);
     // Check every hop, so even listing a symlink outside the vault is denied.
     if (!(await resolveVaultContainedPath(args, current, deps).catch(() => ""))) return "";
   }
   return resolveVaultContainedPath(args, current, deps);
+}
+
+function qmdPhysicalComponent(name: string, isFile: boolean): string {
+  const symbols = name.replace(/(?:\p{So}\p{Mn}?|\p{Sk})+/gu, (run) => [...run]
+    .filter(character => /\p{So}|\p{Sk}/u.test(character))
+    .map(character => character.codePointAt(0)?.toString(16) ?? "")
+    .join("-"));
+  const extension = isFile ? symbols.match(/(\.[a-z0-9]+)$/i)?.[1] ?? "" : "";
+  const stem = extension ? symbols.slice(0, -extension.length) : symbols;
+  return stem.replace(/[^\p{L}\p{N}$]+/gu, "-").replace(/^-+|-+$/g, "") + extension;
 }
 
 export function isSafeVaultRelativePath(value: unknown, deps: VaultBoundaryDeps): boolean {

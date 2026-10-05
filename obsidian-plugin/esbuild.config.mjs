@@ -58,6 +58,7 @@ if (mode === "core") {
     entryPoints: ["src/main.ts"],
     external: [
       "obsidian",
+      "@codemirror/*",
       "electron",
       "child_process",
       "crypto",

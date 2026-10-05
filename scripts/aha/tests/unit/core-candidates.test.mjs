@@ -157,3 +157,48 @@ test("vault-containment: resolveVaultContainedPath / isCandidatePathAllowed / is
     await rm(vault, { recursive: true, force: true });
   }
 });
+
+test("QMD physical component lookup resolves literal hash and percent names without URI fragment stripping", async (t) => {
+  const vault = await mkdtemp(path.join(tmpdir(), "aha-qmd-literal-names-"));
+  t.after(() => rm(vault, { recursive: true, force: true }));
+  const folder = path.join(vault, "章节 #1");
+  await mkdir(folder);
+  for (const filename of ["反例 #1.md", "100%.md", "🔥 $Plan.v2.md"]) await writeFile(path.join(folder, filename), "physical file");
+  const args = { vaultRoot: vault };
+  assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/章节-1/反例-1.md?index=obsidian"), await realpath(path.join(folder, "反例 #1.md")));
+  assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/章节-1/100.md?index=obsidian"), await realpath(path.join(folder, "100%.md")));
+  assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/章节-1/1f525-$Plan-v2.md?index=obsidian"), await realpath(path.join(folder, "🔥 $Plan.v2.md")));
+  assert.equal(await resolveVaultContainedPath(args, path.join(folder, "100%.md")), await realpath(path.join(folder, "100%.md")));
+  assert.equal(isSourceCandidate({ ...args, sourcePath: "章节 #1/100%.md" }, "章节 #1/100%.md", { file: path.join(folder, "100%.md") }), true);
+  assert.equal(isSourceCandidate({ ...args, sourcePath: "章节 #1/100%.md" }, "章节 #1/反例 #1.md", { file: path.join(folder, "反例 #1.md") }), false);
+});
+
+test("QMD physical component lookup refuses collisions and keeps exact names authoritative", async (t) => {
+  const vault = await mkdtemp(path.join(tmpdir(), "aha-qmd-name-collision-"));
+  t.after(() => rm(vault, { recursive: true, force: true }));
+  await writeFile(path.join(vault, "反例 #1.md"), "first");
+  await writeFile(path.join(vault, "反例 %1.md"), "collision");
+  const args = { vaultRoot: vault };
+  assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/反例-1.md"), "");
+  await writeFile(path.join(vault, "反例-1.md"), "exact");
+  assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/反例-1.md"), await realpath(path.join(vault, "反例-1.md")));
+  await mkdir(path.join(vault, "Elsewhere"));
+  await writeFile(path.join(vault, "Elsewhere", "unique #2.md"), "wrong folder");
+  assert.equal(await qmdUriVaultPath(args, "qmd://obsidian/unique-2.md"), "");
+});
+
+test("legacy lowercase QMD components resolve only a unique physical filename", async (t) => {
+  const vault = await mkdtemp(path.join(tmpdir(), "aha-qmd-lowercase-"));
+  t.after(() => rm(vault, { recursive: true, force: true }));
+  await mkdir(path.join(vault, "Notes Folder"));
+  const original = path.join(vault, "Notes Folder", "Case Note.md");
+  await writeFile(original, "first");
+  const args = { vaultRoot: vault };
+  const uri = "qmd://obsidian/notes-folder/case-note.md";
+  assert.equal(await qmdUriVaultPath(args, uri), await realpath(original));
+  await writeFile(path.join(vault, "Notes Folder", "case，note.md"), "collision");
+  assert.equal(await qmdUriVaultPath(args, uri), "");
+  const exact = path.join(vault, "Notes Folder", "case-note.md");
+  await writeFile(exact, "exact");
+  assert.equal(await qmdUriVaultPath(args, uri), await realpath(exact));
+});

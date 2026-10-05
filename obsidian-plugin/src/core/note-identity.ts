@@ -80,13 +80,15 @@ export function sameNotePath(left: unknown, right: unknown, options: NoteIdentit
 }
 
 export function normalizeNoteIdentity(value: unknown, options: NoteIdentityOptions = {}): string {
-  const normalized = decodeURIComponent(String(value ?? "")
+  const raw = String(value ?? "");
+  const cleaned = raw
     .replace(/^qmd:\/\/[^/]+\//i, "")
     .replace(/\?index=.*$/i, "")
     .replace(/\\/g, "/")
     .replace(/\.md$/i, "")
     .trim()
-    .normalize("NFC"));
+    .normalize("NFC");
+  const normalized = /^qmd:\/\//i.test(raw) ? decodeURIComponent(cleaned) : cleaned;
   return options.caseSensitive ? normalized : normalized.toLowerCase();
 }
 

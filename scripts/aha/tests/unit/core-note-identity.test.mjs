@@ -168,3 +168,10 @@ test("equivalentVaultPath is true only when both sides resolve to one file", asy
   assert.equal(equivalentVaultPath("Beta", "notes/sub/Beta.md", resolver), false);
   assert.equal(equivalentVaultPath("Alpha", "Missing Note", resolver), false);
 });
+
+test("physical note identity preserves literal percent while QMD URI identity decodes it", () => {
+  assert.equal(normalizeNoteIdentity("Notes/100%.md"), "notes/100%");
+  assert.equal(normalizeNoteIdentity("Notes/100%20.md"), "notes/100%20");
+  assert.equal(sameNotePath("Notes/100%20.md", "Notes/100 .md"), false);
+  assert.equal(sameNotePath("qmd://obsidian/Notes/100%25.md", "Notes/100%.md"), true);
+});

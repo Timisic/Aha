@@ -61,3 +61,17 @@
 - QMD 只走 CLI；`qmdCommand` 指定可执行文件。QMD 的 index 是按名字独立的 sqlite 文件，重建 Obsidian 索引需显式 `qmd update --index obsidian && qmd embed --index obsidian`。
 
 首次安装或修复 QMD，按 [QMD 安装与验收](./qmd-setup.md) 执行。清理范围与验收证据见 [迁移收尾](./migration-closeout.md)。
+
+## Quick related links
+
+`Aha: Insert related links` is an editor command with id `aha-insert-related-links`. It has no default hotkey. Bind it in Obsidian settings or use the command palette.
+
+The command captures selected text, or the full blank-line-delimited paragraph at the caret. A blank line uses the nearest preceding paragraph. The caret tooltip shows up to four existing Markdown notes after source, folder, generated-review and vault-containment filtering. Fewer results are valid.
+
+The dedicated request uses one QMD semantic query with `vec:` input, `--no-rerank`, eight candidate slots, an eight-second timeout and the existing output-size bound. Input whitespace is collapsed before constructing the directive. This path does not run a readiness probe, query expansion, lexical search, retry or DeepSeek call. It inherits the configured QMD command, index and environment.
+
+Arrow keys move the highlight. Space or a click toggles a candidate. Enter inserts checked candidates in display order, or the highlighted candidate when none are checked. One editor transaction inserts the native wiki links and isolates the undo group. The source text remains intact. This action does not write the Session Store.
+
+The CodeMirror extension owns the tooltip and uses the public `editorInfoField` to identify its editor. Closing, clicking outside, editing, moving the selection, switching files, invoking the command again or unloading the plugin cancels the current request. Cancellation terminates only that request's subprocess. A completed stale request cannot reopen the tooltip or write to a changed source.
+
+QMD and CodeMirror behavior need a real isolated Obsidian acceptance run. Unit tests cover paragraph capture, insertion spacing, query arguments, malformed output, cancellation and timeout behavior.

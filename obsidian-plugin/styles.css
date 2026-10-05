@@ -452,3 +452,71 @@
   background: var(--background-secondary);
   color: var(--text-normal);
 }
+
+.aha-quick-links.cm-tooltip {
+  width: min(360px, calc(100vw - 24px));
+  padding: 6px;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: 0 4px 16px var(--background-modifier-box-shadow);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+}
+
+.aha-quick-links-close {
+  display: block;
+  margin: 0 0 2px auto;
+  padding: 0;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.aha-quick-link-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.aha-quick-link-option.is-highlighted,
+.aha-quick-link-option:hover {
+  background: var(--background-modifier-hover);
+}
+
+.aha-quick-link-check {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 1px solid var(--text-muted);
+  border-radius: 3px;
+  color: var(--text-normal);
+  line-height: 12px;
+  text-align: center;
+}
+
+.aha-quick-link-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.aha-quick-link-title,
+.aha-quick-link-excerpt {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.aha-quick-link-title { font-weight: var(--font-medium); }
+.aha-quick-link-excerpt { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.aha-quick-link-path { margin-left: 6px; color: var(--text-muted); font-weight: normal; }
+.aha-quick-links-message { padding: 6px 8px 10px; }
+.aha-quick-links-footer { padding: 6px 8px 2px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
