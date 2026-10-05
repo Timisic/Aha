@@ -517,7 +517,7 @@
 }
 
 .aha-quick-link-title { font-weight: var(--font-medium); }
-.aha-quick-link-excerpt { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.aha-quick-link-excerpt { min-height: 1.5em; color: var(--text-muted); font-size: var(--font-ui-smaller); }
 .aha-quick-link-path { margin-left: 6px; color: var(--text-muted); font-weight: normal; }
 .aha-quick-links-message { padding: 6px 8px 10px; }
 .aha-quick-links-footer { padding: 6px 8px 2px; color: var(--text-muted); font-size: var(--font-ui-smaller); }

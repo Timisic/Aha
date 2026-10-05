@@ -21,9 +21,11 @@ interface Capture extends QuickLinkContext {
 interface Candidate {
   readonly file: TFile;
   readonly title: string;
-  readonly excerpt: string;
-  readonly excerptMethod: ExcerptPick["method"];
-  readonly excerptCoverage: ExcerptPick["coverage"];
+  readonly excerpt: {
+    readonly text: string;
+    readonly method: ExcerptPick["method"];
+    readonly coverage: ExcerptPick["coverage"];
+  } | null;
 }
 
 type PopupState =
@@ -164,20 +166,24 @@ export class QuickLinks {
         const document = extractExcerptDocument(file.path, source);
         if (!document) continue;
         documents.push(document);
-        candidates.push({ file, title: file.basename, excerpt: "", excerptMethod: "none", excerptCoverage: "complete" });
+        candidates.push({ file, title: file.basename, excerpt: null });
         if (candidates.length === 4) break;
       }
       if (!this.isCurrent(view, capture)) return;
+      if (!candidates.length) {
+        this.show(view, { kind: "message", capture, message: "没有找到可插入的相关笔记。" });
+        return;
+      }
+      this.show(view, { kind: "ready", capture, candidates, highlighted: 0, checked: new Set() });
       const picks = await selectExcerpts(capture.query, documents, createExcerptReranker(settings.qmdEnvironment), capture.request.signal);
       if (!this.isCurrent(view, capture)) return;
       const excerpts = candidates.map((candidate, index) => {
         const pick = picks[index];
-        return { ...candidate, excerpt: pick?.span ? excerptText(documents[index], pick.span) : "",
-          excerptMethod: pick.method, excerptCoverage: pick.coverage };
+        return { ...candidate, excerpt: { text: pick.span ? excerptText(documents[index], pick.span) : "",
+          method: pick.method, coverage: pick.coverage } };
       });
-      this.show(view, candidates.length
-        ? { kind: "ready", capture, candidates: excerpts, highlighted: 0, checked: new Set() }
-        : { kind: "message", capture, message: "没有找到可插入的相关笔记。" });
+      const state = view.state.field(this.field);
+      if (state.kind === "ready" && state.capture === capture) this.show(view, { ...state, candidates: excerpts });
     } catch (error) {
       if (!this.isCurrent(view, capture)) return;
       const timedOut = error instanceof Error && error.message.includes("timed out after");
@@ -240,6 +246,8 @@ export class QuickLinks {
     dom.replaceChildren();
     const state = view.state.field(this.field);
     if (state.kind === "closed") return;
+    dom.dataset.excerptsPending = String(state.kind === "loading" ||
+      (state.kind === "ready" && state.candidates.some((candidate) => candidate.excerpt === null)));
     const document = dom.ownerDocument;
     const close = document.createElement("button");
     close.className = "aha-quick-links-close";
@@ -255,13 +263,14 @@ export class QuickLinks {
       list.setAttribute("role", "listbox");
       list.setAttribute("aria-label", "相关笔记");
       list.setAttribute("aria-multiselectable", "true");
+      list.setAttribute("aria-busy", String(state.candidates.some((candidate) => candidate.excerpt === null)));
       for (const [index, candidate] of state.candidates.entries()) {
         const row = document.createElement("div");
         row.className = "aha-quick-link-option";
         row.classList.toggle("is-highlighted", state.highlighted === index);
         row.dataset.path = candidate.file.path;
-        row.dataset.excerptMethod = candidate.excerptMethod;
-        row.dataset.excerptCoverage = candidate.excerptCoverage;
+        row.dataset.excerptMethod = candidate.excerpt?.method ?? "pending";
+        row.dataset.excerptCoverage = candidate.excerpt?.coverage ?? "pending";
         row.setAttribute("role", "option");
         row.setAttribute("aria-selected", String(state.checked.has(candidate.file.path)));
         const check = document.createElement("span");
@@ -280,12 +289,10 @@ export class QuickLinks {
           path.textContent = candidate.file.parent?.path ?? "";
           title.append(path);
         }
-        if (candidate.excerpt) {
-          const excerpt = document.createElement("span");
-          excerpt.className = "aha-quick-link-excerpt";
-          excerpt.textContent = candidate.excerpt;
-          text.append(excerpt);
-        }
+        const excerpt = document.createElement("span");
+        excerpt.className = "aha-quick-link-excerpt";
+        excerpt.textContent = candidate.excerpt?.text ?? "";
+        text.append(excerpt);
         row.append(check, text);
         row.addEventListener("mousedown", (event) => event.preventDefault());
         row.addEventListener("click", () => this.toggle(view, index));
@@ -300,7 +307,9 @@ export class QuickLinks {
     }
     const footer = document.createElement("div");
     footer.className = "aha-quick-links-footer";
-    footer.textContent = state.kind === "ready" ? "↑↓ 移动 · 空格 多选 · Enter 插入 · Esc 取消" : "Esc 取消";
+    footer.textContent = state.kind === "ready"
+      ? `${state.candidates.some((candidate) => candidate.excerpt === null) ? "原文提取中 · " : ""}↑↓ 移动 · 空格 多选 · Enter 插入 · Esc 取消`
+      : "Esc 取消";
     dom.append(footer);
   }
 }
