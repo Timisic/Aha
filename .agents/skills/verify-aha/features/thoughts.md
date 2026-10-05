@@ -39,4 +39,6 @@ Preconditions:
 - Never overwrite `data.json` while the plugin is loaded. Read it for evidence.
 - Unsaved drafts live in the view and do not survive plugin reload.
 - If the original thought block was manually changed or duplicated, saving can report a conflict and retain the draft. Do not silently repair the user's text.
-- Editing and keyboard-save paths remain unverified by the default scenario.
+- The default scenario edits the saved entry with Ctrl+Enter and checks exact Markdown replacement and its saved journal. Reload restoration of the edited version remains a separate check.
+
+- On the current macOS desktop, CDP Cmd+Enter attempts did not save the edited thought; Ctrl+Enter did. Preserve the failed attempt and treat Cmd+Enter as an unresolved host/product interaction, not verified keyboard parity.

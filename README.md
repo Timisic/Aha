@@ -86,7 +86,7 @@ QMD 全文与向量索引保存在本机。使用远程 embedding 时，标题�
 ## 开发与验证
 
 ```bash
-env -u DEEPSEEK_API_KEY npm run verify     # lint、类型、单元/集成测试与构建
+npm run verify     # lint、类型、单元/集成测试与构建
 node .agents/skills/verify-aha/scripts/verify.mjs run  # 隔离 Obsidian 界面验收
 ```
 

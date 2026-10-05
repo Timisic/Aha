@@ -33,4 +33,4 @@ Preconditions:
 
 - Candidate opening changes the active note. Pin first when subsequent feedback must stay attached to Source.
 - The editor command reads the first wiki link on the current line. A note containing a link elsewhere is insufficient.
-- These branches are mapped from source and are not exercised by the default scenario.
+- The default scenario exercises candidate and source links, pinning, and following. The editor Open Candidate command remains a separate recipe.

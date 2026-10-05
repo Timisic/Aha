@@ -1,19 +1,3 @@
-// True end-to-end test for the batch vault runner
-// (BATCH-VAULT-RUNNER-PLAN.md, scripts/dev/run-batch-vault.mjs): one real
-// note, one real call to DeepSeek and QMD, asserting the run doesn't throw
-// and the data.json it writes reads back cleanly through
-// normalizeSessionStore(). Mirrors the layering of
-// e2e-real-deepseek.test.mjs: auto-runs when DEEPSEEK_API_KEY is set and a
-// real vault + qmd binary are available, skips with a clear message
-// otherwise, so `npm test` never costs money or needs local vault state.
-//
-// Uses a temporary root-level note written into the real vault (so QMD's index has
-// something real to search against and path resolution behaves normally),
-// but writes to a throwaway plugin id's data.json
-// (aha-memory-surface-e2e-test) so it never touches the real dev/production
-// plugin state. The scratch note deliberately does not live under `Aha/`:
-// cleanup must not leave an empty product-named folder in the user's vault.
-
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -21,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { DEFAULT_DEEPSEEK_API_KEY_ENV, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_MODEL } from "../../../lib/openai-json-agent.mjs";
 import { normalizeSessionStore } from "../../../lib/session-artifact.mjs";
-import { benchVaultRoot } from "../../../lib/vault-paths.mjs";
+import { realTestConfig } from "../../../lib/real-test-config.mjs";
 import { dataJsonPathFor, loadPipelineConfig, runOneNote } from "../../../dev/run-batch-vault.mjs";
 
 const DEEPSEEK_API_KEY = process.env[DEFAULT_DEEPSEEK_API_KEY_ENV];
@@ -56,10 +40,10 @@ async function pathExists(targetPath) {
   }
 }
 
-if (!DEEPSEEK_API_KEY) {
-  test(`real batch-vault-runner E2E test (skipped: ${DEFAULT_DEEPSEEK_API_KEY_ENV} is not set)`, { skip: true }, () => {});
+if (process.env.AHA_RUN_REAL_E2E !== "1" || !DEEPSEEK_API_KEY) {
+  test(`real batch-vault-runner E2E test (skipped: use npm run test:e2e:real with explicit configuration)`, { skip: true }, () => {});
 } else {
-  const vaultRoot = benchVaultRoot();
+  const { vaultRoot, qmdIndex } = await realTestConfig(process.env);
   const hasVault = await vaultExists(vaultRoot);
   const hasQmd = hasVault && qmdAvailable("qmd");
 
@@ -74,13 +58,17 @@ if (!DEEPSEEK_API_KEY) {
       const legacyAhaDirectory = path.join(vaultRoot, "Aha");
       const legacyAhaDirectoryExisted = await pathExists(legacyAhaDirectory);
 
+      assert.equal(await pathExists(scratchAbsPath), false, "Refuse to overwrite an existing note");
+      await mkdir(path.dirname(dataJsonPath), { recursive: false });
+      let noteCreated = false;
       try {
         await writeFile(
           scratchAbsPath,
           "# 批量跑测试笔记\n\n这是 batch vault runner 的端到端测试笔记，跑完可以删除。记录一次关于坚持写复盘的想法。",
+          { flag: "wx" },
         );
+        noteCreated = true;
 
-        await mkdir(path.dirname(dataJsonPath), { recursive: true });
         await writeFile(dataJsonPath, JSON.stringify({
           settings: {
             llmProvider: "deepseek",
@@ -88,7 +76,7 @@ if (!DEEPSEEK_API_KEY) {
             deepseekBaseUrl: process.env.DEEPSEEK_TEST_BASE_URL || DEFAULT_DEEPSEEK_BASE_URL,
             deepseekModel: process.env.DEEPSEEK_TEST_MODEL || DEFAULT_DEEPSEEK_MODEL,
             qmdCommand: "qmd",
-            qmdIndex: "obsidian",
+            qmdIndex,
             targetCandidates: 5,
             excludedFolders: "templates",
           },
@@ -110,7 +98,7 @@ if (!DEEPSEEK_API_KEY) {
         assert.equal(records[0].rounds.length, 1);
         assert.ok(["success", "failed"].includes(records[0].rounds[0].status));
       } finally {
-        await rm(scratchAbsPath, { force: true });
+        if (noteCreated) await rm(scratchAbsPath, { force: true });
         await rm(path.dirname(dataJsonPath), { recursive: true, force: true });
         if (!legacyAhaDirectoryExisted) {
           assert.equal(

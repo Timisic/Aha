@@ -2,24 +2,21 @@
 
 Three tiers, matching a standard test pyramid:
 
-- **`unit/`** (27 files) — pure logic, no real subprocess, no real network. Fast,
+- **`unit/`** — pure logic, no real subprocess, no real network. Fast,
   deterministic. Many of these rebuild `obsidian-plugin/dist/core.mjs` via a
   real `esbuild` compile step (core is TypeScript), but that's an
   implementation detail of testing compiled TS as `.mjs` — the tests
   themselves exercise one module's logic in isolation with injected fakes.
-- **`integration/`** (9 files) — real subprocess spawns (the CLI wrapper,
+- **`integration/`** — real subprocess spawns (the CLI wrapper,
   `qmd`/`obsidian` stand-ins, `curl`), real `esbuild` + dynamic
   import of the compiled artifact, real localhost HTTP servers standing in
   for the LLM provider. These catch wiring bugs (arg-passing, env handling,
   protocol/URL construction) across multiple real components — but the LLM
   *content* they receive is still a hand-written JSON payload known in
   advance to be valid.
-- **`e2e/`** (1 file) — real network calls to the real DeepSeek API. Asserts
-  on structural properties (schema validity, enum membership), never exact
-  content, since model output isn't deterministic. Auto-runs whenever
-  `DEEPSEEK_API_KEY` is present in the environment; skips with a clear
-  message otherwise, so a normal test run never silently costs money or
-  flakes on network access when the key is absent.
+- **`e2e/`** uses real DeepSeek and QMD services with synthetic notes in an
+  explicitly selected temporary vault. Only `npm run test:e2e:real` enables it.
+  An API key in the shell never opts normal tests into this tier.
 
 ## Why the e2e tier exists
 
@@ -34,11 +31,19 @@ against what the real model actually returns.
 
 ## Running
 
-```bash
-npm test                                     # everything (root or obsidian-plugin/)
-node --test scripts/aha/tests/**/*.test.mjs  # equivalent, from repo root
-node --test scripts/aha/tests/unit/*.test.mjs        # one tier only
+```sh
+npm test           # unit and integration, from root or obsidian-plugin/
+npm run verify     # static checks, unit/integration tests, types and build
 ```
 
-Note: `node --test <directory>` (with no glob) does not auto-discover
-`*.test.mjs` files in this Node version — always pass an explicit glob.
+For real provider tests, prepare a disposable vault below the system temporary
+directory with `.obsidian/plugins` and index its synthetic notes in a separate
+QMD index. Set `AHA_E2E_VAULT_ROOT`, `AHA_E2E_QMD_INDEX`, and `DEEPSEEK_API_KEY`,
+then run `npm run test:e2e:real`. The runner rejects the normal `obsidian` index
+and vault paths outside the temporary directory, including symlink escapes.
+It never updates an index. The batch test creates a scratch note and a test
+plugin directory, refuses existing paths, and removes its own files afterward.
+Provider tests make real network calls and can incur charges.
+
+For interactive verification, use `.agents/skills/verify-aha/SKILL.md`.
+Its scripts are included in `npm run lint` and `npm run check:scripts`.

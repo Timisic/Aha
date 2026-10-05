@@ -10,7 +10,7 @@ export default [
     ],
   },
   {
-    files: ["scripts/**/*.mjs", "obsidian-plugin/*.mjs"],
+    files: ["scripts/**/*.mjs", "obsidian-plugin/*.mjs", ".agents/skills/verify-aha/scripts/**/*.mjs"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",

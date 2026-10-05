@@ -7,7 +7,7 @@ import path from 'node:path';
 const source = '怎样尽量少付代价判断一件事值不值得继续做？\n我希望保留随时改变决定的余地。';
 const fixtures = {
   'Source.md': source,
-  '试错.md': '---\nowner: 不应出现在摘要中的元数据\nreview_status: 待整理\n---\n# 试错\n\n%%\n隐藏批注：低成本判断是否值得继续，这段不应显示。\n%%\n\n> ```text\n> 隐藏代码：应该选择这段错误样例。\n> ```\n\n## 下周安排\n周末整理书架并归档旧文件。\n\n## 实验教训\n在投入大量资源前，先用小规模、可撤回的实验检验假设，可以降低错误决策的成本。\n',
+  '试错.md': '---\nowner: 不应出现在摘要中的元数据\nreview_status: 待整理\n---\n# 试错\n\n%%\n隐藏批注：低成本判断是否值得继续，这段不应显示。\n%%\n\n> ```text\n> 隐藏代码：应该选择这段错误样例。\n> ```\n\n## 下周安排\n周末整理书架并归档旧文件。\n\n## 实验教训\n在投入大量资源前，先用小规模、可撤回的实验检验假设，可以降低错误决策的成本。\n\n访谈时先让参与者独立回忆具体经历，再追问反对意见，可以减少迎合研究者的回答。\n',
   'README.md': '# README\n\n在投入大量资源之前，先做一个小规模、可撤回的实验，检验最关键的假设。这能让我及时改变决定。\n',
   '项目规划.md': '# 项目规划\n\n在投入大量资源之前，先做一个小规模、可撤回的实验，检验最关键的假设。这能让我及时改变决定。\n',
   '反例 #1.md': '# 反例\n\n过去的失败案例提醒我，不能只寻找支持自己观点的证据。应主动设计小实验，考虑什么结果会推翻当前假设。\n',
@@ -19,6 +19,7 @@ const fixtures = {
 
 export async function prepare(run) {
   assert(process.env.QMD_REMOTE_EMBED_URL, 'run-links requires an existing QMD_REMOTE_EMBED_URL; it will not download models');
+  if (run.scenario === 'quick-links') assert(process.env.QMD_REMOTE_RERANK_URL, 'run-links requires QMD_REMOTE_RERANK_URL to prove semantic excerpts');
   const resolved = spawnSync('which', [process.env.AHA_VERIFY_QMD_COMMAND || 'qmd'], { encoding: 'utf8' });
   assert.equal(resolved.status, 0, 'QMD CLI is required for the real recall proof');
   const executable = resolved.stdout.trim();
@@ -27,6 +28,7 @@ export async function prepare(run) {
   const cache = path.join(run.scratch, 'qmd-cache');
   await mkdir(config);
   const env = { ...process.env, QMD_CONFIG_DIR: config, XDG_CACHE_HOME: cache };
+  delete env.INDEX_PATH;
   for (const args of [['collection', 'add', run.vault, '--name', 'obsidian', '--index', 'obsidian'], ['embed', '--index', 'obsidian']]) {
     const result = spawnSync(executable, args, { env, encoding: 'utf8', timeout: 90000 });
     await writeFile(path.join(run.evidence, `qmd-${args[0]}.log`), (result.stdout || '') + (result.stderr || ''));
@@ -247,6 +249,26 @@ export async function drive(run, api) {
     await ready();
     await click(cdp,'button[aria-label="取消插入双链"]');
     await closed();
+    const interviewQuery = '用户访谈怎么减少受访者迎合我？让他们先回顾实际发生的事，再谈不同意见。';
+    await replaceDocument(interviewQuery);
+    await trigger();
+    await until(() => cdp.evaluate(`!!document.querySelector(${JSON.stringify(row+'[data-path="试错.md"]')})`), 'same note recalled for a different question');
+    const interviewExcerpt = await cdp.evaluate(`document.querySelector(${JSON.stringify(row+'[data-path="试错.md"] .aha-quick-link-excerpt')})?.textContent`);
+    assert.equal(await cdp.evaluate(`document.querySelector(${JSON.stringify(row+'[data-path="试错.md"]')})?.dataset.excerptMethod`), 'semantic');
+    assert.equal(interviewExcerpt, '访谈时先让参与者独立回忆具体经历，再追问反对意见，可以减少迎合研究者的回答。');
+    assert.notEqual(interviewExcerpt, relevantExcerpt);
+    const originalNote = await readFile(path.join(run.vault, '试错.md'), 'utf8');
+    assert(originalNote.includes(relevantExcerpt) && originalNote.includes(interviewExcerpt));
+    await save(path.join(run.evidence, 'links-query-sensitive.json'), {
+      note: '试错.md', fixture: 'synthetic',
+      cases: [{ query: source, excerpt: relevantExcerpt }, { query: interviewQuery, excerpt: interviewExcerpt }],
+      originalTextUnchanged: originalNote === fixtures['试错.md'],
+      notVerified: ['production-vault relevance'],
+    });
+    await snapshot(run, cdp, 'links-query-sensitive');
+    await key(cdp, 'Escape', 'Escape');
+    await closed();
+    await replaceDocument(source);
     await chmod(run.qmdCommand,0o600);
     await trigger();
     await until(()=>cdp.evaluate(`document.querySelector('.aha-quick-links-message')?.textContent.includes('QMD 暂时不可用')`),'unavailable QMD guidance');
@@ -265,10 +287,10 @@ export async function drive(run, api) {
     for(const request of starts){
       assert(request.args.includes('--no-rerank'));
       assert(request.args.includes('query'));
-      assert(request.args.some(a=>a==='vec: '+source.replace(/\s+/g,' ').trim() || a==='vec: '+specialQuery || a==='vec: '+percentQuery));
+      assert(request.args.some(a=>a==='vec: '+source.replace(/\s+/g,' ').trim() || a==='vec: '+specialQuery || a==='vec: '+percentQuery || a==='vec: '+interviewQuery));
       assert(!request.args.includes('--version'));
     }
-    await save(path.join(run.evidence,'report.json'),{status:'passed',fixture:'Real QMD CLI, isolated index, existing embedding service, synthetic notes',verified:['quick-links.semantic-original-excerpt','quick-links.excludes-readme-and-planning','quick-links.no-hover-tooltips','quick-links.selected-text','quick-links.configured-hotkey','quick-links.real-semantic-query','quick-links.max-four','quick-links.keyboard-multiselect','quick-links.preserved-text-and-insertion','quick-links.native-wiki-resolution','quick-links.single-undo','quick-links.escape','quick-links.previous-paragraph','quick-links.enter-highlight','quick-links.mouse-toggle','quick-links.cancel-in-flight','quick-links.no-session-store-write','quick-links.close-button','quick-links.cancel-on-typing','quick-links.current-paragraph','quick-links.insert-at-caret','quick-links.cancel-on-file-switch','quick-links.special-filename','quick-links.percent-filename','quick-links.empty-no-request','quick-links.command-palette','quick-links.unavailable','quick-links.native-announcements'],notVerified:['production-vault relevance','popout window','main-vault latency'],chosen,resolved,observedWaitUpperBoundMs,buildHash:run.buildHash});
+    await save(path.join(run.evidence,'report.json'),{status:'passed',fixture:'Real QMD CLI, isolated index, existing embedding service, synthetic notes',verified:['quick-links.query-sensitive-original-excerpts','quick-links.semantic-original-excerpt','quick-links.excludes-readme-and-planning','quick-links.no-hover-tooltips','quick-links.selected-text','quick-links.configured-hotkey','quick-links.real-semantic-query','quick-links.max-four','quick-links.keyboard-multiselect','quick-links.preserved-text-and-insertion','quick-links.native-wiki-resolution','quick-links.single-undo','quick-links.escape','quick-links.previous-paragraph','quick-links.enter-highlight','quick-links.mouse-toggle','quick-links.cancel-in-flight','quick-links.no-session-store-write','quick-links.close-button','quick-links.cancel-on-typing','quick-links.current-paragraph','quick-links.insert-at-caret','quick-links.cancel-on-file-switch','quick-links.special-filename','quick-links.percent-filename','quick-links.empty-no-request','quick-links.command-palette','quick-links.unavailable','quick-links.native-announcements'],notVerified:['production-vault relevance','popout window','main-vault latency'],chosen,resolved,observedWaitUpperBoundMs,buildHash:run.buildHash});
     await snapshot(run,cdp,'links-final');
   } catch(error){
     await event(run,'quick-links drive failed',error.stack);

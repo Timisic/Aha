@@ -19,7 +19,7 @@ npm --prefix obsidian-plugin ci
 npm run verify
 ```
 
-Use the complete acceptance run by default.
+Use the baseline acceptance run by default. It does not cover every feature.
 
 ```sh
 node .agents/skills/verify-aha/scripts/verify.mjs run
@@ -61,6 +61,9 @@ The default scenario performs these actions.
 5. Require the thought in both `data.json` and the source Markdown. Require one thought block and unchanged candidate files.
 6. Open saved Surprise, exercise empty and matching searches, reload the app, and reopen the panel.
 7. Require restored selection, Surprise marking, and the saved thought.
+8. Edit the saved thought with Ctrl+Enter and require exact replacement in Markdown and a saved journal.
+9. Open a candidate while pinned, return through the source link, then unpin and require the panel to follow another note.
+10. Return to Source and rerun from the panel button. Require a new successful round and unchanged note text.
 
 The feature pages list additional entry points and checks. Extend the existing `drive` scenario for those paths, using its `click`, `fill`, `command`, `snapshot`, and `key` helpers. Keep ownership checks and cleanup intact. Run each new scenario against fresh state. A default passing run does not verify every mapped path.
 
@@ -76,7 +79,20 @@ The default fixture proves deterministic Neighborhood behavior and persistence. 
 
 `run` cleans up in `finally`. Failed launches also clean up. After an interrupted or manual drive, run `cleanup` with its evidence directory. Cleanup verifies the owner marker and PID start identity, signals only that PID, waits for exit, and removes only its scratch directory. A mismatched PID causes refusal. Never kill Obsidian by process name or delete an unverified directory.
 
-Evidence is outside scratch and survives cleanup. Require `cleanup.json`, `report.json`, and the last checkpoint PNG after a successful run. The report must say `passed`. A failed attempt can retain diagnostic evidence without a passing report. Cleanup is repeatable.
+Evidence is outside scratch and survives cleanup. Require `cleanup.json`, `report.json`, and the last checkpoint PNG after a successful run. The report must say `passed`. A failed attempt can retain diagnostic evidence without a passing report. Cleanup is repeatable. `host-before.json` and `host-after.json` record the main
+CLI socket identity, its read-only version response, home, and default keychain.
+Cleanup requires these observations to match. An absent main socket is recorded
+as absent; it is not permission to launch the main application.
+
+Exercise failure cleanup with a fresh evidence directory:
+
+```sh
+AHA_VERIFY_FAIL_AFTER_LAUNCH=1 node .agents/skills/verify-aha/scripts/verify.mjs run
+```
+
+This probe must exit nonzero with `Intentional isolation cleanup probe`. Require
+`cleanup.json` with `hostUnchanged: true`, an absent scratch directory, and the
+retained launch screenshot. Run `cleanup` again to check repeatability.
 
 ## Helpers
 
@@ -84,13 +100,15 @@ The executable [scripts/verify.mjs](scripts/verify.mjs) provides `run`, `launch`
 
 ## Quick link insertion
 
-Use `run-links` for the real QMD quick-link path. It creates a separate QMD configuration and cache inside scratch, indexes synthetic Chinese notes, and embeds them through an existing configured endpoint. It never updates the main index. Provide the embedding service through `QMD_REMOTE_EMBED_URL` and its existing model or authentication environment variables. Credentials stay in process environment and are not copied into evidence.
+Use `run-links` for the real QMD quick-link path. It creates a separate QMD configuration and cache inside scratch, indexes synthetic Chinese notes, and embeds them through an existing configured endpoint. It never updates the main index. Provide the embedding service through `QMD_REMOTE_EMBED_URL` and the excerpt reranker through `QMD_REMOTE_RERANK_URL` and its existing model or authentication environment variables. Credentials stay in process environment and are not copied into evidence.
 
 ```sh
 node .agents/skills/verify-aha/scripts/verify.mjs run-links
 ```
 
 Use `launch-links` instead to hold the instance, then run `doctor`, `drive`, and `cleanup` with its evidence path. The [quick-link proof module](scripts/quick-links-proof.mjs) runs through this entrypoint. It requires a real endpoint and does not download a local model. `AHA_VERIFY_QMD_COMMAND` optionally selects the installed QMD executable.
+
+The proof also asks two different questions about the same noisy note and requires two different, exact original sentences. It records this synthetic quality check separately from unverified production-vault relevance.
 
 The fixture assigns Mod+Shift+L only inside its temporary vault. It records QMD arguments and actual results through a forwarding executable. This records real calls rather than replacing the retrieval boundary. Input text and results are synthetic. Read [quick link insertion](features/quick-links.md) for coverage and additional states. The stock `run` keeps the existing Neighborhood and Surprise proof.
 

@@ -19,13 +19,13 @@ Run an edited scenario with `node .agents/skills/verify-aha/scripts/verify.mjs r
 - [Select and copy handoff](selection.md) covers selection persistence and clipboard output.
 - [Record feedback](feedback.md) covers Surprise, accept, noise, and missing-memory feedback.
 - [Save and revisit thoughts](thoughts.md) covers Markdown writes, saved search, editing, and reload.
-
 - [Quick link insertion](quick-links.md) covers selected or paragraph input, real QMD recall, multiselect, insertion, undo, and cancellation.
-
 - [Index maintenance](index-maintenance.md) covers threshold triggering, persistence, failure and manual recovery.
 
 ## Coverage boundary
 
-The generated scenario covers command Run in Neighborhood, a selection toggle, Surprise, button-based thought saving, saved search, and command Open Panel after reload. Other mapped paths are source-grounded recipes until executed. Provider-backed tiers need a separate configured fixture. The stock helper intentionally keeps QMD unavailable.
+The default scenario covers command Run and panel rerun in Neighborhood, selection count and persistence, Surprise, button saving, saved search, reload, keyboard thought editing, and candidate/source navigation with pin/follow. Other mapped paths are source-grounded recipes until executed. Clipboard copying and the editor Open Candidate command remain separate recipes. Provider-backed review tiers need a separate configured fixture. The stock helper intentionally keeps QMD unavailable.
 
 The separate `run-links` scenario covers quick insertion with real QMD in a synthetic index. Read its `report.json` for the exact executed branches.
+
+The separate `run-index` scenario covers automatic and manual maintenance with real QMD lexical and vector searches. Every scenario uses its own owned instance and runs serially.

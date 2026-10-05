@@ -7,9 +7,10 @@
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
-    "test": "node --test ../scripts/aha/tests/**/*.test.mjs",
+    "test": "npm --prefix .. test",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck && npm test && npm run build"
+    "verify": "npm run typecheck && npm test && npm run build",
+    "test:e2e:real": "npm --prefix .. run test:e2e:real"
   },
   "devDependencies": {
     "@codemirror/commands": "6.8.1",

@@ -8,11 +8,6 @@
 // membership), never exact wording, since model output is not
 // deterministic.
 //
-// Auto-runs whenever DEEPSEEK_API_KEY is set in the environment (a
-// developer's local shell, or a CI secret); skips with a clear message
-// otherwise, so a normal `npm test` never silently costs money or flakes on
-// network access when the key is absent.
-
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -28,8 +23,8 @@ const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_TEST_BASE_URL || "https://api.dee
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_TEST_MODEL || "deepseek-v4-pro";
 const E2E_TIMEOUT_MS = 60_000;
 
-if (!DEEPSEEK_API_KEY) {
-  test("real DeepSeek E2E tests (skipped: DEEPSEEK_API_KEY is not set)", { skip: true }, () => {});
+if (process.env.AHA_RUN_REAL_E2E !== "1" || !DEEPSEEK_API_KEY) {
+  test("real DeepSeek E2E tests (skipped: use npm run test:e2e:real with explicit configuration)", { skip: true }, () => {});
 } else {
   const build = spawnSync(process.execPath, ["esbuild.config.mjs", "core"], {
     cwd: pluginDir,

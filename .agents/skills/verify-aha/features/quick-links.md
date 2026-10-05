@@ -22,7 +22,7 @@ While writing, users request a short list of related notes, choose one or severa
 
 Preconditions:
 
-- Launch with `run-links` or `launch-links` and existing QMD embedding environment variables.
+- Launch with `run-links` or `launch-links` and working `QMD_REMOTE_EMBED_URL` and `QMD_REMOTE_RERANK_URL` settings, plus their existing model/authentication environment variables.
 - Doctor passes for the owned instance. The synthetic QMD index has completed real embedding.
 
 - Open Source through `.nav-file-title[data-path="Source.md"]`. Focus its `.cm-content[contenteditable="true"]` and select text through actual keyboard input.
@@ -33,6 +33,7 @@ Preconditions:
 - Type two trailing newlines and trigger again. Require the preceding full paragraph in the actual QMD argument. Enter without checked rows must insert the highlighted result at the blank-line caret.
 - Toggle a row by mouse. Require `aria-selected` to change. Cancel with Escape, then cancel another request while it is loading. Require the child command to exit and no late popup or edit.
 - In the noisy 试错 fixture, require the known relevant sentence and `data-excerpt-method="semantic"` for the paraphrased query. Hover rows and close beyond the native tooltip delay; require no related-note/cancel tooltip and preserved ARIA names.
+- Ask a second question about interviews using the same 试错 note. Require the interview sentence instead of the experiment sentence, both semantic selections and literal source text. Preserve `links-query-sensitive.json` and its screenshot; candidate Markdown must remain unchanged.
 - Capture `links-candidates`, `links-inserted`, `links-previous-paragraph`, and `links-final`, plus the copied source and CLI records. Require the Session Store to remain empty and all candidate files to remain unchanged.
 - For additional entry-point coverage, call `command(cdp, 'Insert related links')`. Exercise the close button `button[aria-label="取消插入双链"]`, outside click, typing during loading, file switching, repeat invocation, empty input, and QMD errors. Only mark branches actually exercised in the report.
 

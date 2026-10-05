@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { hostState, assertHostUnchanged } from './host-state.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, appendFile, copyFile, readdir, rm, realpath, open } from 'node:fs/promises';
@@ -177,11 +178,14 @@ async function snapshot(run, cdp, label) {
 }
 
 async function launch(evidence, scenario = 'neighborhood') {
+  const hostBefore = await hostState();
   await mkdir(evidence, { recursive: false });
   const scratch = await realpath(await mkdtemp(path.join(tmpdir(), 'aha-verify-')));
-  const run = { schemaVersion: 1, id: randomUUID(), evidence, scratch, vault: path.join(scratch, 'vault'), profile: path.join(scratch, 'profile'), home: path.join(scratch, 'home'), state: 'prepared', pid: null, scenario, qmdCommand: path.join(scratch, 'unavailable-qmd') };
+  const run = { schemaVersion: 1, hostBefore, id: randomUUID(), evidence, scratch, vault: path.join(scratch, 'vault'), profile: path.join(scratch, 'profile'), home: path.join(scratch, 'home'), state: 'prepared', pid: null, scenario, qmdCommand: path.join(scratch, 'unavailable-qmd') };
   await writeFile(path.join(scratch, 'owner'), run.id);
   await persist(run);
+  await save(path.join(evidence, 'host-before.json'), hostBefore);
+  await event(run, 'prepared isolated instance', { scenario });
   try {
     await mkdir(path.join(run.vault, '.obsidian'), { recursive: true });
     await mkdir(run.profile);
@@ -266,6 +270,7 @@ async function drive(run) {
     const selectedBefore = await cdp.evaluate(`document.querySelector(${JSON.stringify(checkbox)}).checked`);
     await click(cdp, checkbox);
     await until(async () => (await storedRound(run)).round.candidates.find(item => item.notePath === 'Counterexample.md').selected === !selectedBefore, 'selection persisted');
+    assert((await cdp.evaluate("document.querySelector('.aha-review-panel-count').textContent")).includes('1 / 2 纳入'));
     await snapshot(run, cdp, '02-selection');
     const row = '.aha-review-panel-row:has(a[title="Backlink.md"])';
     await click(cdp, `${row} button[data-action="surprise"]`);
@@ -300,7 +305,38 @@ async function drive(run) {
     await click(cdp, 'button[aria-label="查看已保存的 Surprise"]');
     await until(() => cdp.evaluate(`document.querySelector('.aha-saved-thought')?.textContent === ${JSON.stringify(thought)}`), 'saved thought restored after reload');
     await snapshot(run, cdp, '05-reloaded');
-    const report = { status: 'passed', fixture: 'synthetic Markdown; no seeded search results', verified: ['search.command-run.neighborhood', 'selection.checkbox.persistence', 'feedback.surprise', 'thoughts.save.source-and-store', 'thoughts.saved-search', 'panel.command-open.restore-after-reload'], notVerified: ['QMD recall', 'DeepSeek Full tier', 'clipboard handoff', 'candidate navigation', 'pin and follow', 'accept/noise/must feedback', 'thought editing and keyboard save', 'panel Run button'], buildHash: run.buildHash, version: run.version };
+    const editedThought = 'AHA edited thought: seek disconfirming evidence before the next trial.';
+    const beforeEdit = await readFile(path.join(run.vault, 'Source.md'), 'utf8');
+    await click(cdp, '.aha-saved-entry button', '编辑想法');
+    await fill(cdp, '.aha-saved-entry textarea[aria-label="我的想法"]', editedThought);
+    await save(path.join(run.evidence, 'thought-focus.json'), await cdp.evaluate("({tag:document.activeElement?.tagName, value:document.activeElement?.value, class:document.activeElement?.className})"));
+    await key(cdp, 'Enter', 'Enter', 2);
+    await until(async () => (await storedRound(run)).record.feedback.some(item => item.note === editedThought && item.noteWrite?.status === 'saved'), 'edited thought journal saved');
+    assert.equal(await readFile(path.join(run.vault, 'Source.md'), 'utf8'), beforeEdit.replace(thought, editedThought));
+    await snapshot(run, cdp, '06-thought-edited');
+    await click(cdp, '.aha-review-panel-seed-button', '返回结果');
+    await click(cdp, 'button[aria-label="固定当前笔记"]');
+    await until(() => cdp.evaluate(`!!document.querySelector('button[aria-label="跟随当前笔记"]')`), 'panel pinned');
+    await click(cdp, '.aha-review-panel-note-link[title="Counterexample.md"]');
+    await until(() => cdp.evaluate('app.workspace.getActiveFile()?.path === "Counterexample.md"'), 'candidate opened');
+    assert.equal(await cdp.evaluate("document.querySelector('.aha-review-panel-source-link')?.title"), 'Source.md');
+    await snapshot(run, cdp, '07-pinned-candidate');
+    await click(cdp, '.aha-review-panel-source-link');
+    await until(() => cdp.evaluate('app.workspace.getActiveFile()?.path === "Source.md"'), 'source link returned');
+    await click(cdp, 'button[aria-label="跟随当前笔记"]');
+    await until(() => cdp.evaluate(`!!document.querySelector('button[aria-label="固定当前笔记"]')`), 'panel follows notes');
+    await click(cdp, '.aha-review-panel-note-link[title="Counterexample.md"]');
+    await until(() => cdp.evaluate("document.querySelector('.aha-review-panel-source-link')?.title === 'Counterexample.md'"), 'panel followed candidate');
+    await snapshot(run, cdp, '08-followed-candidate');
+    await click(cdp, '.nav-file-title[data-path="Source.md"]');
+    await until(() => cdp.evaluate("document.querySelector('.aha-review-panel-source-link')?.title === 'Source.md'"), 'panel returned to source');
+    const previousRoundId = (await storedRound(run)).round.id;
+    await click(cdp, '.aha-review-panel-run');
+    await until(async () => { const latest = (await storedRound(run)).round; return latest?.id !== previousRoundId && latest?.status === 'success'; }, 'panel rerun persisted a new successful round');
+    assert.equal(await readFile(path.join(run.vault, 'Source.md'), 'utf8'), beforeEdit.replace(thought, editedThought));
+    for (const name of ['Backlink.md', 'Counterexample.md']) assert.equal(await readFile(path.join(run.vault, name), 'utf8'), notes[name]);
+    await snapshot(run, cdp, '09-panel-rerun');
+    const report = { status: 'passed', fixture: 'synthetic Markdown; no seeded search results', verified: ['search.command-run.neighborhood', 'selection.checkbox.persistence', 'feedback.surprise', 'thoughts.save.source-and-store', 'thoughts.saved-search', 'panel.command-open.restore-after-reload', 'thoughts.edit.ctrl-enter-save', 'reading.candidate-source-pin-follow', 'search.panel-rerun'], notVerified: ['Cmd+Enter thought save on macOS', 'QMD recall', 'DeepSeek Full tier', 'clipboard handoff', 'editor Open Candidate command', 'accept/noise/must feedback'], buildHash: run.buildHash, version: run.version };
     await save(path.join(run.evidence, 'report.json'), report);
     await event(run, 'proof passed', report.verified);
   } catch (error) {
@@ -312,7 +348,7 @@ async function drive(run) {
 }
 
 async function cleanup(run) {
-  if (run.state === 'cleaned') { assert(await readFile(path.join(run.evidence, 'cleanup.json'))); return; }
+  if (run.state === 'cleaned') { assertHostUnchanged(run.hostBefore, await hostState()); assert(await readFile(path.join(run.evidence, 'cleanup.json'))); return; }
   const identity = await owned(run);
   if (identity) {
     process.kill(run.pid, 'SIGTERM');
@@ -323,7 +359,10 @@ async function cleanup(run) {
   await persist(run);
   const retained = await readdir(run.evidence);
   assert(retained.includes('run.json') && retained.includes('actions.jsonl'));
-  await save(path.join(run.evidence, 'cleanup.json'), { ownedProcessStopped: true, scratchRemoved: true, evidenceRetained: retained });
+  const hostAfter = await hostState();
+  await save(path.join(run.evidence, 'host-after.json'), hostAfter);
+  await save(path.join(run.evidence, 'cleanup.json'), { ownedProcessStopped: true, scratchRemoved: true, evidenceRetained: retained, hostUnchanged: JSON.stringify(hostAfter) === JSON.stringify(run.hostBefore) });
+  assertHostUnchanged(run.hostBefore, hostAfter);
 }
 
 const [action = 'run', argument] = process.argv.slice(2);
@@ -334,8 +373,18 @@ if (['run', 'launch', 'run-links', 'launch-links', 'run-index', 'launch-index'].
   console.log(evidence);
   const run = await launch(evidence, action.endsWith('-links') ? 'quick-links' : action.endsWith('-index') ? 'auto-index' : 'neighborhood');
   if (action.startsWith('run')) {
-    try { await drive(run); } finally { await cleanup(run); }
-    for (const name of ['report.json', 'actions.jsonl', 'doctor.json', run.scenario === 'quick-links' ? 'links-final.png' : run.scenario === 'auto-index' ? 'index-final.png' : '05-reloaded.png', 'cleanup.json']) await readFile(path.join(evidence, name));
+    try {
+      if (process.env.AHA_VERIFY_FAIL_AFTER_LAUNCH === '1') throw new Error('Intentional isolation cleanup probe');
+      await drive(run);
+    } catch (error) {
+      const diagnostic = await connect(run).catch(() => null);
+      if (diagnostic) {
+        try { await doctor(run, diagnostic); } finally { diagnostic.close(); }
+      }
+      await event(run, 'run failed before cleanup', error.message);
+      throw error;
+    } finally { await cleanup(run); }
+    for (const name of ['report.json', 'actions.jsonl', 'doctor.json', run.scenario === 'quick-links' ? 'links-final.png' : run.scenario === 'auto-index' ? 'index-final.png' : '09-panel-rerun.png', 'cleanup.json']) await readFile(path.join(evidence, name));
     console.log('PASS: proof retained after cleanup');
   }
 } else {

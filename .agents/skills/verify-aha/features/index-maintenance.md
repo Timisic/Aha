@@ -29,7 +29,7 @@ Preconditions:
 - Create nine Markdown fixtures. Require nine pending tokens and no update/embed commands in `qmd-requests.jsonl`.
 - Rename one, modify Source, delete another, and recreate it. Require the expected pending count with no premature job.
 - Create the tenth. Observe one update/embed pair. Create two more while it runs; require those two to remain pending after success.
-- Run a real QMD search for the tenth fixture's unique term. Require its actual note path in returned results.
+- Run real QMD lexical and vector searches for the tenth fixture's unique term. Require its actual note path in returned results.
 - Reload the app and require two pending tokens. Make the owned recording executable non-executable, then add eight notes. Require ten pending tokens, a persisted error, and a cooldown.
 - Restore executable permission and click `Embed now`. Require one successful update/embed pair and zero pending tokens.
 - Disable automation and add ten notes. Require ten pending tokens without another job. Capture `index-final` and retain report/CLI/file evidence after cleanup.
@@ -40,5 +40,7 @@ Preconditions:
 - Do not write the plugin data file while the plugin is active. Use real controls and inspect disk afterward.
 - Aha candidate exclusions do not bound QMD index scope or text transmission.
 - A failed acknowledgment save must retain pending work even when QMD itself completed.
+- Live renames retain identity. Offline rename recognition depends on preserved filesystem identity; offline renames without identity are not proven by this fixture.
+- Disabling automation prevents new automatic jobs and lets an already running job finish.
 - No repeating retry timer exists. Manual retry can bypass cooldown; a subsequent automatic trigger must respect it.
 - General plugin defaults remain disabled. Enabling this user's main vault is a separate authorized configuration action.
