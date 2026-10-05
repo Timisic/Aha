@@ -18,7 +18,7 @@ await require("esbuild").build({
     build.onLoad({ filter: /.*/, namespace: "host" }, () => ({ contents: `
       export class App {} export class Notice {} export class Plugin {} export class PluginSettingTab {}
       export class Setting {} export class FileSystemAdapter {} export class MarkdownView {} export class TFile {}
-      export class ItemView {} export class Modal {} export class WorkspaceLeaf {}
+      export class ItemView {} export class Modal {} export class WorkspaceLeaf {} export class Scope {}
       export const Platform = { isDesktop: true }; export const editorInfoField = {};
       export const normalizePath = value => value; export function setIcon() {}
       export async function requestUrl() { throw new Error('Network unavailable in host fixture'); }

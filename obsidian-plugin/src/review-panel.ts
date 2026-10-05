@@ -1,8 +1,8 @@
-import { App, ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, setIcon } from "obsidian";
+import { App, ItemView, Modal, Notice, Scope, Setting, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { candidateHit } from "./core/candidate-hit";
 import { savedReviewActions } from "./review-feedback";
 import { savedThoughtText, type SavedThought } from "./saved-thoughts";
-import { renderThoughtEditor } from "./thought-editor";
+import { renderThoughtEditor, ThoughtEditorShortcuts } from "./thought-editor";
 import {
   handoffForRound,
   latestSuccessfulRound,
@@ -56,12 +56,15 @@ export class AhaReviewPanelView extends ItemView {
   private showingSaved = false;
   private savedQuery = "";
   private thoughtDrafts = new Map<string, string>();
+  private thoughtShortcuts = new ThoughtEditorShortcuts();
   private countEl?: HTMLElement;
   private copyButton?: HTMLButtonElement;
 
   constructor(leaf: WorkspaceLeaf, private readonly host: AhaReviewPanelHost) {
     super(leaf);
     this.icon = "network";
+    this.scope = new Scope(this.app.scope);
+    this.scope.register(null, null, event => this.thoughtShortcuts.handleKey(event));
   }
 
   getViewType(): string {
@@ -402,7 +405,7 @@ export class AhaReviewPanelView extends ItemView {
     parent.empty();
     const entry = this.host.listSavedThoughts().find(item => item.recordKey === this.context?.recordKey && item.feedback.memory === candidate.notePath);
     if (!entry) return;
-    return renderThoughtEditor(parent, entry, this.thoughtDrafts, (item, note) => this.host.saveThought(item.recordKey, item.feedbackId, note));
+    return renderThoughtEditor(parent, entry, this.thoughtDrafts, (item, note) => this.host.saveThought(item.recordKey, item.feedbackId, note), this.thoughtShortcuts);
   }
 
   private renderSaved(): void {
@@ -470,7 +473,7 @@ export class AhaReviewPanelView extends ItemView {
         target.feedback.note = note.trim() || undefined;
         thought.setText(target.feedback.note || "还没有写下想法");
         thought.classList.toggle("is-empty", !target.feedback.note);
-      }).focus();
+      }, this.thoughtShortcuts).focus();
     });
     const date = new Date(item.createdAt);
     if (!Number.isNaN(date.getTime())) {

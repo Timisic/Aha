@@ -1,11 +1,29 @@
 import { savedThoughtText, type SavedThought } from "./saved-thoughts";
 
+export class ThoughtEditorShortcuts {
+  private submissions = new WeakMap<EventTarget, () => false | undefined>();
+
+  register(input: HTMLTextAreaElement, submit: () => Promise<void>): void {
+    this.submissions.set(input, () => {
+      if (!input.isConnected || input.ownerDocument.activeElement !== input) return;
+      void submit();
+      return false;
+    });
+  }
+
+  handleKey(event: KeyboardEvent): false | undefined {
+    if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.isComposing || !event.target) return;
+    return this.submissions.get(event.target)?.();
+  }
+}
+
 /** Shared inline editor; drafts survive panel navigation until explicitly saved. */
 export function renderThoughtEditor(
   parent: HTMLElement,
   entry: SavedThought,
   drafts: Map<string, string>,
   save: (entry: SavedThought, note: string) => Promise<void>,
+  shortcuts: ThoughtEditorShortcuts,
 ): HTMLTextAreaElement {
   const key = JSON.stringify([entry.recordKey, entry.feedbackId]);
   let savedText = savedThoughtText(entry.feedback);
@@ -52,12 +70,7 @@ export function renderThoughtEditor(
     }
   };
   button.addEventListener("click", () => { void submit(); });
-  input.addEventListener("keydown", event => {
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.isComposing) {
-      event.preventDefault();
-      void submit();
-    }
-  });
+  shortcuts.register(input, submit);
   update();
   return input;
 }
