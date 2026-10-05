@@ -7,7 +7,9 @@ import path from 'node:path';
 const source = '在投入大量资源之前，先做一个小规模、可撤回的实验，检验最关键的假设。\n这能让我及时改变决定。';
 const fixtures = {
   'Source.md': source,
-  '试错.md': '# 试错\n\n在投入大量资源前，先用小规模、可撤回的实验检验假设，可以降低错误决策的成本。\n',
+  '试错.md': '---\nowner: 不应出现在摘要中的元数据\nreview_status: 待整理\n---\n# 试错\n\n## 下周安排\n周末整理书架并归档旧文件。\n\n## 实验教训\n在投入大量资源前，先用小规模、可撤回的实验检验假设，可以降低错误决策的成本。\n',
+  'README.md': '# README\n\n在投入大量资源之前，先做一个小规模、可撤回的实验，检验最关键的假设。这能让我及时改变决定。\n',
+  '项目规划.md': '# 项目规划\n\n在投入大量资源之前，先做一个小规模、可撤回的实验，检验最关键的假设。这能让我及时改变决定。\n',
   '反例 #1.md': '# 反例\n\n过去的失败案例提醒我，不能只寻找支持自己观点的证据。应主动设计小实验，考虑什么结果会推翻当前假设。\n',
   '有限投入.md': '# 有限投入\n\n做决定时先限制投入，保留退出的选择。小规模试验有助于判断是否值得继续。\n',
   '可逆决策.md': '# 可逆决策\n\n可撤回的决定允许我们从反馈中学习，在验证假设后再投入资源。\n',
@@ -96,6 +98,22 @@ export async function drive(run, api) {
     assert.equal(geometry.hasBackdrop, false);
     await save(path.join(run.evidence, 'links-popup.json'), {candidates, geometry, observedWaitUpperBoundMs, timingScope:'One synthetic-index hotkey-to-visible-result observation, includes driver polling up to 200ms and recording proxy overhead; no production latency claim.'});
     await snapshot(run, cdp, 'links-candidates');
+    const hoverText = async selector => {
+      const point=await cdp.evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+      await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',...point});
+      await new Promise(resolve=>setTimeout(resolve,900));
+      return cdp.evaluate("[...document.querySelectorAll('.tooltip')].map(e=>e.textContent)");
+    };
+    const rowHover=await hoverText(row);
+    await snapshot(run,cdp,'links-row-hover');
+    const closeHover=await hoverText('.aha-quick-links-close');
+    await snapshot(run,cdp,'links-close-hover');
+    const relevantExcerpt=await cdp.evaluate(`document.querySelector(${JSON.stringify(row+'[data-path="试错.md"] .aha-quick-link-excerpt')})?.textContent`);
+    await save(path.join(run.evidence,'excerpt-and-hover.json'),{candidates,rowHover,closeHover,relevantExcerpt});
+    assert(candidates.every(c=>!['README.md','项目规划.md'].includes(c.path)), 'README or planning note displayed');
+    assert.equal(relevantExcerpt,'在投入大量资源前，先用小规模、可撤回的实验检验假设，可以降低错误决策的成本。','Excerpt must use query-relevant original prose');
+    assert(![...rowHover,...closeHover].some(t=>/相关笔记|取消插入双链/.test(t)), 'Unwanted hover tooltip displayed');
+    await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:20,y:20});
     await until(()=>cdp.evaluate(`document.querySelector('.workspace-leaf.mod-active .cm-announced[aria-live="polite"]')?.textContent.includes(${JSON.stringify(candidates[0].path.replace(/\.md$/,''))})`),'candidate announced through native editor live region');
     await key(cdp, ' ', 'Space');
     await key(cdp, 'ArrowDown', 'ArrowDown');
