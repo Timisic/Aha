@@ -8,6 +8,7 @@ import {
   TFile,
   normalizePath,
 } from "obsidian";
+import { IndexCoordinator, normalizeIndexState, normalizeIndexThreshold, type IndexState } from "./index-coordinator";
 import { firstWikiLinkTarget, linkTargetBase } from "./wikilink";
 import { AHA_REVIEW_PANEL_VIEW_TYPE, AhaReviewPanelView, type AhaReviewPanelContext } from "./review-panel";
 import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
@@ -50,6 +51,7 @@ interface AhaPluginData {
    * loadSettings() and settings-migration.ts's shouldShowSimplificationNotice.
    */
   schemaVersion?: number;
+  indexState?: IndexState;
 }
 
 export default class AhaPlugin extends Plugin {
@@ -59,10 +61,25 @@ export default class AhaPlugin extends Plugin {
   private statusBar?: HTMLElement;
   private activeRun?: { startedAt: number; sourcePath: string };
   private timerId?: number;
+  indexUpdates!: IndexCoordinator;
+  private indexState?: IndexState;
   private feedbackWrite: Promise<void> = Promise.resolve();
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.indexUpdates = new IndexCoordinator({
+      settings: () => this.settings,
+      inventory: async () => Promise.all(this.app.vault.getMarkdownFiles().map(async file => ({
+        path: file.path,
+        filesystemId: await sourceIdentityForFile(file, this.absolutePathForFile(file)),
+      }))),
+      persist: state => this.persistIndexState(state),
+    }, this.indexState);
+    this.register(() => this.indexUpdates.dispose());
+    this.registerEvent(this.app.vault.on("create", file => { if (file instanceof TFile && file.extension.toLowerCase() === "md") this.indexUpdates.schedule(); }));
+    this.registerEvent(this.app.vault.on("delete", () => this.indexUpdates.schedule(undefined, undefined, false)));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.indexUpdates.schedule(oldPath, file.path, false)));
+    this.app.workspace.onLayoutReady(() => { void this.indexUpdates.start(); });
     this.addSettingTab(new AhaSettingTab(this.app, this));
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText("Aha idle");
@@ -141,6 +158,9 @@ export default class AhaPlugin extends Plugin {
     this.settings = needsMigrationNotice
       ? migrateAhaPluginSettings(data?.settings ?? {})
       : { ...DEFAULT_SETTINGS, ...(data?.settings ?? {}) };
+    this.settings.autoIndexEnabled = this.settings.autoIndexEnabled === true;
+    this.settings.autoIndexNoteThreshold = normalizeIndexThreshold(this.settings.autoIndexNoteThreshold);
+    this.indexState = normalizeIndexState(data?.indexState);
     this.sessionStore = normalizeSessionStore(data?.sessionStore);
     this.schemaVersion = CURRENT_SETTINGS_SCHEMA_VERSION;
 
@@ -158,9 +178,20 @@ export default class AhaPlugin extends Plugin {
       settings: this.settings,
       sessionStore: this.sessionStore,
       schemaVersion: this.schemaVersion,
+      indexState: this.indexState,
     }));
     this.feedbackWrite = operation.catch(() => {});
     await operation;
+    this.indexUpdates?.configure();
+  }
+
+  private persistIndexState(state: IndexState): Promise<void> {
+    const operation = this.feedbackWrite.then(async () => {
+      await this.saveData({ settings: this.settings, sessionStore: this.sessionStore, schemaVersion: this.schemaVersion, indexState: state });
+      this.indexState = state;
+    });
+    this.feedbackWrite = operation.catch(() => {});
+    return operation;
   }
 
   private async checkReadiness(): Promise<void> {
@@ -373,6 +404,7 @@ export default class AhaPlugin extends Plugin {
     await this.saveData({
       settings: this.settings,
       schemaVersion: this.schemaVersion,
+      indexState: this.indexState,
       sessionStore: { ...this.sessionStore, records: { ...this.sessionStore.records, [record.key]: next } },
     });
     record.feedback = next.feedback;

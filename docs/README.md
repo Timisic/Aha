@@ -28,3 +28,5 @@
 ## 归档（`archive/`）
 
 历史材料，只读不维护，不代表当前架构：最初的 Pi Extension PRD 与方案（`prd.md`、`initial.md`）、已交付的三份 PRD（`aha-obsidian-plugin-mvp-prd.md`、`aha-obsidian-plugin-full-prd.md`、`aha-review-panel-mvp-prd.md`）、已完成的 issue 清单（`aha-review-issues.md`、`aha-review-panel-issues.md`、`aha-pipeline-trace-issues.md`）、插件就绪清单与实现快照（`obsidian-plugin-readiness.md`、`obsidian-plugin-mvp-implementation-snapshot-2026-06-28.md`）、MVP 期手工 smoke 清单（`obsidian-plugin-smoke.md`）、已落地的 sprint 决策记录（`sprint-weak-noise-and-trace.md`）、trajectory 调试说明（`trajectory-debugging.md`）、已完成的管线内化迁移进度记录（`PROGRESS.md`，#54–#61，最终收尾见 migration-closeout.md）。
+
+- [数据存储与远程推理](./data-flow.md)：本机索引、远程文本传输与索引范围。

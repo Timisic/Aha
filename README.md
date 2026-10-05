@@ -77,12 +77,20 @@ docs/                PRD · ADR · 运行细节 · 领域术语 · 归档
 
 Esc、关闭按钮或点击窗口外部会取消。编辑正文、移动光标或切换笔记也会取消，避免把链接插入已经变化的位置。这个功能沿用 Aha 的 QMD 命令、索引和环境设置，不调用关系判断模型，也不写入搜索会话。
 
+## 索引更新与数据去向
+
+Aha 可按新增笔记数量自动执行 `qmd update` 和 `qmd embed`。在设置中启用自动更新，并设置阈值，默认为 10 篇。插件首次启动建立当前笔记基线，不把当时已有笔记当成新增。之后关闭自动更新仍保留待更新记录。手动更新与自动更新共用一个任务，避免重叠。
+
+QMD 全文与向量索引保存在本机。使用远程 embedding 时，标题和正文分块会发往服务器；快速双链的查询文字也会发送。服务器能够读取这些文字。候选排除文件夹不控制索引范围。完整说明见 [数据存储与远程推理](docs/data-flow.md)。
+
 ## 开发与验证
 
 ```bash
-node --test scripts/aha/tests/**/*.test.mjs   # 检索/judge/评分单测 (unit/integration/e2e)
-cd obsidian-plugin && npm run verify       # 插件构建 + 测试
+env -u DEEPSEEK_API_KEY npm run verify     # lint、类型、单元/集成测试与构建
+node .agents/skills/verify-aha/scripts/verify.mjs run  # 隔离 Obsidian 界面验收
 ```
+
+常规校验清除继承的 DeepSeek key，以免触发现有的真实服务 E2E。需要真实 QMD 双链验收时，按 [verify-aha](.agents/skills/verify-aha/SKILL.md) 配置隔离索引和既有 embedding 服务。
 
 ## 状态与边界
 

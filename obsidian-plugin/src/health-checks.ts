@@ -213,13 +213,6 @@ export function decideLlmConnectivityLight(probe: LlmConnectivityProbeResult): H
       };
 }
 
-// --- Embed button sequencing (issue #59) ------------------------------------
-// This must be the ONLY place embedding ever runs, and it must only run from
-// the button's own click handler -- never automatically from a health
-// check, a search round, or plugin load. Kept pure/injectable (fake
-// runUpdate/runEmbed) so sequencing and progress-callback behavior are
-// testable without a real qmd binary.
-
 export interface EmbedStepOutcome {
   ok: boolean;
   message: string;

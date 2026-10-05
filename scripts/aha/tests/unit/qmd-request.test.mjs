@@ -219,3 +219,25 @@ test("quick recall accepts literal filesystem percent paths and rejects malforme
   const fixture = await quickRecallFixture(t, 'console.log(JSON.stringify([{file:"/vault/100%.md"}, {file:"/vault/反例 #1.md"}, {file:"qmd://obsidian/bad%.md"}]));');
   assert.deepEqual(await runQmdQuickRecall(fixture.settings, "query", new AbortController().signal), [{ file: "/vault/100%.md" }, { file: "/vault/反例 #1.md" }]);
 });
+
+test("index cancellation waits for child exit before another update can start", async () => {
+  const { runQmdUpdate } = await loadModule();
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-index-abort-"));
+  const script = path.join(temp, "qmd.cjs");
+  const pidPath = path.join(temp, "pid");
+  await writeFile(script, `#!/usr/bin/env node\nrequire('fs').writeFileSync(${JSON.stringify(pidPath)},String(process.pid));process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),150));setInterval(()=>{},100);`, { mode: 0o755 });
+  try {
+    const controller = new AbortController();
+    const running = runQmdUpdate(baseSettings({ qmdCommand: script }), controller.signal);
+    let pid;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { pid = Number(await readFile(pidPath, "utf8")); break; } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
+    }
+    assert.equal(Number.isInteger(pid), true);
+    controller.abort();
+    const outcome = await running;
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.message, /cancelled/);
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  } finally { await rm(temp, { recursive: true, force: true }); }
+});

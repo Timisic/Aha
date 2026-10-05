@@ -75,3 +75,15 @@ Arrow keys move the highlight. Space or a click toggles a candidate. Enter inser
 The CodeMirror extension owns the tooltip and uses the public `editorInfoField` to identify its editor. Closing, clicking outside, editing, moving the selection, switching files, invoking the command again or unloading the plugin cancels the current request. Cancellation terminates only that request's subprocess. A completed stale request cannot reopen the tooltip or write to a changed source.
 
 QMD and CodeMirror behavior need a real isolated Obsidian acceptance run. Unit tests cover paragraph capture, insertion spacing, query arguments, malformed output, cancellation and timeout behavior.
+
+## 自动索引更新
+
+Health 中提供 **Automatic QMD index updates** 和 **New notes per index update**。默认关闭，阈值默认为 10 篇，可以设置为其他正整数。首次加载建立已有笔记基线。之后只按新增 Markdown 笔记触发，编辑已有笔记不增加计数，其内容会随下一次刷新同步。
+
+待更新清单保存在插件 `data.json` 的 `indexState` 中。重启后恢复清单并检测离线新增。运行中的重命名不会增加计数，删除待更新笔记会减少计数。本地文件系统身份可用于识别离线重命名；缺少可靠文件身份时，离线改名可能被视为新增。同一路径的原子保存视为原笔记。
+
+达到阈值后先执行 `qmd update`，成功后执行 `qmd embed`。手动 Embed now 和自动更新共用一个任务。成功只确认启动时的待更新批次，期间新增的笔记继续等待。关闭自动更新保留清单，并让正在运行的任务完成；插件卸载会中止自己的子进程。
+
+失败时保留待更新清单和错误状态。自动重试至少间隔 60 秒，并等待之后的新增笔记、相关设置变更或下次启动触发，不设置循环重试计时器。Embed now 可立即手动重试。修改 QMD 目标配置会建立新的清单基线，旧任务不能确认新目标的数据。
+
+阈值统计当前 vault，实际刷新范围由该 QMD 索引的 collections 决定。Excluded folders 仅影响候选过滤。远程 embedding 会收到待嵌入的原文片段，详见 [数据流](data-flow.md)。

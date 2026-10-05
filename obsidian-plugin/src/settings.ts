@@ -6,10 +6,11 @@ import {
   decideLlmConnectivityLight,
   decideQmdBinaryLight,
   decideQmdEndpointsLight,
-  runEmbedSequence,
   type HealthLight,
 } from "./health-checks";
-import { parseQmdEnvironment, probeQmdAvailable, runQmdEmbed, runQmdStatus, runQmdUpdate } from "./qmd-request";
+import { parseQmdEnvironment, probeQmdAvailable, runQmdStatus } from "./qmd-request";
+
+import { normalizeIndexThreshold } from "./index-coordinator";
 
 // Product settings are shared by the plugin and batch runner. Legacy wrapper
 // fields are accepted only by settings-migration.ts, then discarded.
@@ -26,6 +27,8 @@ export interface AhaPluginSettings {
   qmdCommand: string;
   qmdIndex: string;
   qmdRerank: boolean;
+  autoIndexEnabled: boolean;
+  autoIndexNoteThreshold: number;
   targetCandidates: number;
   /** Maximum candidate excerpts Relation Judge may review while backfilling weak results. */
   relationJudgeBudget: number;
@@ -73,6 +76,8 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   qmdCommand: "qmd",
   qmdIndex: "obsidian",
   qmdRerank: false,
+  autoIndexEnabled: false,
+  autoIndexNoteThreshold: 10,
   targetCandidates: 20,
   relationJudgeBudget: 40,
   qmdEnvironment: "",
@@ -87,6 +92,9 @@ type StringSettingKey = {
 
 export class AhaSettingTab extends PluginSettingTab {
   plugin: AhaPlugin;
+  private unsubscribeIndex?: () => void;
+
+  hide(): void { this.unsubscribeIndex?.(); this.unsubscribeIndex = undefined; }
 
   constructor(app: App, plugin: AhaPlugin) {
     super(app, plugin);
@@ -132,6 +140,7 @@ export class AhaSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
+    this.hide();
     containerEl.empty();
 
     containerEl.createEl("h2", { text: "Aha" });
@@ -313,13 +322,6 @@ export class AhaSettingTab extends PluginSettingTab {
       });
   }
 
-  // --- Health section (issue #59) -------------------------------------------
-  // Four status lights plus the explicit embed button. All decision logic
-  // (parsing qmd status text, deciding a light's color) lives in
-  // health-checks.ts as pure functions; this method only wires the actual
-  // I/O (qmd-request.ts / llm-request.ts) into them and renders the result.
-  // The embed button (runEmbedSequence) is the ONLY place embedding is ever
-  // triggered from -- nothing here calls it automatically.
   private renderHealthSection(containerEl: HTMLElement): void {
     containerEl.createEl("h3", { text: "Health" });
     const lightsContainer = containerEl.createDiv({ cls: "aha-health-lights" });
@@ -337,7 +339,38 @@ export class AhaSettingTab extends PluginSettingTab {
           void this.refreshHealthLights(lightsContainer);
         }));
 
+    new Setting(containerEl)
+      .setName("Automatic QMD index updates")
+      .setDesc("累计新增笔记达到阈值后更新索引。关闭只停止后续自动更新，不中断正在运行的任务。")
+      .addToggle(toggle => {
+        toggle.toggleEl.setAttribute("aria-label", "Automatic QMD index updates");
+        toggle.setValue(this.plugin.settings.autoIndexEnabled).onChange(async value => {
+          this.plugin.settings.autoIndexEnabled = value;
+          await this.plugin.saveSettings();
+        });
+      });
+    new Setting(containerEl)
+      .setName("New notes per index update")
+      .setDesc("按新增 Markdown 笔记计数，修改和重命名不计数。默认 10 篇。")
+      .addText(text => {
+        text.inputEl.type = "number";
+        text.inputEl.min = "1";
+        text.inputEl.step = "1";
+        text.inputEl.setAttribute("aria-label", "New notes per index update");
+        text.setValue(String(this.plugin.settings.autoIndexNoteThreshold)).onChange(async value => {
+          this.plugin.settings.autoIndexNoteThreshold = normalizeIndexThreshold(Number(value));
+          await this.plugin.saveSettings();
+        });
+      });
+    containerEl.createEl("p", { cls: "setting-item-description", text: "更新范围由 QMD 索引的 collections 决定。配置远程 embedding 时，新增或修改笔记的原文会发送给该服务。Excluded folders 仅过滤召回候选，不阻止索引或发送原文。" });
     const embedStatus = containerEl.createDiv({ cls: "aha-embed-status" });
+    embedStatus.setAttribute("role", "status");
+    this.unsubscribeIndex = this.plugin.indexUpdates?.subscribe(status => {
+      const pending = `待更新 ${status.pending} 篇`;
+      if (status.kind === "running") embedStatus.setText(`${pending} · 正在运行 qmd ${status.step}…`);
+      else if (status.kind === "failed") embedStatus.setText(`${pending} · 更新失败：${status.message}`);
+      else embedStatus.setText(`${pending}${status.lastSuccess ? ` · 上次成功 ${new Date(status.lastSuccess).toLocaleString()}` : " · 尚未完成索引更新"}`);
+    });
     new Setting(containerEl)
       .setName("Embed vault into QMD index")
       .setDesc("执行 qmd update + embed，更新索引并嵌入向量。")
@@ -346,25 +379,7 @@ export class AhaSettingTab extends PluginSettingTab {
           .setButtonText("Embed now")
           .onClick(async () => {
             button.setDisabled(true);
-            const settings = this.plugin.settings;
-            const outcome = await runEmbedSequence(
-              {
-                runUpdate: async () => {
-                  const result = await runQmdUpdate(settings);
-                  return { ok: result.ok, message: result.message };
-                },
-                runEmbed: async () => {
-                  const result = await runQmdEmbed(settings);
-                  return { ok: result.ok, message: result.message };
-                },
-              },
-              (step, status, message) => {
-                const label = step === "update" ? "qmd update" : "qmd embed";
-                if (status === "started") embedStatus.setText(`Running ${label}...`);
-                if (status === "succeeded") embedStatus.setText(`${label} succeeded.`);
-                if (status === "failed") embedStatus.setText(`${label} failed: ${message ?? ""}`);
-              },
-            );
+            const outcome = await this.plugin.indexUpdates.refresh();
             button.setDisabled(false);
             new Notice(
               outcome.ok ? "Aha: embed finished successfully." : `Aha: embed failed -- ${outcome.steps.at(-1)?.message ?? "unknown error"}`,

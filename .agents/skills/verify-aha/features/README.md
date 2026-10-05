@@ -22,6 +22,8 @@ Run an edited scenario with `node .agents/skills/verify-aha/scripts/verify.mjs r
 
 - [Quick link insertion](quick-links.md) covers selected or paragraph input, real QMD recall, multiselect, insertion, undo, and cancellation.
 
+- [Index maintenance](index-maintenance.md) covers threshold triggering, persistence, failure and manual recovery.
+
 ## Coverage boundary
 
 The generated scenario covers command Run in Neighborhood, a selection toggle, Surprise, button-based thought saving, saved search, and command Open Panel after reload. Other mapped paths are source-grounded recipes until executed. Provider-backed tiers need a separate configured fixture. The stock helper intentionally keeps QMD unavailable.

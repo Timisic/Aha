@@ -71,10 +71,10 @@ class Cdp {
   close() { this.socket.close(); }
 }
 
-async function connect(run) {
+async function connect(run, kind = 'main') {
   const port = Number((await readFile(path.join(run.profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]);
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) })).json();
-  const target = targets.find(item => item.type === 'page' && item.url === 'app://obsidian.md/index.html');
+  const target = targets.find(item => item.type === 'page' && (kind === 'settings' ? /设置|Settings/.test(item.title) && item.url === 'about:blank' : item.url === 'app://obsidian.md/index.html'));
   assert(target, 'The owned profile must contain the Obsidian main renderer');
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
@@ -82,7 +82,9 @@ async function connect(run) {
     socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
     socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('CDP connection failed')); }, { once: true });
   });
-  return new Cdp(socket, run);
+  const cdp = new Cdp(socket, run);
+  cdp.targetId = target.id;
+  return cdp;
 }
 
 async function click(cdp, selector, text) {
@@ -150,8 +152,11 @@ async function doctor(run, cdp) {
   assert(await owned(run), 'Owned process is not running');
   assert.equal(await hash(path.join(run.vault, '.obsidian/plugins', pluginId, 'main.js')), run.buildHash, 'Installed build changed');
   assert.equal(await hash(path.join(repo, 'obsidian-plugin/main.js')), run.buildHash, 'Checkout build changed; start a fresh run');
-  const observed = await cdp.evaluate(`({vault:app.vault.adapter.basePath, version:app.plugins.plugins[${JSON.stringify(pluginId)}]?.manifest.version, plugins:Object.keys(app.plugins.plugins), commands:Object.keys(app.commands.commands).filter(id=>id.startsWith(${JSON.stringify(pluginId + ':')})), qmdCommand:app.plugins.plugins[${JSON.stringify(pluginId)}]?.settings.qmdCommand})`);
+  const observed = await cdp.evaluate(`({vault:app.vault.adapter.basePath, home:require('os').homedir(), version:app.plugins.plugins[${JSON.stringify(pluginId)}]?.manifest.version, plugins:Object.keys(app.plugins.plugins), commands:Object.keys(app.commands.commands).filter(id=>id.startsWith(${JSON.stringify(pluginId + ':')})), qmdCommand:app.plugins.plugins[${JSON.stringify(pluginId)}]?.settings.qmdCommand})`);
   assert.equal(await realpath(observed.vault), await realpath(run.vault));
+  assert.equal(await realpath(observed.home), await realpath(run.home));
+  observed.mockKeychain = processIdentity(run.pid)?.includes(' --use-mock-keychain') === true;
+  assert.equal(observed.mockKeychain, true, 'Synthetic test instances must not access the macOS keychain');
   assert.deepEqual(observed.plugins, [pluginId]);
   assert.equal(observed.version, run.version);
   for (const id of ['aha-readiness-check', 'aha-run', 'aha-open-panel', 'aha-open-candidate-under-cursor', 'aha-insert-related-links']) assert(observed.commands.includes(`${pluginId}:${id}`), `Missing command ${id}`);
@@ -174,14 +179,15 @@ async function snapshot(run, cdp, label) {
 async function launch(evidence, scenario = 'neighborhood') {
   await mkdir(evidence, { recursive: false });
   const scratch = await realpath(await mkdtemp(path.join(tmpdir(), 'aha-verify-')));
-  const run = { schemaVersion: 1, id: randomUUID(), evidence, scratch, vault: path.join(scratch, 'vault'), profile: path.join(scratch, 'profile'), state: 'prepared', pid: null, scenario, qmdCommand: path.join(scratch, 'unavailable-qmd') };
+  const run = { schemaVersion: 1, id: randomUUID(), evidence, scratch, vault: path.join(scratch, 'vault'), profile: path.join(scratch, 'profile'), home: path.join(scratch, 'home'), state: 'prepared', pid: null, scenario, qmdCommand: path.join(scratch, 'unavailable-qmd') };
   await writeFile(path.join(scratch, 'owner'), run.id);
   await persist(run);
   try {
     await mkdir(path.join(run.vault, '.obsidian'), { recursive: true });
     await mkdir(run.profile);
+    await mkdir(run.home);
     for (const [name, content] of Object.entries(notes)) await writeFile(path.join(run.vault, name), content);
-    if (scenario === 'quick-links') await (await import('./quick-links-proof.mjs')).prepare(run);
+    if (scenario === 'quick-links' || scenario === 'auto-index') await (await import('./quick-links-proof.mjs')).prepare(run);
     await save(path.join(run.profile, 'obsidian.json'), { vaults: { a1a1a1a1a1a1a1a1: { path: run.vault, ts: Date.now(), open: true } } });
     await save(path.join(run.vault, '.obsidian/community-plugins.json'), [pluginId]);
     await save(path.join(run.vault, '.obsidian/core-plugins.json'), ['file-explorer', 'switcher', 'command-palette']);
@@ -193,10 +199,10 @@ async function launch(evidence, scenario = 'neighborhood') {
     run.buildHash = await hash(path.join(run.vault, '.obsidian/plugins', pluginId, 'main.js'));
     run.version = (await json(path.join(repo, 'obsidian-plugin/manifest.json'))).version;
     run.commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
-    await save(dataPath(run), { schemaVersion: 4, settings: { qmdCommand: run.qmdCommand, qmdIndex: 'obsidian', qmdEnvironment: scenario === 'quick-links' ? `QMD_CONFIG_DIR=${path.join(scratch, 'qmd-config')}\nXDG_CACHE_HOME=${path.join(scratch, 'qmd-cache')}` : '', deepseekApiKey: '', deepseekApiKeyEnv: 'AHA_VERIFY_NO_KEY', traceDirectory: path.join(evidence, 'pipeline') }, sessionStore: { schemaVersion: 1, records: {} } });
+    await save(dataPath(run), { schemaVersion: 4, settings: { qmdCommand: run.qmdCommand, qmdIndex: 'obsidian', qmdEnvironment: scenario !== 'neighborhood' ? `QMD_CONFIG_DIR=${path.join(scratch, 'qmd-config')}\nXDG_CACHE_HOME=${path.join(scratch, 'qmd-cache')}` : '', deepseekApiKey: '', deepseekApiKeyEnv: 'AHA_VERIFY_NO_KEY', traceDirectory: path.join(evidence, 'pipeline') }, sessionStore: { schemaVersion: 1, records: {} } });
     const log = await open(path.join(evidence, 'obsidian.log'), 'a');
-    const env = { ...process.env }; delete env.DEEPSEEK_API_KEY; delete env.AHA_VERIFY_NO_KEY;
-    const child = spawn(binary, [`--user-data-dir=${run.profile}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1'], { detached: true, stdio: ['ignore', log.fd, log.fd], env });
+    const env = { ...process.env, HOME: run.home }; delete env.INDEX_PATH; delete env.DEEPSEEK_API_KEY; delete env.AHA_VERIFY_NO_KEY;
+    const child = spawn(binary, [`--user-data-dir=${run.profile}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--use-mock-keychain'], { detached: true, stdio: ['ignore', log.fd, log.fd], env });
     try {
       await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
       run.pid = child.pid;
@@ -238,8 +244,9 @@ async function storedRound(run) {
 }
 
 async function drive(run) {
+  if (run.scenario === 'auto-index') return (await import('./index-proof.mjs')).drive(run, { connect, doctor, click, fill, key, until, snapshot, event, command, json, save, dataPath });
   if (run.scenario === 'quick-links') {
-    return (await import('./quick-links-proof.mjs')).drive(run, { connect, doctor, click, key, until, snapshot, event, command, json, save, dataPath });
+    return (await import('./quick-links-proof.mjs')).drive(run, { connect, doctor, click, fill, key, until, snapshot, event, command, json, save, dataPath });
   }
   const cdp = await connect(run);
   try {
@@ -320,15 +327,15 @@ async function cleanup(run) {
 }
 
 const [action = 'run', argument] = process.argv.slice(2);
-assert(['run', 'launch', 'run-links', 'launch-links', 'doctor', 'drive', 'cleanup'].includes(action), 'Usage: verify.mjs run|launch|run-links|launch-links [evidence-directory] OR doctor|drive|cleanup <evidence-directory>');
+assert(['run', 'launch', 'run-links', 'launch-links', 'run-index', 'launch-index', 'doctor', 'drive', 'cleanup'].includes(action), 'Usage: verify.mjs run|launch|run-links|launch-links|run-index|launch-index [evidence-directory] OR doctor|drive|cleanup <evidence-directory>');
 const evidence = path.resolve(argument || path.join(repo, 'traces/verification', `${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}`));
-if (['run', 'launch', 'run-links', 'launch-links'].includes(action)) {
+if (['run', 'launch', 'run-links', 'launch-links', 'run-index', 'launch-index'].includes(action)) {
   await mkdir(path.dirname(evidence), { recursive: true });
   console.log(evidence);
-  const run = await launch(evidence, action.endsWith('-links') ? 'quick-links' : 'neighborhood');
+  const run = await launch(evidence, action.endsWith('-links') ? 'quick-links' : action.endsWith('-index') ? 'auto-index' : 'neighborhood');
   if (action.startsWith('run')) {
     try { await drive(run); } finally { await cleanup(run); }
-    for (const name of ['report.json', 'actions.jsonl', 'doctor.json', run.scenario === 'quick-links' ? 'links-final.png' : '05-reloaded.png', 'cleanup.json']) await readFile(path.join(evidence, name));
+    for (const name of ['report.json', 'actions.jsonl', 'doctor.json', run.scenario === 'quick-links' ? 'links-final.png' : run.scenario === 'auto-index' ? 'index-final.png' : '05-reloaded.png', 'cleanup.json']) await readFile(path.join(evidence, name));
     console.log('PASS: proof retained after cleanup');
   }
 } else {

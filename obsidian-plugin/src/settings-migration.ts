@@ -1,3 +1,4 @@
+import { normalizeIndexThreshold } from "./index-coordinator";
 import { DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
 
 function stringField(value: unknown, fallback: string): string {
@@ -57,6 +58,8 @@ export function migrateAhaPluginSettings(oldSettings: unknown): AhaPluginSetting
     qmdCommand: stringField(old.qmdCommand, DEFAULT_SETTINGS.qmdCommand),
     qmdIndex: stringField(old.qmdIndex, DEFAULT_SETTINGS.qmdIndex),
     qmdRerank: boolField(old.qmdRerank, DEFAULT_SETTINGS.qmdRerank),
+    autoIndexEnabled: boolField(old.autoIndexEnabled, DEFAULT_SETTINGS.autoIndexEnabled),
+    autoIndexNoteThreshold: normalizeIndexThreshold(old.autoIndexNoteThreshold),
 
     // Only DeepSeek is supported; discard any old provider selection.
     llmProvider: DEFAULT_SETTINGS.llmProvider,

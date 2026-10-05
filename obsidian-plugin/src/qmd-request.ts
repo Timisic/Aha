@@ -60,17 +60,18 @@ function runBoundedCommand(command: string, args: string[], options: BoundedComm
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let settled = false;
+    let failure: Error | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
     const fail = (error: Error) => {
-      if (settled) return;
-      settled = true;
+      if (settled || failure) return;
+      failure = error;
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
       child.kill("SIGTERM");
-      const killTimer = setTimeout(() => {
+      killTimer = setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       }, 1_000);
       killTimer.unref?.();
-      reject(error);
     };
     const abort = () => fail(new Error("QMD request cancelled."));
     const timer = setTimeout(() => {
@@ -81,6 +82,7 @@ function runBoundedCommand(command: string, args: string[], options: BoundedComm
     if (options.signal?.aborted) abort();
 
     child.stdout.on("data", (chunk: Buffer) => {
+      if (failure) return;
       const text = chunk.toString();
       stdoutBytes += Buffer.byteLength(text);
       if (stdoutBytes > MAX_QMD_OUTPUT_BYTES) {
@@ -90,6 +92,7 @@ function runBoundedCommand(command: string, args: string[], options: BoundedComm
       stdout += text;
     });
     child.stderr.on("data", (chunk: Buffer) => {
+      if (failure) return;
       const text = chunk.toString();
       stderrBytes += Buffer.byteLength(text);
       if (stderrBytes > MAX_QMD_OUTPUT_BYTES) {
@@ -103,14 +106,17 @@ function runBoundedCommand(command: string, args: string[], options: BoundedComm
       settled = true;
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
-      reject(error);
+      clearTimeout(killTimer);
+      reject(failure ?? error);
     });
     child.on("close", (code: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
-      resolve({ code, stdout, stderr });
+      clearTimeout(killTimer);
+      if (failure) reject(failure);
+      else resolve({ code, stdout, stderr });
     });
   });
 }
@@ -304,12 +310,13 @@ export interface QmdSubcommandResult {
   message: string;
 }
 
-async function runQmdSubcommand(settings: AhaPluginSettings, args: string[], timeoutMs: number): Promise<QmdSubcommandResult> {
+async function runQmdSubcommand(settings: AhaPluginSettings, args: string[], timeoutMs: number, signal?: AbortSignal): Promise<QmdSubcommandResult> {
   const command = settings.qmdCommand?.trim() || "qmd";
   try {
     const result = await runBoundedCommand(command, args, {
       env: qmdChildEnv(settings),
       timeoutMs,
+      signal,
     });
     if (result.code !== 0) {
       return { ok: false, stdout: result.stdout, message: firstLine(result.stderr || result.stdout) || `${command} ${args.join(" ")} exited ${result.code}` };
@@ -327,11 +334,11 @@ export function runQmdStatus(settings: AhaPluginSettings): Promise<QmdSubcommand
 }
 
 /** Runs `qmd update --index <qmdIndex>` -- the first of the embed button's two sequenced steps. Never throws. */
-export function runQmdUpdate(settings: AhaPluginSettings): Promise<QmdSubcommandResult> {
-  return runQmdSubcommand(settings, ["update", "--index", settings.qmdIndex], EMBED_STEP_TIMEOUT_MS);
+export function runQmdUpdate(settings: AhaPluginSettings, signal?: AbortSignal): Promise<QmdSubcommandResult> {
+  return runQmdSubcommand(settings, ["update", "--index", settings.qmdIndex], EMBED_STEP_TIMEOUT_MS, signal);
 }
 
 /** Runs `qmd embed --index <qmdIndex>` -- the second of the embed button's two sequenced steps. Never throws. */
-export function runQmdEmbed(settings: AhaPluginSettings): Promise<QmdSubcommandResult> {
-  return runQmdSubcommand(settings, ["embed", "--index", settings.qmdIndex], EMBED_STEP_TIMEOUT_MS);
+export function runQmdEmbed(settings: AhaPluginSettings, signal?: AbortSignal): Promise<QmdSubcommandResult> {
+  return runQmdSubcommand(settings, ["embed", "--index", settings.qmdIndex], EMBED_STEP_TIMEOUT_MS, signal);
 }

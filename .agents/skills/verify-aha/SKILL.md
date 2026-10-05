@@ -93,3 +93,17 @@ node .agents/skills/verify-aha/scripts/verify.mjs run-links
 Use `launch-links` instead to hold the instance, then run `doctor`, `drive`, and `cleanup` with its evidence path. The [quick-link proof module](scripts/quick-links-proof.mjs) runs through this entrypoint. It requires a real endpoint and does not download a local model. `AHA_VERIFY_QMD_COMMAND` optionally selects the installed QMD executable.
 
 The fixture assigns Mod+Shift+L only inside its temporary vault. It records QMD arguments and actual results through a forwarding executable. This records real calls rather than replacing the retrieval boundary. Input text and results are synthetic. Read [quick link insertion](features/quick-links.md) for coverage and additional states. The stock `run` keeps the existing Neighborhood and Surprise proof.
+
+## Automatic index maintenance
+
+Run the real index-maintenance scenario with the same existing embedding environment required by `run-links`.
+
+```sh
+node .agents/skills/verify-aha/scripts/verify.mjs run-index
+```
+
+The [index proof module](scripts/index-proof.mjs) enables the setting through the actual Settings window. It proves nine additions do not run a job, the tenth starts update then embed, concurrent additions remain pending, and the new content becomes searchable. It also exercises rename, edit, delete, reload, a genuinely unavailable executable, manual retry, and disabling automatic work. Read [index maintenance](features/index-maintenance.md) before extending it.
+
+Each temporary Obsidian process has an isolated home as well as a profile and vault. Obsidian's CLI socket lives in the home directory even with `--user-data-dir`; profile isolation alone can disrupt the user's existing CLI connection. The helper checks the child home in Doctor and never changes the parent shell's home. Settings use a separate owned CDP target. Secrets remain in the child environment, not its saved test settings.
+
+On macOS the synthetic instance must include `--use-mock-keychain`. A temporary home without that flag can trigger repeated missing-keychain dialogs. Doctor checks the flag. Never apply this test-only flag to the user's main vault, store real credentials in the fixture, or reset the user's login keychain to repair a test launch.
