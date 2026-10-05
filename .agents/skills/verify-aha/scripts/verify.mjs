@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, appendFile, copyFile, readdir, rm, realpath, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const pluginId = 'aha-memory-surface-dev';
@@ -92,7 +92,7 @@ async function click(cdp, selector, text) {
   let previous;
   const point = await until(async () => {
     const measured = await cdp.evaluate(`(() => {
-    const elements = [...document.querySelectorAll(${JSON.stringify(selector)})].filter(e => e.getBoundingClientRect().width && e.getBoundingClientRect().height ${text === undefined ? '' : `&& e.textContent.trim() === ${JSON.stringify(text)}`});
+    const elements = [...document.querySelectorAll(${JSON.stringify(selector)})].filter(e => e.checkVisibility() && e.getBoundingClientRect().width && e.getBoundingClientRect().height ${text === undefined ? '' : `&& e.textContent.trim() === ${JSON.stringify(text)}`});
     if (elements.length !== 1) return null;
     const element = elements[0]; if (element.disabled) return null;
     let r = element.getBoundingClientRect();
@@ -112,6 +112,17 @@ async function click(cdp, selector, text) {
 async function key(cdp, key, code, modifiers = 0) {
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, modifiers });
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, modifiers });
+}
+
+async function closeSettings(main, settings) {
+  await settings.send('Page.bringToFront');
+  await click(settings, '.setting-search-container input');
+  try { await key(settings, 'Escape', 'Escape'); }
+  catch (error) { if (error.message !== 'CDP connection closed') throw error; }
+  finally { settings.close(); }
+  await main.send('Page.bringToFront');
+  await click(main, '.nav-file-title[data-path="Source.md"]');
+  await until(() => main.evaluate('activeWindow === window'), 'main shortcut scope restored');
 }
 
 async function fill(cdp, selector, value) {
@@ -152,7 +163,7 @@ async function owned(run) {
 async function doctor(run, cdp) {
   assert(await owned(run), 'Owned process is not running');
   assert.equal(await hash(path.join(run.vault, '.obsidian/plugins', pluginId, 'main.js')), run.buildHash, 'Installed build changed');
-  assert.equal(await hash(path.join(repo, 'obsidian-plugin/main.js')), run.buildHash, 'Checkout build changed; start a fresh run');
+  assert.equal(await hash(run.bundleSource ?? path.join(repo, 'obsidian-plugin/main.js')), run.buildHash, 'Checkout build changed; start a fresh run');
   const observed = await cdp.evaluate(`({vault:app.vault.adapter.basePath, home:require('os').homedir(), version:app.plugins.plugins[${JSON.stringify(pluginId)}]?.manifest.version, plugins:Object.keys(app.plugins.plugins), commands:Object.keys(app.commands.commands).filter(id=>id.startsWith(${JSON.stringify(pluginId + ':')})), qmdCommand:app.plugins.plugins[${JSON.stringify(pluginId)}]?.settings.qmdCommand})`);
   assert.equal(await realpath(observed.vault), await realpath(run.vault));
   assert.equal(await realpath(observed.home), await realpath(run.home));
@@ -171,7 +182,7 @@ async function snapshot(run, cdp, label) {
   const png = await cdp.send('Page.captureScreenshot', { format: 'png' });
   await writeFile(path.join(run.evidence, `${label}.png`), Buffer.from(png.data, 'base64'));
   await writeFile(path.join(run.evidence, `${label}.txt`), await cdp.evaluate('document.body.innerText'));
-  await save(path.join(run.evidence, `${label}.controls.json`), await cdp.evaluate(`[...document.querySelectorAll('button,input,textarea,a')].filter(e=>e.getBoundingClientRect().width).map(e=>({tag:e.tagName,text:e.textContent,label:e.getAttribute('aria-label'),value:e.value,checked:e.checked,pressed:e.getAttribute('aria-pressed')}))`));
+  await save(path.join(run.evidence, `${label}.controls.json`), await cdp.evaluate(`[...document.querySelectorAll('button,input,textarea,a')].filter(e=>e.checkVisibility() && e.getBoundingClientRect().width).map(e=>({tag:e.tagName,text:e.textContent,label:e.getAttribute('aria-label'),value:e.value,checked:e.checked,pressed:e.getAttribute('aria-pressed')}))`));
   await copyFile(dataPath(run), path.join(run.evidence, `${label}.data.json`));
   await copyFile(path.join(run.vault, 'Source.md'), path.join(run.evidence, `${label}.Source.md`));
   await event(run, 'snapshot', { label });
@@ -191,19 +202,24 @@ async function launch(evidence, scenario = 'neighborhood') {
     await mkdir(run.profile);
     await mkdir(run.home);
     for (const [name, content] of Object.entries(notes)) await writeFile(path.join(run.vault, name), content);
+    if (scenario === 'production-links') await (await import('./production-links-fixture.mjs')).prepare(run);
     if (scenario === 'quick-links' || scenario === 'auto-index') await (await import('./quick-links-proof.mjs')).prepare(run);
     await save(path.join(run.profile, 'obsidian.json'), { vaults: { a1a1a1a1a1a1a1a1: { path: run.vault, ts: Date.now(), open: true } } });
     await save(path.join(run.vault, '.obsidian/community-plugins.json'), [pluginId]);
     await save(path.join(run.vault, '.obsidian/core-plugins.json'), ['file-explorer', 'switcher', 'command-palette']);
     await save(path.join(run.vault, '.obsidian/app.json'), { defaultViewMode: 'source' });
-    if (scenario === 'quick-links') await save(path.join(run.vault, '.obsidian/hotkeys.json'), { [`${pluginId}:aha-insert-related-links`]: [{ modifiers: ['Mod', 'Shift'], key: 'L' }] });
+    if (scenario === 'quick-links' || scenario === 'production-links') await save(path.join(run.vault, '.obsidian/hotkeys.json'), { [`${pluginId}:aha-insert-related-links`]: [{ modifiers: ['Mod', 'Shift'], key: 'L' }] });
     const build = spawnSync('npm', ['run', 'dev:install'], { cwd: repo, env: { ...process.env, AHA_DEV_VAULT_ROOT: run.vault }, encoding: 'utf8', timeout: 120000 });
     await writeFile(path.join(evidence, 'build.log'), (build.stdout ?? '') + (build.stderr ?? ''));
     assert.equal(build.status, 0, 'Build/install failed; inspect build.log');
+    if (process.env.AHA_VERIFY_BUNDLE_DIR) {
+      run.bundleSource = path.resolve(process.env.AHA_VERIFY_BUNDLE_DIR, 'main.js');
+      for (const name of ['main.js', 'styles.css']) await copyFile(path.resolve(process.env.AHA_VERIFY_BUNDLE_DIR, name), path.join(run.vault, '.obsidian/plugins', pluginId, name));
+    }
     run.buildHash = await hash(path.join(run.vault, '.obsidian/plugins', pluginId, 'main.js'));
     run.version = (await json(path.join(repo, 'obsidian-plugin/manifest.json'))).version;
     run.commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
-    await save(dataPath(run), { schemaVersion: 4, settings: { qmdCommand: run.qmdCommand, qmdIndex: 'obsidian', qmdEnvironment: scenario !== 'neighborhood' ? `QMD_CONFIG_DIR=${path.join(scratch, 'qmd-config')}\nXDG_CACHE_HOME=${path.join(scratch, 'qmd-cache')}` : '', deepseekApiKey: '', deepseekApiKeyEnv: 'AHA_VERIFY_NO_KEY', traceDirectory: path.join(evidence, 'pipeline') }, sessionStore: { schemaVersion: 1, records: {} } });
+    await save(dataPath(run), { schemaVersion: 4, settings: { qmdCommand: run.qmdCommand, qmdIndex: 'obsidian', qmdEnvironment: ['quick-links', 'auto-index'].includes(scenario) ? `QMD_CONFIG_DIR=${path.join(scratch, 'qmd-config')}\nXDG_CACHE_HOME=${path.join(scratch, 'qmd-cache')}` : '', deepseekApiKey: '', deepseekApiKeyEnv: 'AHA_VERIFY_NO_KEY', traceDirectory: path.join(evidence, 'pipeline') }, sessionStore: { schemaVersion: 1, records: {} } });
     const log = await open(path.join(evidence, 'obsidian.log'), 'a');
     const env = { ...process.env, HOME: run.home }; delete env.INDEX_PATH; delete env.DEEPSEEK_API_KEY; delete env.AHA_VERIFY_NO_KEY;
     const child = spawn(binary, [`--user-data-dir=${run.profile}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--use-mock-keychain'], { detached: true, stdio: ['ignore', log.fd, log.fd], env });
@@ -224,7 +240,14 @@ async function launch(evidence, scenario = 'neighborhood') {
       const trust = await cdp.evaluate('[...document.querySelectorAll(".modal button")].map(e=>e.textContent.trim())');
       const label = trust.find(value => value === '信任仓库作者并启用插件' || value === 'Trust author and enable plugins');
       if (label) await click(cdp, '.modal button', label);
-      await until(() => cdp.evaluate(`!!app.plugins?.plugins?.[${JSON.stringify(pluginId)}]`), 'Aha plugin enabled');
+      await until(() => cdp.evaluate(`!!app.plugins?.plugins?.[${JSON.stringify(pluginId)}] && app.workspace.layoutReady`), 'Aha plugin and workspace layout ready');
+      if (label) {
+        const settings = await until(() => connect(run, 'settings'), 'post-trust settings window', 3000).catch(() => null);
+        if (settings) {
+          await closeSettings(cdp, settings);
+        }
+      }
+      await until(() => cdp.evaluate('activeWindow === window'), 'owned main window accepts shortcuts');
       await cdp.send('Page.bringToFront');
       await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
       await doctor(run, cdp);
@@ -248,9 +271,9 @@ async function storedRound(run) {
 }
 
 async function drive(run) {
-  if (run.scenario === 'auto-index') return (await import('./index-proof.mjs')).drive(run, { connect, doctor, click, fill, key, until, snapshot, event, command, json, save, dataPath });
+  if (run.scenario === 'auto-index') return (await import('./index-proof.mjs')).drive(run, { closeSettings, connect, doctor, click, fill, key, until, snapshot, event, command, json, save, dataPath });
   if (run.scenario === 'quick-links') {
-    return (await import('./quick-links-proof.mjs')).drive(run, { connect, doctor, click, fill, key, until, snapshot, event, command, json, save, dataPath });
+    return (await import('./quick-links-proof.mjs')).drive(run, { closeSettings, connect, doctor, click, fill, key, until, snapshot, event, command, json, save, dataPath });
   }
   const cdp = await connect(run);
   try {
@@ -305,15 +328,25 @@ async function drive(run) {
     await click(cdp, 'button[aria-label="查看已保存的 Surprise"]');
     await until(() => cdp.evaluate(`document.querySelector('.aha-saved-thought')?.textContent === ${JSON.stringify(thought)}`), 'saved thought restored after reload');
     await snapshot(run, cdp, '05-reloaded');
-    const editedThought = 'AHA edited thought: seek disconfirming evidence before the next trial.';
+    let editedThought = 'AHA edited thought: seek disconfirming evidence before the next trial.';
     const beforeEdit = await readFile(path.join(run.vault, 'Source.md'), 'utf8');
     await click(cdp, '.aha-saved-entry button', '编辑想法');
     await fill(cdp, '.aha-saved-entry textarea[aria-label="我的想法"]', editedThought);
     await save(path.join(run.evidence, 'thought-focus.json'), await cdp.evaluate("({tag:document.activeElement?.tagName, value:document.activeElement?.value, class:document.activeElement?.className})"));
-    await key(cdp, 'Enter', 'Enter', 2);
+    await key(cdp, 'Enter', 'Enter', 4);
     await until(async () => (await storedRound(run)).record.feedback.some(item => item.note === editedThought && item.noteWrite?.status === 'saved'), 'edited thought journal saved');
     assert.equal(await readFile(path.join(run.vault, 'Source.md'), 'utf8'), beforeEdit.replace(thought, editedThought));
     await snapshot(run, cdp, '06-thought-edited');
+    editedThought += ' Ctrl+Enter also saves.';
+    await fill(cdp, '.aha-saved-entry textarea[aria-label="我的想法"]', editedThought);
+    await key(cdp, 'Enter', 'Enter', 2);
+    await until(async () => (await storedRound(run)).record.feedback.some(item => item.note === editedThought && item.noteWrite?.status === 'saved'), 'Ctrl+Enter edit journal saved');
+    assert.equal(await readFile(path.join(run.vault, 'Source.md'), 'utf8'), beforeEdit.replace(thought, editedThought));
+    await key(cdp, 'p', 'KeyP', 4);
+    await until(() => cdp.evaluate("!!document.querySelector('.prompt-input')"), 'unrelated Cmd+P still opens palette from thought editor');
+    await key(cdp, 'Escape', 'Escape');
+    await snapshot(run, cdp, '06b-keyboard-scope');
+
     await click(cdp, '.aha-review-panel-seed-button', '返回结果');
     await click(cdp, 'button[aria-label="固定当前笔记"]');
     await until(() => cdp.evaluate(`!!document.querySelector('button[aria-label="跟随当前笔记"]')`), 'panel pinned');
@@ -336,7 +369,7 @@ async function drive(run) {
     assert.equal(await readFile(path.join(run.vault, 'Source.md'), 'utf8'), beforeEdit.replace(thought, editedThought));
     for (const name of ['Backlink.md', 'Counterexample.md']) assert.equal(await readFile(path.join(run.vault, name), 'utf8'), notes[name]);
     await snapshot(run, cdp, '09-panel-rerun');
-    const report = { status: 'passed', fixture: 'synthetic Markdown; no seeded search results', verified: ['search.command-run.neighborhood', 'selection.checkbox.persistence', 'feedback.surprise', 'thoughts.save.source-and-store', 'thoughts.saved-search', 'panel.command-open.restore-after-reload', 'thoughts.edit.ctrl-enter-save', 'reading.candidate-source-pin-follow', 'search.panel-rerun'], notVerified: ['Cmd+Enter thought save on macOS', 'QMD recall', 'DeepSeek Full tier', 'clipboard handoff', 'editor Open Candidate command', 'accept/noise/must feedback'], buildHash: run.buildHash, version: run.version };
+    const report = { status: 'passed', fixture: 'synthetic Markdown; no seeded search results', verified: ['search.command-run.neighborhood', 'selection.checkbox.persistence', 'feedback.surprise', 'thoughts.save.source-and-store', 'thoughts.saved-search', 'panel.command-open.restore-after-reload', 'thoughts.edit.cmd-enter-save', 'thoughts.edit.ctrl-enter-save', 'thoughts.unrelated-shortcut', 'reading.candidate-source-pin-follow', 'search.panel-rerun'], notVerified: ['QMD recall', 'DeepSeek Full tier', 'clipboard handoff', 'editor Open Candidate command', 'accept/noise/must feedback'], buildHash: run.buildHash, version: run.version };
     await save(path.join(run.evidence, 'report.json'), report);
     await event(run, 'proof passed', report.verified);
   } catch (error) {
@@ -352,7 +385,12 @@ async function cleanup(run) {
   const identity = await owned(run);
   if (identity) {
     process.kill(run.pid, 'SIGTERM');
-    await until(() => !processIdentity(run.pid), 'owned Obsidian process stopped', 15000);
+    try { await until(() => !processIdentity(run.pid), 'owned Obsidian process stopped', 15000); }
+    catch (error) {
+      await event(run, 'owned process did not exit after SIGTERM', error.message);
+      if (await owned(run)) process.kill(run.pid, 'SIGKILL');
+      await until(() => !processIdentity(run.pid), 'owned process stopped after SIGKILL', 5000);
+    }
   }
   await rm(run.scratch, { recursive: true });
   run.state = 'cleaned';
@@ -365,13 +403,14 @@ async function cleanup(run) {
   assertHostUnchanged(run.hostBefore, hostAfter);
 }
 
+async function main() {
 const [action = 'run', argument] = process.argv.slice(2);
-assert(['run', 'launch', 'run-links', 'launch-links', 'run-index', 'launch-index', 'doctor', 'drive', 'cleanup'].includes(action), 'Usage: verify.mjs run|launch|run-links|launch-links|run-index|launch-index [evidence-directory] OR doctor|drive|cleanup <evidence-directory>');
+assert(['run', 'launch', 'run-links', 'launch-links', 'run-index', 'launch-index', 'launch-production-links', 'doctor', 'drive', 'cleanup'].includes(action), 'Usage: verify.mjs run|launch|run-links|launch-links|run-index|launch-index [evidence-directory] OR doctor|drive|cleanup <evidence-directory>');
 const evidence = path.resolve(argument || path.join(repo, 'traces/verification', `${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}`));
-if (['run', 'launch', 'run-links', 'launch-links', 'run-index', 'launch-index'].includes(action)) {
+if (['run', 'launch', 'run-links', 'launch-links', 'run-index', 'launch-index', 'launch-production-links'].includes(action)) {
   await mkdir(path.dirname(evidence), { recursive: true });
   console.log(evidence);
-  const run = await launch(evidence, action.endsWith('-links') ? 'quick-links' : action.endsWith('-index') ? 'auto-index' : 'neighborhood');
+  const run = await launch(evidence, action === 'launch-production-links' ? 'production-links' : action.endsWith('-links') ? 'quick-links' : action.endsWith('-index') ? 'auto-index' : 'neighborhood');
   if (action.startsWith('run')) {
     try {
       if (process.env.AHA_VERIFY_FAIL_AFTER_LAUNCH === '1') throw new Error('Intentional isolation cleanup probe');
@@ -398,3 +437,8 @@ if (['run', 'launch', 'run-links', 'launch-links', 'run-index', 'launch-index'].
     try { console.log(JSON.stringify(await doctor(run, cdp), null, 2)); } finally { cdp.close(); }
   }
 }
+
+}
+
+export const driver = { closeSettings, connect, doctor, click, fill, key, until, snapshot, event, command, json, save, dataPath };
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) await main();

@@ -152,11 +152,9 @@ export class AhaSettingTab extends PluginSettingTab {
     containerEl.addClass("aha-settings");
     containerEl.createEl("h2", { text: "Aha" });
 
-    this.renderProviderFields(containerEl);
-
     containerEl.createEl("h3", { text: "搜索" });
-    this.textSetting(containerEl, "excludedFolders", "排除文件夹", "用逗号或换行分隔。仅过滤候选，不阻止索引或发送原文。");
-    const searchTuning = this.disclosure(containerEl, "搜索数量与判断预算");
+    this.textSetting(containerEl, "excludedFolders", "排除文件夹", "逗号或换行分隔。仅过滤候选，不影响索引范围。");
+    const searchTuning = this.disclosure(containerEl, "完整回顾：数量与判断预算");
     new Setting(searchTuning)
       .setName("目标候选数")
       .setDesc("每轮希望保留的有效候选数量。")
@@ -187,12 +185,14 @@ export class AhaSettingTab extends PluginSettingTab {
       });
 
     this.renderIndexSection(containerEl);
+    this.renderProviderFields(containerEl);
     this.renderAdvancedSection(containerEl);
     this.renderHealthSection(containerEl);
   }
 
   private renderProviderFields(container: HTMLElement): void {
-    new Setting(container)
+    const connection = this.disclosure(container, "关系判断（DeepSeek，可选）");
+    new Setting(connection)
       .setName("DeepSeek API key（可选）")
       .setDesc("用于回顾时的关系判断，会发送笔记摘录。留空可用环境变量；直接填写会保存到本 vault 的插件设置。")
       .addText((text) => {
@@ -206,7 +206,6 @@ export class AhaSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
-    const connection = this.disclosure(container, "DeepSeek 连接设置");
     this.textSetting(connection, "deepseekBaseUrl", "API 地址", "", { placeholder: DEFAULT_SETTINGS.deepseekBaseUrl });
     this.textSetting(connection, "deepseekModel", "模型", "");
     this.textSetting(connection, "deepseekApiKeyEnv", "密钥环境变量", "未直接填写 API key 时读取此变量。");
@@ -257,7 +256,7 @@ export class AhaSettingTab extends PluginSettingTab {
       });
     new Setting(container)
       .setName("新增笔记阈值")
-      .setDesc("只计新增 Markdown 笔记，修改和重命名不计。默认 10 篇。")
+      .setDesc("只计新增笔记，修改和重命名不计。")
       .addText(text => {
         text.inputEl.type = "number";
         text.inputEl.min = "1";
@@ -270,7 +269,7 @@ export class AhaSettingTab extends PluginSettingTab {
       });
     new Setting(container)
       .setName("更新索引")
-      .setDesc("更新笔记索引并生成向量。失败后可在这里重试。")
+      .setDesc("让新笔记能被联想找到，失败时可重试。")
       .addButton((button) => {
         button.buttonEl.setAttribute("aria-label", "Embed now");
         button
@@ -301,7 +300,7 @@ export class AhaSettingTab extends PluginSettingTab {
       else if (status.kind === "failed") embedStatus.setText(`${pending} · 更新失败：${status.message}`);
       else embedStatus.setText(`${pending}${status.lastSuccess ? ` · 上次成功 ${new Date(status.lastSuccess).toLocaleString()}` : " · 尚未完成索引更新"}`);
     });
-    container.createEl("p", { cls: "setting-item-description aha-settings-note", text: "索引范围由 QMD collections 决定。使用远程 embedding 时，新增或修改笔记的原文会发送给该服务，排除文件夹不能阻止。" });
+    container.createEl("p", { cls: "setting-item-description aha-settings-note", text: "远程向量服务会收到新建或修改笔记的原文。排除文件夹只过滤候选，索引范围由 QMD 决定。" });
   }
 
   private renderHealthSection(container: HTMLElement): void {

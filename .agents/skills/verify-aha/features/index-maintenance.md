@@ -12,9 +12,9 @@ Users can update manually or enable an update after a configurable number of new
 
 ## How to get to it (user POV)
 
-- Open Settings, Aha, Health.
+- Open Settings, Aha, 索引.
 - Set `Automatic QMD index updates` and `New notes per index update`.
-- Use `Embed now` for an immediate refresh or retry.
+- Use `立即更新` with accessible label `Embed now` for an immediate refresh or retry.
 - Create Markdown notes in the vault, including through normal filesystem synchronization.
 
 ## Driving it with verify.mjs
@@ -31,7 +31,7 @@ Preconditions:
 - Create the tenth. Observe one update/embed pair. Create two more while it runs; require those two to remain pending after success.
 - Run real QMD lexical and vector searches for the tenth fixture's unique term. Require its actual note path in returned results.
 - Reload the app and require two pending tokens. Make the owned recording executable non-executable, then add eight notes. Require ten pending tokens, a persisted error, and a cooldown.
-- Restore executable permission and click `Embed now`. Require one successful update/embed pair and zero pending tokens.
+- Restore executable permission and click `[aria-label="Embed now"]`. Require one successful update/embed pair and zero pending tokens.
 - Disable automation and add ten notes. Require ten pending tokens without another job. Capture `index-final` and retain report/CLI/file evidence after cleanup.
 
 ## Gotchas

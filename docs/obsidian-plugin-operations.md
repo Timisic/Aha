@@ -21,7 +21,7 @@
 ## 候选边界与过滤
 
 - 候选正文读取只允许 `qmd://obsidian/...` 或 vault 内真实路径（realpath 校验），避免把 vault 外文件内容带入 Relation Judge prompt。
-- 默认排除目录为 `templates`、`Aha/Reviews`（`DEFAULT_EXCLUDED_CANDIDATE_FOLDERS` in `core/candidates.ts`），可用设置里的 Excluded folders 或 Node 侧的 `AHA_EXCLUDED_FOLDERS` 扩展。
+- 默认排除目录为 `templates`、`Aha/Reviews`（`DEFAULT_EXCLUDED_CANDIDATE_FOLDERS` in `core/candidates.ts`），可用设置里的“排除文件夹” 或 Node 侧的 `AHA_EXCLUDED_FOLDERS` 扩展。
 - Target candidates 表示希望得到的非 `weak` 候选数，设置 slider 范围为 15–20。Full Tier 首批按候选池顺序判断当前缺口数量，`weak` 或判断失败不满足目标，随后继续顺序补位。
 - Relation Judge budget 默认 40、设置范围 20–60，限制一轮最多判断的候选摘录数。达到非 weak 目标、候选池耗尽或预算耗尽即停止；不通过放宽关系或引句规则减少 `weak`。
 - Relation Judge prompt v8 把 `why` 视为直接展示给用户的判断：先说具体内容与张力，不出现“旧笔记 / 候选 / excerpt / source / 当前 insight”等管线术语。材料中未出现的英文会触发一次文风重写；材料原本使用的英文可以保留。文风重写不改变 relation 或引句证据规则。
@@ -29,7 +29,7 @@
 
 ## Trace 与开发安装
 
-- Advanced → **Trace directory** 设置 JSON 保存目录；留空关闭。当前本机使用 `/Users/hong/Downloads/Pi/traces`，不在 Obsidian vault 内。文件含有限的源笔记摘录，应按私有资料处理。
+- 高级设置 → **Trace 保存目录** 设置 JSON 保存目录；留空关闭。当前本机使用 `/Users/hong/Downloads/Pi/traces`，不在 Obsidian vault 内。文件含有限的源笔记摘录，应按私有资料处理。
 - 插件每轮返回结果后写 trace，面板显示可展开的保存路径。写入失败会显示警告，保留已经完成的搜索结果。进程退出或管线抛出未返回结果的异常仍可能没有完整 trace。
 - 文件名统一为 `标题__YYYYMMDD-HHmmss.json`（本机时区），同秒同名时追加 `-2`、`-3`，不再拼接路径 hash、毫秒数或 UUID。JSON 内的 `generated_at` 使用 ISO 时间。
 - 每个 Session Round 的 `trace: { path, origin }` 保存独立引用，不受 warning 数量截断影响；失败轮次也保留引用。`data.json` 仍只保存候选、标注与引用，不塞入完整 trace。Full Tier trace 保存完整结构化 query 与执行文本，并以 `q1`、`q2` 等区分同 kind 查询；`steps.rerank.backfill` 另存每批判断、补位来源、停止原因、失败/修复数、API 调用次数和耗时。
@@ -56,7 +56,7 @@
 
 ## 配置
 
-- DeepSeek 是唯一 API provider（OpenAI 已移除）：默认 `baseUrl=https://api.deepseek.com`、`model=deepseek-v4-pro`。设置页的 `Test DeepSeek` 会发一个最小 JSON 请求，同时验证网络、鉴权、endpoint 与 model ID。
+- DeepSeek 是唯一 API provider（OpenAI 已移除）：默认 `baseUrl=https://api.deepseek.com`、`model=deepseek-v4-pro`。设置页“关系判断（DeepSeek，可选）”中的“测试” 会发一个最小 JSON 请求，同时验证网络、鉴权、endpoint 与 model ID。
 - 直接填写的 API key 保存在当前 vault 的 Obsidian 插件数据中；留空则读取 `DEEPSEEK_API_KEY`。不要把 `.obsidian/plugins/.../data.json` 提交到仓库。
 - QMD 只走 CLI；`qmdCommand` 指定可执行文件。QMD 的 index 是按名字独立的 sqlite 文件，重建 Obsidian 索引需显式 `qmd update --index obsidian && qmd embed --index obsidian`。
 
@@ -78,13 +78,13 @@ QMD and CodeMirror behavior need a real isolated Obsidian acceptance run. Unit t
 
 ## 自动索引更新
 
-Health 中提供 **Automatic QMD index updates** 和 **New notes per index update**。默认关闭，阈值默认为 10 篇，可以设置为其他正整数。首次加载建立已有笔记基线。之后只按新增 Markdown 笔记触发，编辑已有笔记不增加计数，其内容会随下一次刷新同步。
+“索引”中提供“自动更新索引”和“新增笔记阈值”。默认关闭，阈值默认为 10 篇，可以设置为其他正整数。首次加载建立已有笔记基线。之后只按新增 Markdown 笔记触发，编辑已有笔记不增加计数，其内容会随下一次刷新同步。
 
 待更新清单保存在插件 `data.json` 的 `indexState` 中。重启后恢复清单并检测离线新增。运行中的重命名不会增加计数，删除待更新笔记会减少计数。本地文件系统身份可用于识别离线重命名；缺少可靠文件身份时，离线改名可能被视为新增。同一路径的原子保存视为原笔记。
 
-达到阈值后先执行 `qmd update`，成功后执行 `qmd embed`。手动 Embed now 和自动更新共用一个任务。成功只确认启动时的待更新批次，期间新增的笔记继续等待。关闭自动更新保留清单，并让正在运行的任务完成；插件卸载会中止自己的子进程。
+达到阈值后先执行 `qmd update`，成功后执行 `qmd embed`。手动“立即更新” 和自动更新共用一个任务。成功只确认启动时的待更新批次，期间新增的笔记继续等待。关闭自动更新保留清单，并让正在运行的任务完成；插件卸载会中止自己的子进程。
 
-失败时保留待更新清单和错误状态。自动重试至少间隔 60 秒，并等待之后的新增笔记、相关设置变更或下次启动触发，不设置循环重试计时器。Embed now 可立即手动重试。修改 QMD 目标配置会建立新的清单基线，旧任务不能确认新目标的数据。
+失败时保留待更新清单和错误状态。自动重试至少间隔 60 秒，并等待之后的新增笔记、相关设置变更或下次启动触发，不设置循环重试计时器。“立即更新”可立即手动重试。修改 QMD 目标配置会建立新的清单基线，旧任务不能确认新目标的数据。
 
 阈值统计当前 vault，实际刷新范围由该 QMD 索引的 collections 决定。Excluded folders 仅影响候选过滤。远程 embedding 会收到待嵌入的原文片段，详见 [数据流](data-flow.md)。
 

@@ -61,7 +61,7 @@ The default scenario performs these actions.
 5. Require the thought in both `data.json` and the source Markdown. Require one thought block and unchanged candidate files.
 6. Open saved Surprise, exercise empty and matching searches, reload the app, and reopen the panel.
 7. Require restored selection, Surprise marking, and the saved thought.
-8. Edit the saved thought with Ctrl+Enter and require exact replacement in Markdown and a saved journal.
+8. Edit the saved thought with Cmd+Enter and require exact replacement in Markdown and a saved journal.
 9. Open a candidate while pinned, return through the source link, then unpin and require the panel to follow another note.
 10. Return to Source and rerun from the panel button. Require a new successful round and unchanged note text.
 
@@ -125,3 +125,30 @@ The [index proof module](scripts/index-proof.mjs) enables the setting through th
 Each temporary Obsidian process has an isolated home as well as a profile and vault. Obsidian's CLI socket lives in the home directory even with `--user-data-dir`; profile isolation alone can disrupt the user's existing CLI connection. The helper checks the child home in Doctor and never changes the parent shell's home. Settings use a separate owned CDP target. Secrets remain in the child environment, not its saved test settings.
 
 On macOS the synthetic instance must include `--use-mock-keychain`. A temporary home without that flag can trigger repeated missing-keychain dialogs. Doctor checks the flag. Never apply this test-only flag to the user's main vault, store real credentials in the fixture, or reset the user's login keychain to repair a test launch.
+
+## Settings and latency
+
+After `launch`, run `node .agents/skills/verify-aha/scripts/settings-proof.mjs <evidence-directory>`.
+It opens the real Settings window, checks collapsed defaults, keyboard disclosures,
+persisted edits, visible failures, and narrow-window overflow. Then run `cleanup`.
+
+After `launch-links`, run `node .agents/skills/verify-aha/scripts/benchmark-links.mjs <evidence-directory> <label> 10`.
+It measures command activation to first selectable candidates and to completed
+original excerpts separately. It checks actual QMD completion and semantic source
+sentences. Polling does not determine the recorded timestamps. The normal quality
+proof still uses the configured hotkey. Timing uses command-palette activation.
+
+For an authorized personal-index benchmark, set `AHA_VERIFY_SOURCE_VAULT_ROOT`
+explicitly and run `launch-production-links`. The helper copies Markdown into
+scratch, permits only QMD quick-link queries, and maps absolute result paths to
+the copies. It does not run index updates or mutate original notes. Evidence can
+contain private note titles and excerpts; keep it local. Use the same configured
+QMD endpoints and the default `obsidian` index. Pass a previous benchmark JSON as
+the fourth benchmark argument to assert identical candidate order and excerpts.
+
+`AHA_VERIFY_BUNDLE_DIR` selects an archived `main.js` and `styles.css` only for
+isolated comparisons. Doctor checks the installed hash against that pinned bundle.
+Alternate fresh before/after instances, at least five runs per side. Keep source
+commits, hashes, sample ranges, failures, and both latency milestones in the local
+report. Complete excerpts may still take longer than two seconds; first selectable
+candidates are a separate claim. Every manual launch requires final `cleanup`.

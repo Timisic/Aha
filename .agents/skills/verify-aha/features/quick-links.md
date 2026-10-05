@@ -6,6 +6,7 @@ While writing, users request a short list of related notes, choose one or severa
 
 - `links-input` uses selected text, the full current paragraph, or the previous paragraph on a blank line.
 - `links-recall` makes one semantic QMD retrieval request and shows at most four safe, distinct Markdown candidates. README and explicit planning files are excluded.
+- `links-progressive` shows selectable ranked candidates first; original excerpts fill in without resetting checks or highlight.
 - `links-excerpt` selects original prose against the query through the configured reranker, with query-word or title-only fallback.
 - `links-hover` suppresses pointer tooltips while retaining accessible names.
 - `links-choose` supports arrows, Space, mouse toggles, and Enter for checked or highlighted candidates.
@@ -45,3 +46,5 @@ Preconditions:
 - A changed document or selection invalidates the captured insertion location. Cancellation is preferable to inserting at a stale offset.
 - A small synthetic index can prove the path and ranking for its fixture. It cannot establish personal-vault retrieval quality or production latency.
 - Remote model availability is a prerequisite for this real retrieval proof. Report failure rather than silently replacing QMD results.
+
+- `data-excerpts-pending` and list `aria-busy` distinguish pending excerpts from completed results. A title-only pending row is not evidence that semantic excerpt selection completed.

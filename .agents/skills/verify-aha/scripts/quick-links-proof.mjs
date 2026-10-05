@@ -70,7 +70,7 @@ export async function drive(run, api) {
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 4 });
   };
   const ready = async () => {
-    await until(() => cdp.evaluate(`document.querySelectorAll(${JSON.stringify(row)}).length > 0`), 'real QMD candidates', 12000);
+    await until(() => cdp.evaluate(`document.querySelectorAll(${JSON.stringify(row)}).length > 0 && document.querySelector(${JSON.stringify(popup)})?.dataset.excerptsPending !== 'true'`), 'real QMD candidates', 12000);
     const candidates = await cdp.evaluate(`[...document.querySelectorAll(${JSON.stringify(row)})].map(e=>({path:e.getAttribute('data-path'),text:e.textContent}))`);
     assert(candidates.length > 0 && candidates.length <= 4);
     assert.equal(new Set(candidates.map(c=>c.path)).size,candidates.length);
@@ -79,7 +79,7 @@ export async function drive(run, api) {
     return candidates;
   };
   const replaceDocument = async text => {
-    await click(cdp, '.workspace-leaf.mod-active .cm-content[contenteditable="true"]');
+    await click(cdp, '.markdown-source-view .cm-content[contenteditable="true"]');
     await selectAll();
     await cdp.send('Input.insertText', { text });
     await until(async () => await editorText() === text, 'typed fixture content');
@@ -87,13 +87,14 @@ export async function drive(run, api) {
   try {
     await doctor(run, cdp);
     await click(cdp, '.nav-file-title[data-path="Source.md"]');
-    await click(cdp, '.workspace-leaf.mod-active .cm-content[contenteditable="true"]');
+    await click(cdp, '.markdown-source-view .cm-content[contenteditable="true"]');
     await selectAll();
     assert.equal(await cdp.evaluate('app.workspace.activeEditor.editor.getSelection()'), source);
     const started = Date.now();
     await trigger();
     const candidates = await ready();
     const observedWaitUpperBoundMs = Date.now() - started;
+    await cdp.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const geometry = await cdp.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(popup)}),r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,viewportWidth:innerWidth,viewportHeight:innerHeight,hasBackdrop:!!document.querySelector('.modal-container')}})()`);
     assert(geometry.width <= 460 && geometry.height <= 400);
     assert(geometry.x >= 0 && geometry.y >= 0 && geometry.x+geometry.width <= geometry.viewportWidth+1 && geometry.y+geometry.height <= geometry.viewportHeight+1);
@@ -253,6 +254,7 @@ export async function drive(run, api) {
     await replaceDocument(interviewQuery);
     await trigger();
     await until(() => cdp.evaluate(`!!document.querySelector(${JSON.stringify(row+'[data-path="试错.md"]')})`), 'same note recalled for a different question');
+    await until(() => cdp.evaluate("document.querySelector('.aha-quick-links')?.dataset.excerptsPending === 'false'"), 'second-query excerpts completed');
     const interviewExcerpt = await cdp.evaluate(`document.querySelector(${JSON.stringify(row+'[data-path="试错.md"] .aha-quick-link-excerpt')})?.textContent`);
     assert.equal(await cdp.evaluate(`document.querySelector(${JSON.stringify(row+'[data-path="试错.md"]')})?.dataset.excerptMethod`), 'semantic');
     assert.equal(interviewExcerpt, '访谈时先让参与者独立回忆具体经历，再追问反对意见，可以减少迎合研究者的回答。');

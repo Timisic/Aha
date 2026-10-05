@@ -20,6 +20,7 @@ Run an edited scenario with `node .agents/skills/verify-aha/scripts/verify.mjs r
 - [Record feedback](feedback.md) covers Surprise, accept, noise, and missing-memory feedback.
 - [Save and revisit thoughts](thoughts.md) covers Markdown writes, saved search, editing, and reload.
 - [Quick link insertion](quick-links.md) covers selected or paragraph input, real QMD recall, multiselect, insertion, undo, and cancellation.
+- [Settings](settings.md) covers compact defaults, native disclosures, configuration persistence, and health visibility.
 - [Index maintenance](index-maintenance.md) covers threshold triggering, persistence, failure and manual recovery.
 
 ## Coverage boundary

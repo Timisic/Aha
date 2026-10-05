@@ -75,8 +75,8 @@ export async function drive(run, api) {
     const vectorResult=JSON.parse(vector.stdout.slice(vector.stdout.indexOf('['),vector.stdout.lastIndexOf(']')+1));
     assert(vectorResult.some(r=>r.file.endsWith('/Added-10.md')),'new note must be returned by real vector search');
     await save(path.join(run.evidence,'index-new-note-vector-search.json'),vectorResult);
-    await cdp.send('Target.closeTarget',{targetId:settings.targetId});
-    settings.close();settings=undefined;
+    await api.closeSettings(cdp, settings);
+    settings=undefined;
     const previousDocument=await cdp.evaluate('performance.timeOrigin');
     await cdp.send('Page.reload',{ignoreCache:true});
     await until(()=>cdp.evaluate(`performance.timeOrigin !== ${previousDocument} && typeof app !== 'undefined' && !!app.plugins?.plugins?.['aha-memory-surface-dev']?.indexUpdates`),'plugin restarted');
@@ -90,7 +90,7 @@ export async function drive(run, api) {
     },'failed automatic update retains pending and cooldown');
     await capture('index-failed');
     await chmod(run.qmdCommand,0o755);
-    await click(settings,'.setting-item button','Embed now');
+    await click(settings,'[aria-label="Embed now"]');
     await until(async()=>{
       const current=await state();return current.pending.length===0 && current.error===null && (await jobs()).length===4;
     },'manual retry completes one real update and embed',60000);
