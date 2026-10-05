@@ -454,6 +454,7 @@
 }
 
 .aha-quick-links.cm-tooltip {
+  --no-tooltip: true;
   width: min(360px, calc(100vw - 24px));
   padding: 6px;
   color: var(--text-normal);

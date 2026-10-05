@@ -217,7 +217,7 @@ export async function runQmdQuickRecall(settings: AhaPluginSettings, query: stri
   const command = settings.qmdCommand?.trim() || "qmd";
   const result = await runBoundedCommand(command, [
     "query", `vec: ${text}`, "-c", settings.qmdIndex, "--index", settings.qmdIndex,
-    "-n", "8", "-C", "8", "--no-rerank", "--full-path", "--format", "json",
+    "-n", "20", "-C", "20", "--no-rerank", "--full-path", "--format", "json",
   ], { env: qmdChildEnv(settings), timeoutMs: 8_000, signal });
   if (result.code !== 0) throw new Error(firstLine(result.stderr || result.stdout) || `QMD exited ${result.code}`);
   const rows: unknown = extractQmdRows(result.stdout);

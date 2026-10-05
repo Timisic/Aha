@@ -2,8 +2,10 @@ import { Prec, StateEffect, StateField, type Extension, type Text } from "@codem
 import { isolateHistory } from "@codemirror/commands";
 import { EditorView, ViewPlugin, showTooltip } from "@codemirror/view";
 import { FileSystemAdapter, TFile, editorInfoField, type App, type Editor } from "obsidian";
-import { excludedFoldersFromSettings, firstSnippetLine, mergeAndRankQueryResults } from "./core";
+import { excludedFoldersFromSettings, mergeAndRankQueryResults } from "./core";
 import { captureQuickLinkContext, quickLinkInsertion, quickWikiLink, type QuickLinkContext } from "./quick-link-context";
+import { createExcerptReranker } from "./excerpt-rerank-request";
+import { excludesQuickLinkNote, extractExcerptDocument, excerptText, selectExcerpts, type ExcerptDocument, type ExcerptPick } from "./quick-link-excerpts";
 import { runQmdQuickRecall } from "./qmd-request";
 import type { AhaPluginSettings } from "./settings";
 import { createVaultBoundaryDeps } from "./vault-boundary";
@@ -20,6 +22,8 @@ interface Candidate {
   readonly file: TFile;
   readonly title: string;
   readonly excerpt: string;
+  readonly excerptMethod: ExcerptPick["method"];
+  readonly excerptCoverage: ExcerptPick["coverage"];
 }
 
 type PopupState =
@@ -145,20 +149,34 @@ export class QuickLinks {
       );
       if (!this.isCurrent(view, capture)) return;
       const candidates: Candidate[] = [];
+      const documents: ExcerptDocument[] = [];
       const seen = new Set<string>([sourceRealPath]);
       for (const candidate of pooled) {
+        if (excludesQuickLinkNote(candidate.notePath)) continue;
         const file = this.app.vault.getAbstractFileByPath(candidate.notePath);
         if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md" || file.path === capture.sourcePath) continue;
         if (!quickWikiLink(this.app.metadataCache.fileToLinktext(file, capture.sourcePath, true))) continue;
         const realPath = await boundary.realpath(boundary.path.resolve(vaultRoot, file.path)).catch(() => "");
         if (!realPath || seen.has(realPath)) continue;
         seen.add(realPath);
-        candidates.push({ file, title: file.basename, excerpt: firstSnippetLine(candidate.hit.replace(/@@.*?@@/g, "\n")).replace(/\s+/g, " ").slice(0, 180) });
+        const source = await this.app.vault.cachedRead(file);
+        if (!this.isCurrent(view, capture)) return;
+        const document = extractExcerptDocument(file.path, source);
+        if (!document) continue;
+        documents.push(document);
+        candidates.push({ file, title: file.basename, excerpt: "", excerptMethod: "none", excerptCoverage: "complete" });
         if (candidates.length === 4) break;
       }
       if (!this.isCurrent(view, capture)) return;
+      const picks = await selectExcerpts(capture.query, documents, createExcerptReranker(settings.qmdEnvironment), capture.request.signal);
+      if (!this.isCurrent(view, capture)) return;
+      const excerpts = candidates.map((candidate, index) => {
+        const pick = picks[index];
+        return { ...candidate, excerpt: pick?.span ? excerptText(documents[index], pick.span) : "",
+          excerptMethod: pick.method, excerptCoverage: pick.coverage };
+      });
       this.show(view, candidates.length
-        ? { kind: "ready", capture, candidates, highlighted: 0, checked: new Set() }
+        ? { kind: "ready", capture, candidates: excerpts, highlighted: 0, checked: new Set() }
         : { kind: "message", capture, message: "没有找到可插入的相关笔记。" });
     } catch (error) {
       if (!this.isCurrent(view, capture)) return;
@@ -242,6 +260,8 @@ export class QuickLinks {
         row.className = "aha-quick-link-option";
         row.classList.toggle("is-highlighted", state.highlighted === index);
         row.dataset.path = candidate.file.path;
+        row.dataset.excerptMethod = candidate.excerptMethod;
+        row.dataset.excerptCoverage = candidate.excerptCoverage;
         row.setAttribute("role", "option");
         row.setAttribute("aria-selected", String(state.checked.has(candidate.file.path)));
         const check = document.createElement("span");
@@ -260,10 +280,12 @@ export class QuickLinks {
           path.textContent = candidate.file.parent?.path ?? "";
           title.append(path);
         }
-        const excerpt = document.createElement("span");
-        excerpt.className = "aha-quick-link-excerpt";
-        excerpt.textContent = candidate.excerpt;
-        text.append(excerpt);
+        if (candidate.excerpt) {
+          const excerpt = document.createElement("span");
+          excerpt.className = "aha-quick-link-excerpt";
+          excerpt.textContent = candidate.excerpt;
+          text.append(excerpt);
+        }
         row.append(check, text);
         row.addEventListener("mousedown", (event) => event.preventDefault());
         row.addEventListener("click", () => this.toggle(view, index));

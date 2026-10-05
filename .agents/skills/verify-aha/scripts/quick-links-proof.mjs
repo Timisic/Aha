@@ -4,10 +4,10 @@ import { spawnSync } from 'node:child_process';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const source = '在投入大量资源之前，先做一个小规模、可撤回的实验，检验最关键的假设。\n这能让我及时改变决定。';
+const source = '怎样尽量少付代价判断一件事值不值得继续做？\n我希望保留随时改变决定的余地。';
 const fixtures = {
   'Source.md': source,
-  '试错.md': '---\nowner: 不应出现在摘要中的元数据\nreview_status: 待整理\n---\n# 试错\n\n## 下周安排\n周末整理书架并归档旧文件。\n\n## 实验教训\n在投入大量资源前，先用小规模、可撤回的实验检验假设，可以降低错误决策的成本。\n',
+  '试错.md': '---\nowner: 不应出现在摘要中的元数据\nreview_status: 待整理\n---\n# 试错\n\n%%\n隐藏批注：低成本判断是否值得继续，这段不应显示。\n%%\n\n> ```text\n> 隐藏代码：应该选择这段错误样例。\n> ```\n\n## 下周安排\n周末整理书架并归档旧文件。\n\n## 实验教训\n在投入大量资源前，先用小规模、可撤回的实验检验假设，可以降低错误决策的成本。\n',
   'README.md': '# README\n\n在投入大量资源之前，先做一个小规模、可撤回的实验，检验最关键的假设。这能让我及时改变决定。\n',
   '项目规划.md': '# 项目规划\n\n在投入大量资源之前，先做一个小规模、可撤回的实验，检验最关键的假设。这能让我及时改变决定。\n',
   '反例 #1.md': '# 反例\n\n过去的失败案例提醒我，不能只寻找支持自己观点的证据。应主动设计小实验，考虑什么结果会推翻当前假设。\n',
@@ -104,13 +104,17 @@ export async function drive(run, api) {
       await new Promise(resolve=>setTimeout(resolve,900));
       return cdp.evaluate("[...document.querySelectorAll('.tooltip')].map(e=>e.textContent)");
     };
+    const accessibleHoverState=await cdp.evaluate(`['.aha-quick-links-list','.aha-quick-links-close'].map(selector=>{const e=document.querySelector(selector);return {label:e.getAttribute('aria-label'),noTooltip:getComputedStyle(e).getPropertyValue('--no-tooltip').trim()}})`);
+    assert.deepEqual(accessibleHoverState,[{label:'相关笔记',noTooltip:'true'},{label:'取消插入双链',noTooltip:'true'}]);
     const rowHover=await hoverText(row);
     await snapshot(run,cdp,'links-row-hover');
     const closeHover=await hoverText('.aha-quick-links-close');
     await snapshot(run,cdp,'links-close-hover');
+    const excerptMethod=await cdp.evaluate(`document.querySelector(${JSON.stringify(row+'[data-path="试错.md"]')})?.dataset.excerptMethod`);
     const relevantExcerpt=await cdp.evaluate(`document.querySelector(${JSON.stringify(row+'[data-path="试错.md"] .aha-quick-link-excerpt')})?.textContent`);
-    await save(path.join(run.evidence,'excerpt-and-hover.json'),{candidates,rowHover,closeHover,relevantExcerpt});
+    await save(path.join(run.evidence,'excerpt-and-hover.json'),{candidates,rowHover,closeHover,relevantExcerpt,excerptMethod,accessibleHoverState});
     assert(candidates.every(c=>!['README.md','项目规划.md'].includes(c.path)), 'README or planning note displayed');
+    assert.equal(excerptMethod,'semantic','Actual configured reranker must select the paraphrase excerpt');
     assert.equal(relevantExcerpt,'在投入大量资源前，先用小规模、可撤回的实验检验假设，可以降低错误决策的成本。','Excerpt must use query-relevant original prose');
     assert(![...rowHover,...closeHover].some(t=>/相关笔记|取消插入双链/.test(t)), 'Unwanted hover tooltip displayed');
     await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:20,y:20});
@@ -264,7 +268,7 @@ export async function drive(run, api) {
       assert(request.args.some(a=>a==='vec: '+source.replace(/\s+/g,' ').trim() || a==='vec: '+specialQuery || a==='vec: '+percentQuery));
       assert(!request.args.includes('--version'));
     }
-    await save(path.join(run.evidence,'report.json'),{status:'passed',fixture:'Real QMD CLI, isolated index, existing embedding service, synthetic notes',verified:['quick-links.selected-text','quick-links.configured-hotkey','quick-links.real-semantic-query','quick-links.max-four','quick-links.keyboard-multiselect','quick-links.preserved-text-and-insertion','quick-links.native-wiki-resolution','quick-links.single-undo','quick-links.escape','quick-links.previous-paragraph','quick-links.enter-highlight','quick-links.mouse-toggle','quick-links.cancel-in-flight','quick-links.no-session-store-write','quick-links.close-button','quick-links.cancel-on-typing','quick-links.current-paragraph','quick-links.insert-at-caret','quick-links.cancel-on-file-switch','quick-links.special-filename','quick-links.percent-filename','quick-links.empty-no-request','quick-links.command-palette','quick-links.unavailable','quick-links.native-announcements'],notVerified:['production-vault relevance','popout window','main-vault latency'],chosen,resolved,observedWaitUpperBoundMs,buildHash:run.buildHash});
+    await save(path.join(run.evidence,'report.json'),{status:'passed',fixture:'Real QMD CLI, isolated index, existing embedding service, synthetic notes',verified:['quick-links.semantic-original-excerpt','quick-links.excludes-readme-and-planning','quick-links.no-hover-tooltips','quick-links.selected-text','quick-links.configured-hotkey','quick-links.real-semantic-query','quick-links.max-four','quick-links.keyboard-multiselect','quick-links.preserved-text-and-insertion','quick-links.native-wiki-resolution','quick-links.single-undo','quick-links.escape','quick-links.previous-paragraph','quick-links.enter-highlight','quick-links.mouse-toggle','quick-links.cancel-in-flight','quick-links.no-session-store-write','quick-links.close-button','quick-links.cancel-on-typing','quick-links.current-paragraph','quick-links.insert-at-caret','quick-links.cancel-on-file-switch','quick-links.special-filename','quick-links.percent-filename','quick-links.empty-no-request','quick-links.command-palette','quick-links.unavailable','quick-links.native-announcements'],notVerified:['production-vault relevance','popout window','main-vault latency'],chosen,resolved,observedWaitUpperBoundMs,buildHash:run.buildHash});
     await snapshot(run,cdp,'links-final');
   } catch(error){
     await event(run,'quick-links drive failed',error.stack);

@@ -156,7 +156,7 @@ test("quick recall runs one semantic query with bounded candidates and configure
   assert.deepEqual(rows, [{ file: "/vault/A.md", score: 0.8, snippet: "A real result" }]);
   const calls = (await readFile(fixture.log, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].argv, ["query", "vec: paragraph lex: other hyde: fake", "-c", "obsidian", "--index", "obsidian", "-n", "8", "-C", "8", "--no-rerank", "--full-path", "--format", "json"]);
+  assert.deepEqual(calls[0].argv, ["query", "vec: paragraph lex: other hyde: fake", "-c", "obsidian", "--index", "obsidian", "-n", "20", "-C", "20", "--no-rerank", "--full-path", "--format", "json"]);
   assert.equal(calls[0].token, "fixture");
 });
 

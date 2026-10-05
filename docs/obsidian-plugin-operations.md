@@ -68,7 +68,7 @@
 
 The command captures selected text, or the full blank-line-delimited paragraph at the caret. A blank line uses the nearest preceding paragraph. The caret tooltip shows up to four existing Markdown notes after source, folder, generated-review and vault-containment filtering. Fewer results are valid.
 
-The dedicated request uses one QMD semantic query with `vec:` input, `--no-rerank`, eight candidate slots, an eight-second timeout and the existing output-size bound. Input whitespace is collapsed before constructing the directive. This path does not run a readiness probe, query expansion, lexical search, retry or DeepSeek call. It inherits the configured QMD command, index and environment.
+The dedicated request uses one QMD semantic query with `vec:` input, `--no-rerank`, twenty candidate slots, an eight-second timeout and the existing output-size bound. Input whitespace is collapsed before constructing the directive. The retrieval stage does not run a readiness probe, query expansion, lexical search, retry or DeepSeek call. It inherits the configured QMD command, index and environment.
 
 Arrow keys move the highlight. Space or a click toggles a candidate. Enter inserts checked candidates in display order, or the highlighted candidate when none are checked. One editor transaction inserts the native wiki links and isolates the undo group. The source text remains intact. This action does not write the Session Store.
 
@@ -87,3 +87,14 @@ Health 中提供 **Automatic QMD index updates** 和 **New notes per index updat
 失败时保留待更新清单和错误状态。自动重试至少间隔 60 秒，并等待之后的新增笔记、相关设置变更或下次启动触发，不设置循环重试计时器。Embed now 可立即手动重试。修改 QMD 目标配置会建立新的清单基线，旧任务不能确认新目标的数据。
 
 阈值统计当前 vault，实际刷新范围由该 QMD 索引的 collections 决定。Excluded folders 仅影响候选过滤。远程 embedding 会收到待嵌入的原文片段，详见 [数据流](data-flow.md)。
+
+
+### Quick-link excerpt selection
+
+Quick links excludes README filenames, paths containing 计划 or 规划, and explicit English plan/planning/roadmap segments. A planning first H1 also excludes the note. This filter applies to this popup, not the general Review Panel or QMD indexing scope.
+
+After safe local file resolution, the popup scans the original note body instead of using QMD's display snippet. It excludes frontmatter, metadata, code, navigation, task items, and explicit planning sections. Original source spans provide the display text; no summary is generated.
+
+If `QMD_REMOTE_RERANK_URL` is configured, the existing endpoint compares source sentences against the query. Short notes use one batch. Longer notes compare windows and then their sentences, with at most two rounds sharing a 2.5-second deadline. Each request is limited to 128 texts and 192 KiB; responses are limited to 1 MiB. An oversized pool or unavailable service uses full-file query-word matching, or title only when nothing matches. This bounded procedure does not guarantee a globally best semantic sentence for arbitrary-length notes. Nonvisual DOM attributes record the selection method and coverage for verification.
+
+Candidate bodies therefore reach the configured rerank service when this step is used. The QMD internal note-order reranking toggle remains separate. Pointer tooltips are disabled through Obsidian's native `--no-tooltip` property, while ARIA labels and keyboard announcements remain.
