@@ -136,7 +136,7 @@ async function fill(cdp, selector, value) {
 
 async function command(cdp, name) {
   await key(cdp, 'p', 'KeyP', 4);
-  await fill(cdp, '.prompt-input', `Aha (Dev): ${name}`);
+  await fill(cdp, '.prompt-input', `Aha: ${name}`);
   await until(() => cdp.evaluate(`document.querySelectorAll('.suggestion-item').length === 1 && document.querySelector('.suggestion-item').textContent.includes(${JSON.stringify(name)})`), `unique command ${name}`);
   await click(cdp, '.suggestion-item');
 }

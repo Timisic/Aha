@@ -12,8 +12,8 @@ Aha finds old notes for the active Markdown note and restores the latest saved r
 
 ## How to get to it (user POV)
 
-- Open a Markdown note and choose `Aha (Dev): Run` in the command palette.
-- Choose `Aha (Dev): Open Panel`, then click `运行 Aha`, or `rerun Aha` when results already exist.
+- Open a Markdown note and choose `Aha: Run` in the command palette.
+- Choose `Aha: Open Panel`, then click `运行 Aha`, or `rerun Aha` when results already exist.
 - Reopen a previous source note and its panel after restarting Obsidian.
 
 ## Driving it with verify.mjs

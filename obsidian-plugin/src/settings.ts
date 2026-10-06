@@ -153,8 +153,8 @@ export class AhaSettingTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "Aha" });
 
     containerEl.createEl("h3", { text: "搜索" });
-    this.textSetting(containerEl, "excludedFolders", "排除文件夹", "逗号或换行分隔。仅过滤候选，不影响索引范围。");
-    const searchTuning = this.disclosure(containerEl, "完整回顾：数量与判断预算");
+    this.textSetting(containerEl, "excludedFolders", "排除文件夹", "仅过滤候选，多个文件夹用逗号分隔。");
+    const searchTuning = this.disclosure(containerEl, "回顾选项");
     new Setting(searchTuning)
       .setName("目标候选数")
       .setDesc("每轮希望保留的有效候选数量。")
@@ -246,7 +246,6 @@ export class AhaSettingTab extends PluginSettingTab {
     container.createEl("h3", { text: "索引" });
     new Setting(container)
       .setName("自动更新索引")
-      .setDesc("新增笔记达到阈值后更新。关闭不打断正在运行的任务。")
       .addToggle(toggle => {
         toggle.toggleEl.setAttribute("aria-label", "Automatic QMD index updates");
         toggle.setValue(this.plugin.settings.autoIndexEnabled).onChange(async value => {
@@ -255,8 +254,7 @@ export class AhaSettingTab extends PluginSettingTab {
         });
       });
     new Setting(container)
-      .setName("新增笔记阈值")
-      .setDesc("只计新增笔记，修改和重命名不计。")
+      .setName("每新增几篇更新")
       .addText(text => {
         text.inputEl.type = "number";
         text.inputEl.min = "1";
@@ -269,7 +267,6 @@ export class AhaSettingTab extends PluginSettingTab {
       });
     new Setting(container)
       .setName("更新索引")
-      .setDesc("让新笔记能被联想找到，失败时可重试。")
       .addButton((button) => {
         button.buttonEl.setAttribute("aria-label", "Embed now");
         button
@@ -300,7 +297,7 @@ export class AhaSettingTab extends PluginSettingTab {
       else if (status.kind === "failed") embedStatus.setText(`${pending} · 更新失败：${status.message}`);
       else embedStatus.setText(`${pending}${status.lastSuccess ? ` · 上次成功 ${new Date(status.lastSuccess).toLocaleString()}` : " · 尚未完成索引更新"}`);
     });
-    container.createEl("p", { cls: "setting-item-description aha-settings-note", text: "远程向量服务会收到新建或修改笔记的原文。排除文件夹只过滤候选，索引范围由 QMD 决定。" });
+    container.createEl("p", { cls: "setting-item-description aha-settings-note", text: "远程向量服务会收到笔记原文。排除文件夹不限制索引范围。" });
   }
 
   private renderHealthSection(container: HTMLElement): void {

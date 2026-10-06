@@ -54,7 +54,7 @@ The helper uses Node's built-in WebSocket for CDP. `click` locates a unique visi
 
 The default scenario performs these actions.
 
-1. Open `Source.md` from the file explorer and choose `Aha (Dev): Run`.
+1. Open `Source.md` from the file explorer and choose `Aha: Run`.
 2. Require `Backlink.md` and `Counterexample.md` as the two weak Neighborhood candidates. Require source exclusion and unchanged source text.
 3. Toggle the Counterexample selection and read the persisted value.
 4. Click Surprise on Backlink, type a thought, and click `保存`.

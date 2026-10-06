@@ -12,7 +12,7 @@ Users open the old note behind a candidate and decide whether the panel stays wi
 ## How to get to it (user POV)
 
 - Click a candidate title or the source link in the panel.
-- Put the editor cursor on a wiki-link line and choose `Aha (Dev): Open Candidate`.
+- Put the editor cursor on a wiki-link line and choose `Aha: Open Candidate`.
 - Click the panel pin button labeled `固定当前笔记` or `跟随当前笔记`.
 
 ## Driving it with verify.mjs

@@ -29,7 +29,7 @@ try {
     await cdp.send('Input.insertText', { text: scenario.query });
     await driver.until(async () => await readFile(path.join(run.vault, 'Source.md'), 'utf8') === scenario.query, 'fixture edit persisted before timing');
     await driver.key(cdp, 'p', 'KeyP', 4);
-    await driver.fill(cdp, '.prompt-input', 'Aha (Dev): Insert related links');
+    await driver.fill(cdp, '.prompt-input', 'Aha: Insert related links');
     await driver.until(() => cdp.evaluate("document.querySelectorAll('.suggestion-item').length === 1"), 'unique quick-link command');
     const point = await cdp.evaluate("(()=>{const r=document.querySelector('.suggestion-item').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()");
     await cdp.evaluate(`(() => {

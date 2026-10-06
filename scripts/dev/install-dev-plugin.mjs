@@ -56,7 +56,6 @@ if (manifest.id !== PROD_PLUGIN_ID) {
   fail(`Unexpected manifest id "${manifest.id}" (expected "${PROD_PLUGIN_ID}"); refusing to rewrite it.`);
 }
 manifest.id = DEV_PLUGIN_ID;
-manifest.name = `${manifest.name} (Dev)`;
 
 await mkdir(targetDir, { recursive: true });
 for (const name of COPIED_FILES) {
@@ -68,7 +67,7 @@ console.log(`Installed dev plugin "${manifest.name}" (id ${DEV_PLUGIN_ID}) into:
 console.log(`  ${targetDir}`);
 console.log(`Copied: ${COPIED_FILES.join(", ")}; wrote rewritten manifest.json.`);
 console.log(`Production install left untouched: ${productionDir}`);
-console.log("Next: in Obsidian, reload the app (or toggle community plugins) and enable \"Aha (Dev)\".");
+console.log("Next: in Obsidian, reload the app (or toggle community plugins) and enable \"Aha\".");
 
 async function exists(filePath) {
   try {

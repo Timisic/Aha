@@ -14,7 +14,7 @@ try {
   await driver.key(main, ',', 'Comma', 4);
   settings = await driver.until(() => driver.connect(run, 'settings'), 'owned settings window');
   await settings.send('Page.bringToFront');
-  await driver.click(settings, '.vertical-tab-nav-item', 'Aha (Dev)');
+  await driver.click(settings, '.vertical-tab-nav-item', 'Aha');
   await driver.until(() => settings.evaluate("document.querySelector('.aha-health-section summary')?.textContent.includes('需处理')"), 'health failure remains discoverable');
   const initial = await settings.evaluate(`({disclosures:[...document.querySelectorAll('.aha-settings details')].map(e=>({name:e.querySelector('summary').textContent,open:e.open})),visibleControls:[...document.querySelectorAll('.aha-settings input,.aha-settings textarea,.aha-settings button')].filter(e=>e.checkVisibility() && e.getBoundingClientRect().width).map(e=>e.getAttribute('aria-label')),body:document.querySelector('.aha-settings').innerText})`);
   assert.equal(initial.disclosures.length, 4);

@@ -15,7 +15,7 @@ While writing, users request a short list of related notes, choose one or severa
 
 ## How to get to it (user POV)
 
-- In a Markdown editor, choose `Aha (Dev): Insert related links` from the command palette.
+- In a Markdown editor, choose `Aha: Insert related links` from the command palette.
 - Assign that command a shortcut in Obsidian Settings, Hotkeys. The fixture assigns Mod+Shift+L.
 - Select text first to choose the retrieval input. With no selection, leave the caret in the intended paragraph or on the blank line after it.
 

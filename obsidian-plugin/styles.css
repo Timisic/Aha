@@ -544,9 +544,31 @@
 
 .aha-settings {
   container-type: inline-size;
+  font-family: var(--font-interface);
+}
+
+.aha-settings h2,
+.aha-settings h3 {
+  padding: 0;
+  border: 0;
+  font-family: var(--font-interface);
+  line-height: 1.4;
+  text-align: left;
+  text-indent: 0;
+  letter-spacing: normal;
+}
+
+.aha-settings h2 {
+  margin: 0 0 20px;
+  font-size: var(--font-ui-large);
 }
 
 .aha-settings .setting-item {
+  display: flex;
+  align-items: center;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 20px;
   background: transparent;
   border: 0;
   border-bottom: 1px solid var(--background-modifier-border);
@@ -557,8 +579,35 @@
 }
 
 .aha-settings h3 {
-  margin: 24px 0 4px;
+  margin: 24px 0 8px;
   font-size: var(--font-ui-medium);
+}
+
+.aha-settings .setting-item-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.aha-settings .setting-item-control {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0;
+  justify-content: flex-end;
+}
+
+.aha-settings .setting-item-control input[type="text"],
+.aha-settings .setting-item-control input[type="password"] {
+  width: 180px;
+  max-width: 100%;
+}
+
+.aha-settings .setting-item-control input[type="number"] {
+  width: 64px;
+}
+
+.aha-settings .setting-item-description:empty {
+  display: none;
 }
 
 .aha-settings-disclosure {
@@ -602,7 +651,7 @@
 .aha-settings-note,
 .aha-embed-status {
   color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
+  font-size: var(--font-ui-small);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -646,22 +695,23 @@
 
 @container (max-width: 480px) {
   .aha-settings .setting-item {
-    align-items: flex-start;
-    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .aha-settings .setting-item-control input[type="text"],
+  .aha-settings .setting-item-control input[type="password"] {
+    width: 140px;
+  }
+}
+
+@container (max-width: 340px) {
+  .aha-settings .setting-item:has(input[type="text"], input[type="password"], input[type="range"]) {
+    align-items: stretch;
+    flex-direction: column;
     gap: 8px;
   }
 
-  .aha-settings .setting-item-info {
-    margin-right: 0;
-    width: 100%;
-  }
-
-  .aha-settings .setting-item-control {
+  .aha-settings .setting-item:has(input[type="text"], input[type="password"], input[type="range"]) .setting-item-control {
     justify-content: flex-start;
-    width: 100%;
-  }
-
-  .aha-settings .setting-item-control input:not([type="range"]) {
-    max-width: 100%;
   }
 }

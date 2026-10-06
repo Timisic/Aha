@@ -22,7 +22,7 @@ export async function drive(run, api) {
     await key(cdp,',','Comma',4);
     settings=await until(()=>connect(run,'settings'),'owned Settings window');
     await settings.send('Page.bringToFront');
-    await click(settings,'.vertical-tab-nav-item','Aha (Dev)');
+    await click(settings,'.vertical-tab-nav-item','Aha');
     await until(()=>settings.evaluate('!!document.querySelector(\'[aria-label="Automatic QMD index updates"]\')'),'index controls');
   };
   const capture = async label => {
