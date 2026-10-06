@@ -455,6 +455,9 @@
 
 .aha-quick-links.cm-tooltip {
   --no-tooltip: true;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
   width: min(360px, calc(100vw - 24px));
   padding: 6px;
   color: var(--text-normal);
@@ -468,6 +471,7 @@
 
 .aha-quick-links-close {
   display: block;
+  flex: 0 0 auto;
   margin: 0 0 2px auto;
   padding: 0;
   width: 22px;
@@ -478,9 +482,17 @@
   color: var(--text-muted);
 }
 
+.aha-quick-links-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: min(480px, calc(100vh - 160px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .aha-quick-link-option {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 6px 8px;
   border-radius: var(--radius-s);
@@ -501,6 +513,7 @@
   color: var(--text-normal);
   line-height: 12px;
   text-align: center;
+  margin-top: 3px;
 }
 
 .aha-quick-link-text {
@@ -508,8 +521,7 @@
   flex: 1;
 }
 
-.aha-quick-link-title,
-.aha-quick-link-excerpt {
+.aha-quick-link-title {
   display: block;
   overflow: hidden;
   white-space: nowrap;
@@ -517,10 +529,18 @@
 }
 
 .aha-quick-link-title { font-weight: var(--font-medium); }
-.aha-quick-link-excerpt { min-height: 1.5em; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.aha-quick-link-excerpt,
+.aha-quick-link-excerpt-status {
+  display: block;
+  min-height: 1.5em;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .aha-quick-link-path { margin-left: 6px; color: var(--text-muted); font-weight: normal; }
 .aha-quick-links-message { padding: 6px 8px 10px; }
-.aha-quick-links-footer { padding: 6px 8px 2px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.aha-quick-links-footer { flex: 0 0 auto; padding: 6px 8px 2px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
 
 .aha-settings {
   container-type: inline-size;

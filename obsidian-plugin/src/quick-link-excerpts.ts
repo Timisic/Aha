@@ -74,33 +74,132 @@ export function extractExcerptDocument(path: string, source: string): ExcerptDoc
     const prefix = containerPrefix + (content.match(/^[ \t]*/)?.[0].length ?? 0);
     const body = raw.slice(prefix).trimEnd();
     if (!body || /^\[[ xX]\]\s/.test(body) || /^[\w\p{Script=Han}-]+\s*::?\s+/u.test(body) || /^\[[^\]]+\]:/.test(body)) continue;
-    const withoutNavigation = body.replace(/!?\[\[[^\]]+\]\]|!?\[[^\]]*\]\([^)]*\)|https?:\/\/\S+/g, "").replace(/[\s|,，;；·•-]+/g, "");
-    if (!/[\p{L}\p{N}]/u.test(withoutNavigation)) continue;
+    if (!containsProse(body)) continue;
     const span = { from: offset + prefix, to: offset + prefix + body.length };
     const previous = blocks.at(-1);
     if (previous && /^[ \t]*\r?\n[ \t]*$/.test(source.slice(previous.to, span.from))) blocks[blocks.length - 1] = { from: previous.from, to: span.to };
     else blocks.push(span);
   }
   const sentences = blocks.flatMap((block) => sentenceSpans(source, block));
-  return { path, source, sentences };
+  return sentences.length ? { path, source, sentences } : null;
 }
 
-function sentenceSpans(source: string, block: SourceSpan): SourceSpan[] {
+function inlineCodeEnd(body: string, from: number): number | null {
+  const run = body.slice(from).match(/^`+/)?.[0] ?? "`";
+  let closing = body.indexOf(run, from + run.length);
+  while (closing >= 0 && (body[closing - 1] === "`" || body[closing + run.length] === "`")) closing = body.indexOf(run, closing + run.length);
+  return closing < 0 ? null : closing + run.length;
+}
+
+const sourceContainers = new Map([
+  ["[", "]"], ["(", ")"], ["（", "）"], ["【", "】"], ["［", "］"],
+  ["「", "」"], ["『", "』"], ["“", "”"], ["‘", "’"],
+]);
+
+function protectedSpans(body: string, purpose: "display" | "ranking"): SourceSpan[] {
   const spans: SourceSpan[] = [];
-  const body = source.slice(block.from, block.to);
+  for (let i = 0; i < body.length; i++) {
+    let end = i;
+    if (body[i] === "\\") end = Math.min(i + 2, body.length);
+    else if (body[i] === "`") {
+      const closing = inlineCodeEnd(body, i);
+      end = closing ?? body.length;
+    } else if (body[i] === "[" || (purpose === "display" && sourceContainers.has(body[i]))) {
+      const closing: string[] = [];
+      let link = body[i] === "[" && body[i + 1] === "[";
+      let cursor = i;
+      for (; cursor < body.length; cursor++) {
+        const character = body[cursor];
+        if (character === "\\") { cursor++; continue; }
+        if (character === "`") {
+          const codeEnd = inlineCodeEnd(body, cursor);
+          if (codeEnd === null) { cursor = body.length; break; }
+          cursor = codeEnd - 1;
+          continue;
+        }
+        if (character === "’" && /[\p{L}\p{N}]/u.test(body[cursor - 1] ?? "") && /[\p{L}\p{N}]/u.test(body[cursor + 1] ?? "")) continue;
+        const containerEnd = sourceContainers.get(character);
+        if (containerEnd) closing.push(containerEnd);
+        else if (character === closing.at(-1)) {
+          closing.pop();
+          if (!closing.length) {
+            if (character === "]" && (body[cursor + 1] === "(" || body[cursor + 1] === "[")) link = true;
+            else break;
+          }
+        }
+      }
+      if (purpose === "display" || link) end = Math.min(cursor + 1, body.length);
+    } else if (purpose === "display" && (body[i] === "*" || body[i] === "_" || ((body[i] === "~" || body[i] === "=") && body[i + 1] === body[i])) && !/\w/.test(body[i - 1] ?? "")) {
+      const marker = body.slice(i).match(/^(?:\*{1,3}|_{1,3}|~{2}|={2})/)?.[0] ?? body[i];
+      let closing = body.indexOf(marker, i + marker.length);
+      while (closing >= 0 && (body[closing - 1] === body[i] || body[closing + marker.length] === body[i] || body[closing - 1] === "\\")) closing = body.indexOf(marker, closing + marker.length);
+      end = closing < 0 ? body.length : closing + marker.length;
+    } else {
+      const url = body.slice(i).match(/^https?:\/\/\S+/)?.[0];
+      if (url) end = i + url.length;
+    }
+    if (end > i) {
+      spans.push({ from: i, to: end });
+      i = end - 1;
+    }
+  }
+  return spans;
+}
+
+function containsProse(body: string): boolean {
+  let visible = "";
   let start = 0;
   for (let i = 0; i < body.length; i++) {
-    const punctuation = /[。！？!?]/.test(body[i]) || (body[i] === "." && (i + 1 === body.length || /\s/.test(body[i + 1])));
-    const clause = body.length > 300 && /[,，;；]/.test(body[i]);
-    if (!punctuation && !clause && i - start < 239) continue;
+    if (body[i] === "\\") { i++; continue; }
+    if (body[i] !== "`") continue;
+    const end = inlineCodeEnd(body, i);
+    if (end === null) break;
+    visible += body.slice(start, i);
+    start = end;
+    i = end - 1;
+  }
+  visible += body.slice(start);
+  const withoutNavigation = visible.replace(/!?\[\[[^\]]+\]\]|!?\[[^\]]*\]\([^)]*\)|https?:\/\/\S+/g, "");
+  return /[\p{L}\p{N}]/u.test(withoutNavigation);
+}
+
+function sentenceSpans(source: string, block: SourceSpan, clauses = false): SourceSpan[] {
+  const spans: SourceSpan[] = [];
+  const body = source.slice(block.from, block.to);
+  const protectedRanges = protectedSpans(body, clauses ? "ranking" : "display");
+  let protectedIndex = 0;
+  let start = 0;
+  const append = (to: number) => {
+    let from = start;
+    while (from < to && /\s/.test(body[from])) from++;
+    while (to > from && /\s/.test(body[to - 1])) to--;
+    if (from < to && (clauses || containsProse(body.slice(from, to)))) spans.push({ from: block.from + from, to: block.from + to });
+  };
+  for (let i = 0; i < body.length; i++) {
+    const protectedRange = protectedRanges[protectedIndex];
+    if (protectedRange && i === protectedRange.from) {
+      i = protectedRange.to - 1;
+      protectedIndex++;
+      const quoted = body.slice(protectedRange.from, protectedRange.to);
+      if (!clauses && /^[“‘「『]/.test(quoted) && /[。！？!?\.][”’」』]+$/.test(quoted) && (protectedRange.to === body.length || /\s/.test(body[protectedRange.to]))) {
+        append(protectedRange.to);
+        start = protectedRange.to;
+        while (start < body.length && /\s/.test(body[start])) start++;
+        i = start - 1;
+      }
+      continue;
+    }
+    const punctuation = /[。！？!?]/.test(body[i]) || (body[i] === "." && (i + 1 === body.length || /[\s”’"'）)】\]]/.test(body[i + 1])));
+    const clause = clauses && /[,，;；]/.test(body[i]);
+    if (!punctuation && !clause) continue;
     let end = i + 1;
-    while (end < body.length && /[”’"'）)】\]]/.test(body[end])) end++;
-    if (body.slice(start, end).trim()) spans.push({ from: block.from + start, to: block.from + end });
+    while (end < body.length && /[。！？!?”’"'）)】\]]/.test(body[end])) end++;
+    append(end);
     start = end;
     while (start < body.length && /\s/.test(body[start])) start++;
     i = start - 1;
   }
-  if (body.slice(start).trim()) spans.push({ from: block.from + start, to: block.to });
+  append(body.length);
   return spans;
 }
 
@@ -123,30 +222,39 @@ function lexical(query: string, note: ExcerptDocument, coverage: ExcerptPick["co
   const queryTerms = terms(query);
   let winner: SourceSpan | null = null;
   let best = 0;
-  for (const span of note.sentences) {
-    const words = terms(excerptText(note, span));
+  for (const leaf of leavesFor(note)) {
+    const words = terms(excerptText(note, leaf.scoreSpan));
     let overlap = 0;
     for (const term of queryTerms) if (words.has(term)) overlap++;
     const score = overlap / Math.sqrt(Math.max(words.size, 1));
-    if (score > best) { best = score; winner = span; }
+    if (score > best) { best = score; winner = leaf.sentence; }
   }
   return winner ? { path: note.path, span: winner, method: "lexical", coverage } : { path: note.path, span: null, method: "none", coverage };
 }
 
-interface RankUnit { readonly note: ExcerptDocument; readonly span: SourceSpan; readonly sentences: readonly SourceSpan[] }
+interface SentenceLeaf { readonly scoreSpan: SourceSpan; readonly sentence: SourceSpan }
+interface RankUnit { readonly note: ExcerptDocument; readonly scoreSpan: SourceSpan; readonly leaves: readonly SentenceLeaf[] }
+function leavesFor(note: ExcerptDocument): SentenceLeaf[] {
+  return note.sentences.flatMap((sentence) => {
+    const spans = sentence.to - sentence.from > 300 ? sentenceSpans(note.source, sentence, true) : [sentence];
+    return spans.map((scoreSpan) => ({ scoreSpan, sentence }));
+  });
+}
 function unitsFor(note: ExcerptDocument): RankUnit[] {
-  if (note.sentences.length <= 24) return note.sentences.map((span) => ({ note, span, sentences: [span] }));
+  const leaves = leavesFor(note);
+  if (leaves.length <= 24) return leaves.map((leaf) => ({ note, scoreSpan: leaf.scoreSpan, leaves: [leaf] }));
   const units: RankUnit[] = [];
-  for (const span of note.sentences) {
+  for (const leaf of leaves) {
+    const span = leaf.scoreSpan;
     const previous = units.at(-1);
-    if (previous && span.to - previous.span.from <= 1600 && /^\s*$/.test(note.source.slice(previous.span.to, span.from))) {
-      units[units.length - 1] = { note, span: { from: previous.span.from, to: span.to }, sentences: [...previous.sentences, span] };
-    } else units.push({ note, span, sentences: [span] });
+    if (previous && span.to - previous.scoreSpan.from <= 1600 && /^\s*$/.test(note.source.slice(previous.scoreSpan.to, span.from))) {
+      units[units.length - 1] = { note, scoreSpan: { from: previous.scoreSpan.from, to: span.to }, leaves: [...previous.leaves, leaf] };
+    } else units.push({ note, scoreSpan: span, leaves: [leaf] });
   }
   return units;
 }
 function fits(query: string, units: readonly RankUnit[]): boolean {
-  return units.length <= EXCERPT_MAX_TEXTS && new TextEncoder().encode(JSON.stringify({ query, documents: units.map((unit) => excerptText(unit.note, unit.span)) })).length <= EXCERPT_MAX_BYTES - 1024;
+  return units.length <= EXCERPT_MAX_TEXTS && new TextEncoder().encode(JSON.stringify({ query, documents: units.map((unit) => excerptText(unit.note, unit.scoreSpan)) })).length <= EXCERPT_MAX_BYTES - 1024;
 }
 function scoredUnits(units: readonly RankUnit[], scores: readonly RerankScore[]): RankUnit[] {
   const seen = new Set<number>();
@@ -167,24 +275,24 @@ export async function selectExcerpts(query: string, notes: readonly ExcerptDocum
   signal.addEventListener("abort", abort, { once: true });
   const timer = setTimeout(() => controller.abort(new Error("Excerpt deadline exceeded.")), DEADLINE_MS);
   try {
-    const ranked = scoredUnits(units, await score(query, units.map((unit) => excerptText(unit.note, unit.span)), controller.signal));
+    const ranked = scoredUnits(units, await score(query, units.map((unit) => excerptText(unit.note, unit.scoreSpan)), controller.signal));
     controller.signal.throwIfAborted();
     const finalists: RankUnit[] = [];
     for (const note of notes) {
       for (const unit of ranked.filter((unit) => unit.note === note).slice(0, 2)) {
-        finalists.push(...unit.sentences.map((span) => ({ note, span, sentences: [span] })));
+        finalists.push(...unit.leaves.map((leaf) => ({ note, scoreSpan: leaf.scoreSpan, leaves: [leaf] })));
       }
     }
-    const needsRefinement = ranked.some((unit) => unit.sentences.length > 1);
+    const needsRefinement = ranked.some((unit) => unit.leaves.length > 1);
     let winners = ranked;
     if (needsRefinement) {
       if (!fits(query, finalists)) return notes.map((note) => lexical(query, note, "bounded"));
-      winners = scoredUnits(finalists, await score(query, finalists.map((unit) => excerptText(unit.note, unit.span)), controller.signal));
+      winners = scoredUnits(finalists, await score(query, finalists.map((unit) => excerptText(unit.note, unit.scoreSpan)), controller.signal));
       controller.signal.throwIfAborted();
     }
     return notes.map((note): ExcerptPick => {
-      const winner = winners.find((unit) => unit.note === note);
-      return winner ? { path: note.path, span: winner.span, method: "semantic", coverage: needsRefinement ? "bounded" : "complete" } : lexical(query, note, coverage);
+      const winner = winners.find((unit) => unit.note === note)?.leaves[0];
+      return winner ? { path: note.path, span: winner.sentence, method: "semantic", coverage: needsRefinement ? "bounded" : "complete" } : lexical(query, note, coverage);
     });
   } catch {
     signal.throwIfAborted();

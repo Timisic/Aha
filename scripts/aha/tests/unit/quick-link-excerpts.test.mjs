@@ -133,11 +133,161 @@ test("multiline paragraphs keep original sentence and explicit schedule sections
 });
 
 test("long-line tail receives a source span instead of showing unrelated sentence prefix", async () => {
-  const note = extract("长句.md", "与主题无关的引言".repeat(60) + "，证据推翻错误假设；随后继续思考。");
+  const owner = "与主题无关的引言".repeat(60) + "，证据推翻错误假设；随后继续思考。";
+  const note = extract("长句.md", "错误。" + owner);
   const [pick] = await select("错误假设", [note], null, signal());
   assert.equal(pick.method, "lexical");
-  assert.equal(text(note, pick.span), "证据推翻错误假设；");
-  assert.equal(note.source.slice(pick.span.from, pick.span.to), "证据推翻错误假设；");
+  assert.equal(text(note, pick.span), owner);
+  assert.equal(note.source.slice(pick.span.from, pick.span.to), owner);
+});
+
+test("natural display sentences keep connectors, commas, and unpunctuated long prose", () => {
+  const owner = "观察使我们重新检查推论，".repeat(30) + "也就是说，原有认识需要调整。";
+  const unpunctuated = "继续观察真实结果".repeat(60);
+  const note = extract("观察.md", `${owner}\n\n${unpunctuated}`);
+  assert.deepEqual(note.sentences.map((span) => text(note, span)), [owner, unpunctuated]);
+});
+
+test("standalone inline-code labels are removed before joining and empty bodies return null", () => {
+  const note = extract("观察.md", "`category`\n继续观察\n``label.with.punctuation!``\n- 短句。\n> 对。\n**成立**\n解释 `token!` 的作用。");
+  assert.deepEqual(note.sentences.map((span) => text(note, span)), ["继续观察", "短句。", "对。", "**成立** 解释 `token!` 的作用。"]);
+  for (const source of ["", "# 标题\n`label`", "``label!``\n`another_label`", "**`label`**", "(`label`)", "---\nkind: test\n---\n- [[导航]]", "```text\n代码\n```", "## 规划\n隐藏正文。"])
+    assert.equal(extract("空文.md", source), null, source);
+});
+
+test("English sentence periods keep closing quotes and decimal periods intact", () => {
+  const note = extract("观察.md", '“The value is 3.14.” Next observation ends.');
+  assert.deepEqual(note.sentences.map((span) => text(note, span)), ['“The value is 3.14.”', "Next observation ends."]);
+});
+
+test("nested and uncertain inline formatting retain complete source constructs", () => {
+  for (const owner of ["观察 *其中 **强调！** 仍在同一段*，最后结束。", "观察 **其中 *强调！* 仍在同一段**，最后结束。", "观察 ***共同强调！仍在同一段***，最后结束。", "观察 ~~删除！仍在同一段~~，最后结束。", "观察 ==强调！仍在同一段==，最后结束。", "观察 **尚未关闭。后文继续说明。"])
+    assert.deepEqual(extract("观察.md", owner).sentences, [{ from: 0, to: owner.length }], owner);
+});
+
+test("inline code within long prose stays eligible in private scoring leaves", async () => {
+  const owner = "unrelated content ".repeat(30) + ", `marker!`; subsequent observation.";
+  const note = extract("观察.md", "天气晴朗。" + owner);
+  const [lexical] = await select("marker", [note], null, signal());
+  assert.equal(text(note, lexical.span), owner);
+  const [semantic] = await select("marker", [note], async (_query, documents) => {
+    assert.ok(documents.includes("`marker!`;"));
+    return documents.map((document, index) => ({ index, score: document.includes("marker") ? 1 : 0 }));
+  }, signal());
+  assert.equal(text(note, semantic.span), owner);
+});
+
+test("markup, links, emoji, escapes, and multiline offsets remain exact", () => {
+  const owner = "前文".repeat(119) + "😀使用 `a! b。 c`、[说明](https://example.test/" + "long.path/".repeat(40) + "a(b)?q=x)、[[页面!#标题|显示。]]、**强调。仍然成立**，值为 3.14，继续\\!\r\n第二行才结束！？。";
+  const note = extract("原文.md", `${owner}\r\n“随后确认。”`);
+  assert.equal(note.sentences.length, 2);
+  assert.equal(note.source.slice(note.sentences[0].from, note.sentences[0].to), owner);
+  assert.equal(text(note, note.sentences[0]), owner.replace(/\s+/g, " "));
+  assert.equal(text(note, note.sentences[1]), "“随后确认。”");
+});
+
+test("short-tail leaves below grouping size beat a distractor lexically and semantically", async () => {
+  const owner = Array.from({ length: 95 }, (_, index) => `unrelated${index}`).join(" ") + "，证据推翻错误假设；随后继续思考。";
+  assert.ok(owner.length > 300 && owner.length < 1600);
+  const note = extract("长句.md", "错误。" + owner);
+  const [lexical] = await select("错误假设", [note], null, signal());
+  assert.equal(text(note, lexical.span), owner);
+  let calls = 0;
+  const [semantic] = await select("错误假设", [note], async (_query, documents) => {
+    calls++;
+    assert.ok(documents.includes("证据推翻错误假设；"));
+    return documents.map((document, index) => ({ index, score: document === "证据推翻错误假设；" ? 10 : document === "错误。" ? 5 : 0 }));
+  }, signal());
+  assert.equal(semantic.method, "semantic");
+  assert.equal(text(note, semantic.span), owner);
+  assert.ok(calls <= 2);
+});
+
+const proseContainers = [["", ""], ["**", "**"], ["*", "*"], ["(", ")"], ["（", "）"], ["【", "】"], ["“", "”"]];
+function formattedTail(prefix, suffix, repeat) {
+  return prefix + "unrelated ".repeat(repeat) + "，证据推翻错误假设；随后继续思考" + suffix + "。";
+}
+
+test("private lexical leaves find the relevant tail inside formatted prose containers", async () => {
+  for (const [prefix, suffix] of proseContainers) {
+    const owner = formattedTail(prefix, suffix, 95);
+    const note = extract("长句.md", "错误。" + owner);
+    const [pick] = await select("错误假设", [note], null, signal());
+    assert.equal(pick.method, "lexical");
+    assert.equal(note.source.slice(pick.span.from, pick.span.to), owner, prefix);
+  }
+});
+
+test("semantic requests retain private tail leaves inside formatted prose containers", async () => {
+  for (const [prefix, suffix] of proseContainers) {
+    const owner = formattedTail(prefix, suffix, 95);
+    const note = extract("长句.md", "错误。" + owner);
+    let calls = 0;
+    const [pick] = await select("错误假设", [note], async (_query, documents) => {
+      calls++;
+      assert.ok(documents.includes("证据推翻错误假设；"), prefix);
+      return documents.map((document, index) => ({ index, score: document === "证据推翻错误假设；" ? 10 : document === "错误。" ? 5 : 0 }));
+    }, signal());
+    assert.equal(pick.method, "semantic", prefix);
+    assert.equal(note.source.slice(pick.span.from, pick.span.to), owner, prefix);
+    assert.ok(calls <= 2);
+  }
+});
+
+test("overflow fallback scans formatted tail leaves beyond a matching distractor", async () => {
+  for (const [prefix, suffix] of proseContainers) {
+    const owner = formattedTail(prefix, suffix, 22000);
+    const note = extract("巨大.md", "错误。" + owner);
+    let calls = 0;
+    const [pick] = await select("错误假设", [note], async () => { calls++; return []; }, signal());
+    assert.equal(calls, 0, prefix);
+    assert.equal(pick.coverage, "bounded");
+    assert.equal(pick.method, "lexical");
+    assert.equal(note.source.slice(pick.span.from, pick.span.to), owner, prefix);
+  }
+});
+
+test("balanced Chinese containers and quotations keep whole original display owners", () => {
+  for (const [prefix, suffix] of [["（", "）"], ["【", "】"], ["［", "］"], ["「", "」"], ["『", "』"], ["“", "”"], ["‘", "’"]]) {
+    const owner = `观察${prefix}数值为 3.14。测量继续${suffix}最后结束。`;
+    const note = extract("观察.md", owner);
+    assert.deepEqual(note.sentences, [{ from: 0, to: owner.length }], prefix);
+    assert.equal(note.source.slice(note.sentences[0].from, note.sentences[0].to), owner);
+  }
+  const quoted = "他说：“证据暂未成立。继续观察。”随后结束。";
+  assert.deepEqual(extract("观察.md", quoted).sentences, [{ from: 0, to: quoted.length }]);
+});
+
+test("ASCII contractions do not open containers and curly contractions do not close quotes", () => {
+  const plain = extract("观察.md", "We can't assume a result. We'll test it.");
+  assert.deepEqual(plain.sentences.map((span) => text(plain, span)), ["We can't assume a result.", "We'll test it."]);
+  const quoted = extract("观察.md", "‘We don’t assume. We continue.’ Afterwards.");
+  assert.deepEqual(quoted.sentences.map((span) => text(quoted, span)), ["‘We don’t assume. We continue.’", "Afterwards."]);
+});
+
+test("grouped semantic refinement scores leaves and returns the full tail owner", async () => {
+  const owner = Array.from({ length: 80 }, (_, index) => `unrelated${index}`).join(" ") + "，证据推翻错误假设；随后继续思考。";
+  const note = extract("长句.md", "无关内容。".repeat(30) + "错误。" + owner);
+  const calls = [];
+  const [pick] = await select("错误假设", [note], async (_query, documents) => {
+    calls.push(documents);
+    return documents.map((document, index) => ({ index, score: document === "证据推翻错误假设；" ? 10 : document === "错误。" ? 5 : document.includes("证据推翻错误假设") ? 8 : 0 }));
+  }, signal());
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].includes("证据推翻错误假设；"));
+  assert.equal(pick.method, "semantic");
+  assert.equal(text(note, pick.span), owner);
+});
+
+test("oversized unsplittable owner remains whole and full-file lexical fallback reaches its tail", async () => {
+  const owner = "unrelated ".repeat(22000) + "证据推翻错误假设。";
+  const note = extract("巨大.md", "天气晴朗。" + owner);
+  let calls = 0;
+  const [pick] = await select("错误假设", [note], async () => { calls++; return []; }, signal());
+  assert.equal(calls, 0);
+  assert.equal(pick.coverage, "bounded");
+  assert.equal(pick.method, "lexical");
+  assert.equal(note.source.slice(pick.span.from, pick.span.to), owner);
 });
 
 test("native hidden comments never enter source spans or semantic requests", async (t) => {

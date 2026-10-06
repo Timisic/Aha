@@ -1,6 +1,6 @@
 import { Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { isolateHistory } from "@codemirror/commands";
-import { EditorView, ViewPlugin, showTooltip } from "@codemirror/view";
+import { EditorView, ViewPlugin, showTooltip, type Rect } from "@codemirror/view";
 import { FileSystemAdapter, TFile, editorInfoField, type App, type Editor } from "obsidian";
 import { excludedFoldersFromSettings, mergeAndRankQueryResults } from "./core";
 import { captureQuickLinkContext, quickLinkInsertion, quickWikiLink, type QuickLinkContext } from "./quick-link-context";
@@ -58,7 +58,7 @@ export class QuickLinks {
           dom.className = "aha-quick-links";
           const render = () => this.render(view, dom);
           render();
-          return { dom, update: render };
+          return { dom, update: render, positioned: (space) => this.fitPopup(dom, space) };
         },
       }),
     });
@@ -200,6 +200,16 @@ export class QuickLinks {
       const direction = event.key === "ArrowDown" ? 1 : -1;
       const highlighted = (state.highlighted + direction + state.candidates.length) % state.candidates.length;
       this.show(view, { ...state, highlighted });
+      const list = view.dom.ownerDocument.querySelector<HTMLElement>(".aha-quick-links-list");
+      const row = list?.children.item(highlighted);
+      if (list && row && row instanceof view.dom.ownerDocument.defaultView!.HTMLElement) {
+        const top = row.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+        if (row.clientHeight > list.clientHeight || top < list.scrollTop) list.scrollTop = top;
+        else if (top + row.clientHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + row.clientHeight - list.clientHeight;
+      }
+    } else if (state.kind === "ready" && (event.key === "PageDown" || event.key === "PageUp")) {
+      const list = view.dom.ownerDocument.querySelector<HTMLElement>(".aha-quick-links-list");
+      if (list) list.scrollTop += (event.key === "PageDown" ? 1 : -1) * list.clientHeight;
     } else if (state.kind === "ready" && event.key === " ") this.toggle(view, state.highlighted);
     else if (state.kind === "ready" && event.key === "Enter") this.insert(view, state);
     else return false;
@@ -243,6 +253,7 @@ export class QuickLinks {
   }
 
   private render(view: EditorView, dom: HTMLElement): void {
+    const scrollTop = dom.querySelector<HTMLElement>(".aha-quick-links-list")?.scrollTop ?? 0;
     dom.replaceChildren();
     const state = view.state.field(this.field);
     if (state.kind === "closed") return;
@@ -290,8 +301,8 @@ export class QuickLinks {
           title.append(path);
         }
         const excerpt = document.createElement("span");
-        excerpt.className = "aha-quick-link-excerpt";
-        excerpt.textContent = candidate.excerpt?.text ?? "";
+        excerpt.className = candidate.excerpt?.method === "none" ? "aha-quick-link-excerpt-status" : "aha-quick-link-excerpt";
+        excerpt.textContent = candidate.excerpt?.method === "none" ? "暂无匹配原文" : candidate.excerpt?.text ?? "";
         text.append(excerpt);
         row.append(check, text);
         row.addEventListener("mousedown", (event) => event.preventDefault());
@@ -299,6 +310,7 @@ export class QuickLinks {
         list.append(row);
       }
       dom.append(list);
+      list.scrollTop = scrollTop;
     } else {
       const message = document.createElement("div");
       message.className = "aha-quick-links-message";
@@ -311,5 +323,50 @@ export class QuickLinks {
       ? `${state.candidates.some((candidate) => candidate.excerpt === null) ? "原文提取中 · " : ""}↑↓ 移动 · 空格 多选 · Enter 插入 · Esc 取消`
       : "Esc 取消";
     dom.append(footer);
+    const list = dom.querySelector<HTMLElement>(".aha-quick-links-list");
+    if (list && list.scrollHeight > list.clientHeight) footer.textContent += " · PgUp/PgDn 阅读";
+  }
+
+  private fitPopup(dom: HTMLElement, space: Rect): void {
+    const window = dom.ownerDocument.defaultView;
+    if (!window) return;
+    const viewport = window.visualViewport;
+    let left = Math.max(space.left, viewport?.offsetLeft ?? 0);
+    let top = Math.max(space.top, viewport?.offsetTop ?? 0);
+    let right = Math.min(space.right, (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth));
+    let bottom = Math.min(space.bottom, (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight));
+    for (let ancestor = dom.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      const style = window.getComputedStyle(ancestor);
+      const clipX = /^(?:hidden|clip|auto|scroll)$/.test(style.overflowX);
+      const clipY = /^(?:hidden|clip|auto|scroll)$/.test(style.overflowY);
+      if (!clipX && !clipY) continue;
+      const box = ancestor.getBoundingClientRect();
+      const scaleX = ancestor.offsetWidth ? box.width / ancestor.offsetWidth : 1;
+      const scaleY = ancestor.offsetHeight ? box.height / ancestor.offsetHeight : 1;
+      if (clipX) {
+        const edge = box.left + ancestor.clientLeft * scaleX;
+        left = Math.max(left, edge);
+        right = Math.min(right, edge + ancestor.clientWidth * scaleX);
+      }
+      if (clipY) {
+        const edge = box.top + ancestor.clientTop * scaleY;
+        top = Math.max(top, edge);
+        bottom = Math.min(bottom, edge + ancestor.clientHeight * scaleY);
+      }
+    }
+    if (right <= left || bottom <= top) return;
+    const before = dom.getBoundingClientRect();
+    const popupStyle = window.getComputedStyle(dom);
+    const width = parseFloat(popupStyle.width) || dom.offsetWidth;
+    const height = parseFloat(popupStyle.height) || dom.offsetHeight;
+    const scaleX = width ? before.width / width : 1;
+    const scaleY = height ? before.height / height : 1;
+    dom.style.maxWidth = `${(right - left) / scaleX}px`;
+    dom.style.maxHeight = `${(bottom - top) / scaleY}px`;
+    const fitted = dom.getBoundingClientRect();
+    const fittedLeft = Math.max(left, Math.min(fitted.left, right - fitted.width));
+    const fittedTop = Math.max(top, Math.min(fitted.top, bottom - fitted.height));
+    dom.style.left = `${parseFloat(dom.style.left) + (fittedLeft - fitted.left) / scaleX}px`;
+    dom.style.top = `${parseFloat(dom.style.top) + (fittedTop - fitted.top) / scaleY}px`;
   }
 }
