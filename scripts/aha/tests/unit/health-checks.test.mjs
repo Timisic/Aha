@@ -154,6 +154,22 @@ test("decideLlmConnectivityLight wraps testProviderConnection's ok/failure shape
   assert.match(red.fixCommand, /key/i);
 });
 
+test("decideQmdEndpointsLight is red when a real semantic query fails, even though status looks healthy", async () => {
+  const { decideQmdEndpointsLight } = await loadModule();
+  const healthy = { ok: true, stdout: HEALTHY_STATUS_TEXT, message: "" };
+  const red = decideQmdEndpointsLight({}, healthy, "obsidian", { ok: false, message: "embedding dimension mismatch" });
+  assert.equal(red.ok, false);
+  assert.match(red.message, /dimension mismatch/);
+  assert.equal(decideQmdEndpointsLight({}, healthy, "obsidian", { ok: true, message: "3 results" }).ok, true);
+});
+
+test("decideLlmConnectivityLight does not count a missing optional API key as a problem", async () => {
+  const { decideLlmConnectivityLight } = await loadModule();
+  const light = decideLlmConnectivityLight({ ok: false, provider: "deepseek", model: "m", message: "no key", unconfigured: true });
+  assert.equal(light.ok, true);
+  assert.equal(light.fixCommand, undefined);
+});
+
 // --- Embed sequencing -------------------------------------------------------
 
 test("runEmbedSequence runs update to completion before starting embed", async () => {

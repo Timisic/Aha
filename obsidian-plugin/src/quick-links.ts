@@ -186,9 +186,9 @@ export class QuickLinks {
       if (state.kind === "ready" && state.capture === capture) this.show(view, { ...state, candidates: excerpts });
     } catch (error) {
       if (!this.isCurrent(view, capture)) return;
-      const timedOut = error instanceof Error && error.message.includes("timed out after");
+      const reason = error instanceof Error ? error.message : String(error);
       this.show(view, { kind: "message", capture,
-        message: timedOut ? "检索超时，请稍后重试。" : "QMD 暂时不可用，请检查 Aha 设置。" });
+        message: reason.includes("timed out after") ? "检索超时，请稍后重试。" : `QMD 暂时不可用，请检查 Aha 设置。（${reason.slice(0, 160)}）` });
     }
   }
 

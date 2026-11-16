@@ -11,10 +11,8 @@ import {
 import { IndexCoordinator, normalizeIndexState, normalizeIndexThreshold, type IndexState } from "./index-coordinator";
 import { firstWikiLinkTarget, linkTargetBase } from "./wikilink";
 import { AHA_REVIEW_PANEL_VIEW_TYPE, AhaReviewPanelView, type AhaReviewPanelContext } from "./review-panel";
-import { AhaSettingTab, DEFAULT_SETTINGS, type AhaPluginSettings } from "./settings";
-import { testProviderConnection } from "./llm-request";
-import { canRunExternalProcesses, probeQmdAvailable, runQmdStatus, parseQmdEnvironment } from "./qmd-request";
-import { decideQmdBinaryLight, decideIndexCoverageLight, decideQmdEndpointsLight, decideLlmConnectivityLight } from "./health-checks";
+import { AhaSettingTab, DEFAULT_SETTINGS, gatherHealthLights, type AhaPluginSettings } from "./settings";
+import { canRunExternalProcesses } from "./qmd-request";
 import { validateAhaWrapperResult, type AhaWrapperResult } from "./schema";
 import { sourceIdentityForFile } from "./source-identity";
 import { AHA_COMMANDS } from "./commands";
@@ -198,19 +196,7 @@ export default class AhaPlugin extends Plugin {
     if (!this.assertDesktop()) return;
 
     try {
-      const settings = this.settings;
-      const vaultFileCount = this.app.vault.getMarkdownFiles().length;
-      const [qmdAvailable, statusProbe, llmProbe] = await Promise.all([
-        probeQmdAvailable(settings),
-        runQmdStatus(settings),
-        testProviderConnection(settings, "deepseek"),
-      ]);
-      const lights = [
-        decideQmdBinaryLight(qmdAvailable),
-        decideIndexCoverageLight(statusProbe, vaultFileCount, settings.qmdIndex),
-        decideQmdEndpointsLight(parseQmdEnvironment(settings.qmdEnvironment), statusProbe, settings.qmdIndex),
-        decideLlmConnectivityLight(llmProbe),
-      ];
+      const lights = await gatherHealthLights(this.settings, this.app.vault.getMarkdownFiles().length);
       const failed = lights.filter((l) => !l.ok);
       const message = failed.length === 0
         ? "Aha readiness passed."

@@ -144,7 +144,13 @@ export function decideIndexCoverageLight(probe: QmdStatusProbeResult | null, vau
  * local/default inference", not silently glossed over -- the message says
  * so explicitly.
  */
-export function decideQmdEndpointsLight(qmdEnvironmentEntries: Record<string, string>, probe: QmdStatusProbeResult | null, qmdIndex: string): HealthLight {
+export function decideQmdEndpointsLight(
+  qmdEnvironmentEntries: Record<string, string>,
+  probe: QmdStatusProbeResult | null,
+  qmdIndex: string,
+  /** Outcome of one real semantic query; when given, its failure overrides the config-only checks. */
+  vectorProbe?: { ok: boolean; message: string },
+): HealthLight {
   const urlEntries = Object.entries(qmdEnvironmentEntries).filter(([key]) => /_URL$/i.test(key));
   for (const [key, value] of urlEntries) {
     if (!value) continue;
@@ -184,6 +190,16 @@ export function decideQmdEndpointsLight(qmdEnvironmentEntries: Record<string, st
     };
   }
 
+  if (vectorProbe && !vectorProbe.ok) {
+    return {
+      id: "qmd-endpoints",
+      label: "QMD inference endpoints",
+      ok: false,
+      message: `A test semantic query failed: ${vectorProbe.message}`,
+      fixCommand: `qmd query "vec: test" -c ${qmdIndex} --index ${qmdIndex} --no-rerank`,
+    };
+  }
+
   return {
     id: "qmd-endpoints",
     label: "QMD inference endpoints",
@@ -199,9 +215,14 @@ export interface LlmConnectivityProbeResult {
   provider: string;
   model: string;
   message: string;
+  /** True when no API key is set. Relation judgment is optional, so this is not a problem to fix. */
+  unconfigured?: boolean;
 }
 
 export function decideLlmConnectivityLight(probe: LlmConnectivityProbeResult): HealthLight {
+  if (probe.unconfigured) {
+    return { id: "llm-connectivity", label: "LLM connectivity", ok: true, message: "未配置 API key（可选）。回顾只做召回，不做关系判断。" };
+  }
   return probe.ok
     ? { id: "llm-connectivity", label: "LLM connectivity", ok: true, message: probe.message }
     : {

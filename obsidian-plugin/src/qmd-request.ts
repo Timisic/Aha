@@ -156,6 +156,14 @@ export function parseQmdEnvironment(raw: string): Record<string, string> {
 // macOS GUI apps (Obsidian included) inherit a minimal PATH that typically
 // excludes Homebrew, npm-global, and nvm/fnm-managed Node. Augment PATH
 // so that both the qmd binary and its #!/usr/bin/env node shebang resolve.
+/** Highest `vX.Y.Z` directory name by numeric order (a plain sort ranks v9 above v22). */
+export function latestNodeVersion(names: string[]): string | undefined {
+  return names
+    .filter((name) => name.startsWith("v"))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .at(-1);
+}
+
 function augmentedPath(): string {
   const base = process.env.PATH ?? "/usr/bin:/bin";
   const home = process.env.HOME ?? "";
@@ -163,7 +171,7 @@ function augmentedPath(): string {
     "/opt/homebrew/bin",
     "/usr/local/bin",
     home ? `${home}/.npm-global/bin` : "",
-    home ? `${home}/.nvm/versions/node` : "",
+    home ? `${home}/.bun/bin` : "",
   ].filter(Boolean);
   // nvm: pick the highest installed version's bin directory
   if (home) {
@@ -171,8 +179,7 @@ function augmentedPath(): string {
       const fs = getNodeRequire()("fs") as typeof import("fs");
       const nvmBase = `${home}/.nvm/versions/node`;
       if (fs.existsSync(nvmBase)) {
-        const versions = fs.readdirSync(nvmBase).filter((d: string) => d.startsWith("v")).sort();
-        const latest = versions.at(-1);
+        const latest = latestNodeVersion(fs.readdirSync(nvmBase));
         if (latest) extras.push(`${nvmBase}/${latest}/bin`);
       }
     } catch { /* nvm not installed — fine */ }
@@ -331,6 +338,20 @@ async function runQmdSubcommand(settings: AhaPluginSettings, args: string[], tim
 /** Runs `qmd status --index <qmdIndex>` for the index-coverage/endpoints health lights. Never throws. */
 export function runQmdStatus(settings: AhaPluginSettings): Promise<QmdSubcommandResult> {
   return runQmdSubcommand(settings, ["status", "--index", settings.qmdIndex], STATUS_PROBE_TIMEOUT_MS);
+}
+
+/**
+ * Runs one real semantic query, the same call quick links makes. `qmd status`
+ * succeeds even when the embedding backend is broken, so only this proves
+ * recall works end to end. Never throws.
+ */
+export async function probeQmdVectorSearch(settings: AhaPluginSettings): Promise<QmdSubcommandResult> {
+  try {
+    const rows = await runQmdQuickRecall(settings, "aha readiness check", new AbortController().signal);
+    return { ok: true, stdout: "", message: `${rows.length} results` };
+  } catch (error) {
+    return { ok: false, stdout: "", message: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /** Runs `qmd update --index <qmdIndex>` -- the first of the embed button's two sequenced steps. Never throws. */

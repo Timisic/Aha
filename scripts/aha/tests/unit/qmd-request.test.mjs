@@ -133,6 +133,29 @@ test("runQmdStatus never throws when the binary does not exist", async () => {
 });
 
 
+test("latestNodeVersion orders nvm directories numerically", async () => {
+  const { latestNodeVersion } = await loadModule();
+  assert.equal(latestNodeVersion(["v9.11.2", "v22.3.0", "v18.20.1", "system"]), "v22.3.0");
+  assert.equal(latestNodeVersion([]), undefined);
+});
+
+test("probeQmdVectorSearch reports a failing semantic query without throwing", async () => {
+  const { probeQmdVectorSearch } = await loadModule();
+  const temp = await mkdtemp(path.join(tmpdir(), "aha-qmd-vector-probe-"));
+  const fakeQmd = path.join(temp, "qmd.sh");
+  await writeFile(fakeQmd, "#!/bin/sh\nif [ -n \"$AHA_TEST_FAIL\" ]; then echo 'embed endpoint refused' 1>&2; exit 1; fi\necho '[{\"file\":\"a.md\"}]'\n");
+  await chmod(fakeQmd, 0o755);
+  try {
+    const ok = await probeQmdVectorSearch(baseSettings({ qmdCommand: fakeQmd }));
+    assert.equal(ok.ok, true);
+    const failed = await probeQmdVectorSearch(baseSettings({ qmdCommand: fakeQmd, qmdEnvironment: "AHA_TEST_FAIL=1" }));
+    assert.equal(failed.ok, false);
+    assert.match(failed.message, /embed endpoint refused/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
 async function quickRecallFixture(t, body) {
   const directory = await mkdtemp(path.join(tmpdir(), "aha-quick-recall-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

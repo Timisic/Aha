@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type AhaPlugin from "./main";
-import { testProviderConnection, type LlmApiProvider } from "./llm-request";
+import { resolveLlmRequestProfile, testProviderConnection, type LlmApiProvider } from "./llm-request";
 import {
   decideIndexCoverageLight,
   decideLlmConnectivityLight,
@@ -8,7 +8,7 @@ import {
   decideQmdEndpointsLight,
   type HealthLight,
 } from "./health-checks";
-import { parseQmdEnvironment, probeQmdAvailable, runQmdStatus } from "./qmd-request";
+import { parseQmdEnvironment, probeQmdAvailable, probeQmdVectorSearch, runQmdStatus } from "./qmd-request";
 
 import { normalizeIndexThreshold } from "./index-coordinator";
 
@@ -85,6 +85,25 @@ export const DEFAULT_SETTINGS: AhaPluginSettings = {
   queryPromptOverride: "",
   traceDirectory: "",
 };
+
+/** Runs every readiness probe once. Shared by the settings page and the Check Readiness command. */
+export async function gatherHealthLights(settings: AhaPluginSettings, vaultMarkdownFileCount: number): Promise<HealthLight[]> {
+  const llmProfile = resolveLlmRequestProfile(settings, "deepseek");
+  const [qmdAvailable, statusProbe, vectorProbe, llmProbe] = await Promise.all([
+    probeQmdAvailable(settings),
+    runQmdStatus(settings),
+    probeQmdVectorSearch(settings),
+    llmProfile.ok
+      ? testProviderConnection(settings, "deepseek")
+      : { ok: false, provider: "deepseek", model: llmProfile.model, message: llmProfile.error, unconfigured: true },
+  ]);
+  return [
+    decideQmdBinaryLight(qmdAvailable),
+    decideIndexCoverageLight(statusProbe, vaultMarkdownFileCount, settings.qmdIndex),
+    decideQmdEndpointsLight(parseQmdEnvironment(settings.qmdEnvironment), statusProbe, settings.qmdIndex, vectorProbe),
+    decideLlmConnectivityLight(llmProbe),
+  ];
+}
 
 type StringSettingKey = {
   [K in keyof AhaPluginSettings]: AhaPluginSettings[K] extends string ? K : never;
@@ -295,7 +314,7 @@ export class AhaSettingTab extends PluginSettingTab {
       embedStatus.toggleClass("is-error", status.kind === "failed");
       if (status.kind === "running") embedStatus.setText(`${pending} · 正在运行 qmd ${status.step}…`);
       else if (status.kind === "failed") embedStatus.setText(`${pending} · 更新失败：${status.message}`);
-      else embedStatus.setText(`${pending}${status.lastSuccess ? ` · 上次成功 ${new Date(status.lastSuccess).toLocaleString()}` : " · 尚未完成索引更新"}`);
+      else embedStatus.setText(`${pending}${status.lastSuccess ? ` · 上次成功 ${new Date(status.lastSuccess).toLocaleString()}` : " · 插件尚未执行过更新"}`);
     });
     container.createEl("p", { cls: "setting-item-description aha-settings-note", text: "远程向量服务会收到笔记原文。排除文件夹不限制索引范围。" });
   }
@@ -335,19 +354,7 @@ export class AhaSettingTab extends PluginSettingTab {
   }
 
   private async refreshHealthLights(container: HTMLElement): Promise<number> {
-    const settings = this.plugin.settings;
-    const vaultMarkdownFileCount = this.app.vault.getMarkdownFiles().length;
-    const [qmdAvailable, statusProbe, llmProbe] = await Promise.all([
-      probeQmdAvailable(settings),
-      runQmdStatus(settings),
-      testProviderConnection(settings, "deepseek"),
-    ]);
-    const lights: HealthLight[] = [
-      decideQmdBinaryLight(qmdAvailable),
-      decideIndexCoverageLight(statusProbe, vaultMarkdownFileCount, settings.qmdIndex),
-      decideQmdEndpointsLight(parseQmdEnvironment(settings.qmdEnvironment), statusProbe, settings.qmdIndex),
-      decideLlmConnectivityLight(llmProbe),
-    ];
+    const lights = await gatherHealthLights(this.plugin.settings, this.app.vault.getMarkdownFiles().length);
     container.empty();
     for (const light of lights) {
       const row = container.createDiv({ cls: "aha-health-light" });
